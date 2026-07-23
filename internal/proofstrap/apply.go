@@ -45,9 +45,8 @@ func (plan primaryGroupPlan) apply(runner Runner, receipt ApplyReceipt) ApplyRec
 		return receipt
 	}
 	ctx := context.Background()
-	if stale, _ := plan.host.guard(runner); stale {
-		receipt.Status = Stale
-		return receipt
+	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
+		return guarded
 	}
 	if stale, err := plan.account.guard(ctx, runner); err != nil {
 		receipt.Status = Failed
@@ -67,10 +66,8 @@ func (plan primaryGroupPlan) apply(runner Runner, receipt ApplyReceipt) ApplyRec
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "primary group evidence changed immediately before mutation"}}
 		return receipt
 	}
-	if stale, detail := plan.host.guard(runner); stale {
-		receipt.Status = Stale
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: detail + " immediately before mutation"}}
-		return receipt
+	if guarded, stop, _ := immediateHostGuard(receipt, plan.host, runner, plan.projection.ID, "host evidence changed immediately before mutation"); stop {
+		return guarded
 	}
 	execution := runner.Run(ctx, plan.command)
 	freshGroup := observePrimaryGroup(ctx, runner, plan.group.observed.getentPath, plan.group.intent)
@@ -98,7 +95,7 @@ func (plan primaryGroupPlan) apply(runner Runner, receipt ApplyReceipt) ApplyRec
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: FailedAction, Detail: detail}}
 		return receipt
 	}
-	if stale, detail := plan.host.guard(runner); stale {
+	if detail, failed := finalHostGuard(plan.host, runner); failed {
 		receipt.Status = Failed
 		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: verificationDetail + "; " + detail}}
@@ -117,9 +114,8 @@ func (plan accountCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRe
 		return receipt
 	}
 	ctx := context.Background()
-	if stale, _ := plan.host.guard(runner); stale {
-		receipt.Status = Stale
-		return receipt
+	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
+		return guarded
 	}
 	if stale, err := plan.group.guard(ctx, runner); err != nil {
 		return failedAccountGuard(receipt, plan.projection.ID, "guard:primary-group", err.Error())
@@ -135,10 +131,8 @@ func (plan accountCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRe
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "account evidence changed immediately before account creation"}}
 		return receipt
 	}
-	if stale, detail := plan.host.guard(runner); stale {
-		receipt.Status = Stale
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: detail + " immediately before account creation"}}
-		return receipt
+	if guarded, stop, _ := immediateHostGuard(receipt, plan.host, runner, plan.projection.ID, "host evidence changed immediately before account creation"); stop {
+		return guarded
 	}
 	execution := runner.Run(ctx, plan.command)
 	reviewedAccount := plan.account.observed.(accountSnapshot)
@@ -167,7 +161,7 @@ func (plan accountCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRe
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: accountDetail + "; " + groupDetail}}
 		return receipt
 	}
-	if stale, detail := plan.host.guard(runner); stale {
+	if detail, failed := finalHostGuard(plan.host, runner); failed {
 		receipt.Status = Failed
 		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: accountDetail + "; " + detail}}
@@ -186,9 +180,8 @@ func (plan homeCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRecei
 		return receipt
 	}
 	ctx := context.Background()
-	if stale, _ := plan.host.guard(runner); stale {
-		receipt.Status = Stale
-		return receipt
+	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
+		return guarded
 	}
 	if stale, err := plan.group.guard(ctx, runner); err != nil {
 		return failedAccountGuard(receipt, plan.projection.ID, "guard:primary-group", err.Error())
@@ -204,10 +197,8 @@ func (plan homeCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRecei
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "account, lock, or home evidence changed immediately before home creation"}}
 		return receipt
 	}
-	if stale, detail := plan.host.guard(runner); stale {
-		receipt.Status = Stale
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: detail + " immediately before home creation"}}
-		return receipt
+	if guarded, stop, _ := immediateHostGuard(receipt, plan.host, runner, plan.projection.ID, "host evidence changed immediately before home creation"); stop {
+		return guarded
 	}
 	execution := runner.Run(ctx, plan.command)
 	intent := plan.account.intent.(presentAccountIntent)
@@ -236,7 +227,7 @@ func (plan homeCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRecei
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: verification}}
 		return receipt
 	}
-	if stale, detail := plan.host.guard(runner); stale {
+	if detail, failed := finalHostGuard(plan.host, runner); failed {
 		receipt.Status = Failed
 		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: verification + "; " + detail}}
@@ -254,6 +245,50 @@ func failedAccountGuard(receipt ApplyReceipt, action, subject, detail string) Ap
 	return receipt
 }
 
+func initialHostGuard(receipt ApplyReceipt, host hostBinding, runner Runner) (ApplyReceipt, bool) {
+	stale, err := host.guard(runner)
+	if err != nil {
+		receipt.Status = Failed
+		receipt.Blockers = []Blocker{{Subject: "guard:host", Detail: err.Error()}}
+		return receipt, true
+	}
+	if stale {
+		receipt.Status = Stale
+		return receipt, true
+	}
+	return receipt, false
+}
+
+func immediateHostGuard(receipt ApplyReceipt, host hostBinding, runner Runner, action, driftDetail string) (ApplyReceipt, bool, string) {
+	stale, err := host.guard(runner)
+	if err != nil {
+		receipt.Status = Failed
+		receipt.Blockers = append(receipt.Blockers, Blocker{Subject: "guard:host", Detail: err.Error()})
+		receipt.Outcomes = append(receipt.Outcomes, ActionOutcome{Action: action, Status: Unattempted, Detail: err.Error()})
+		return receipt, true, err.Error()
+	}
+	if stale {
+		receipt.Status = Failed
+		if len(receipt.Outcomes) == 0 {
+			receipt.Status = Stale
+		}
+		receipt.Outcomes = append(receipt.Outcomes, ActionOutcome{Action: action, Status: Unattempted, Detail: driftDetail})
+		return receipt, true, driftDetail
+	}
+	return receipt, false, ""
+}
+
+func finalHostGuard(host hostBinding, runner Runner) (string, bool) {
+	stale, err := host.guard(runner)
+	if err != nil {
+		return err.Error(), true
+	}
+	if stale {
+		return "host evidence changed during apply", true
+	}
+	return "", false
+}
+
 func (plan packagePlan) apply(runner Runner, receipt ApplyReceipt, effect func(context.Context, Runner, Command, packageMutationGuard) packageResult) ApplyReceipt {
 	preparedProjection := Command{Name: plan.command.Name, Args: append([]string(nil), plan.command.Args...)}
 	if len(plan.plan.Changes) != 1 || !reflect.DeepEqual(plan.plan.Changes[0], plan.projection) ||
@@ -261,9 +296,8 @@ func (plan packagePlan) apply(runner Runner, receipt ApplyReceipt, effect func(c
 		receipt.Status = Failed
 		return receipt
 	}
-	if stale, _ := plan.host.guard(runner); stale {
-		receipt.Status = Stale
-		return receipt
+	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
+		return guarded
 	}
 	if stale, err := plan.account.guard(context.Background(), runner); err != nil {
 		receipt.Status = Failed
@@ -281,8 +315,10 @@ func (plan packagePlan) apply(runner Runner, receipt ApplyReceipt, effect func(c
 		if stale {
 			return stalePrecondition{detail: "account evidence changed immediately before package mutation"}
 		}
-		if stale, detail := plan.host.guard(runner); stale {
-			return stalePrecondition{detail: detail + " immediately before package mutation"}
+		if stale, err := plan.host.guard(runner); err != nil {
+			return hostMutationGuardFailed{detail: err.Error()}
+		} else if stale {
+			return stalePrecondition{detail: "host evidence changed immediately before package mutation"}
 		}
 		return nil
 	}
@@ -299,6 +335,13 @@ func (plan packagePlan) apply(runner Runner, receipt ApplyReceipt, effect func(c
 			receipt.Status = Failed
 			receipt.Blockers = []Blocker{{Subject: "guard:account", Detail: accountFailure.Error()}}
 			receipt.Outcomes = []ActionOutcome{{Action: plan.plan.Changes[0].ID, Status: Unattempted, Detail: accountFailure.Error()}}
+			return receipt
+		}
+		var hostFailure hostMutationGuardFailed
+		if !result.attempted && errors.As(result.err, &hostFailure) {
+			receipt.Status = Failed
+			receipt.Blockers = []Blocker{{Subject: "guard:host", Detail: hostFailure.Error()}}
+			receipt.Outcomes = []ActionOutcome{{Action: plan.plan.Changes[0].ID, Status: Unattempted, Detail: hostFailure.Error()}}
 			return receipt
 		}
 		receipt.Status = Failed
@@ -319,7 +362,7 @@ func (plan packagePlan) apply(runner Runner, receipt ApplyReceipt, effect func(c
 		receipt.Outcomes = []ActionOutcome{{Action: plan.plan.Changes[0].ID, Status: Applied, Detail: "verified; " + detail}}
 		return receipt
 	}
-	if stale, detail := plan.host.guard(runner); stale {
+	if detail, failed := finalHostGuard(plan.host, runner); failed {
 		receipt.Status = Failed
 		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
 		receipt.Outcomes = []ActionOutcome{{Action: plan.plan.Changes[0].ID, Status: Applied, Detail: "verified; " + detail}}
@@ -340,9 +383,8 @@ func (plan readyPlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt {
 		return receipt
 	}
 	ctx := context.Background()
-	if stale, _ := plan.host.guard(runner); stale {
-		receipt.Status = Stale
-		return receipt
+	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
+		return guarded
 	}
 	if stale, err := plan.account.guard(ctx, runner); err != nil {
 		receipt.Status = Failed
@@ -429,12 +471,9 @@ func (plan readyPlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt {
 				return receipt
 			}
 		}
-		if stale, detail := plan.host.guard(runner); stale {
-			receipt.Status = Failed
-			if len(receipt.Outcomes) == 0 {
-				receipt.Status = Stale
-			}
-			receipt.Outcomes = append(receipt.Outcomes, unattemptedOutcomes(plan.steps, i, detail+" immediately before action")...)
+		if guarded, stop, detail := immediateHostGuard(receipt, plan.host, runner, step.id, "host evidence changed immediately before action"); stop {
+			receipt = guarded
+			receipt.Outcomes = append(receipt.Outcomes, unattemptedOutcomes(plan.steps, i+1, detail)...)
 			return receipt
 		}
 		stepContext, cancel := context.WithTimeout(ctx, step.timeout)
@@ -524,7 +563,7 @@ func (plan readyPlan) guardConflicts(ctx context.Context, runner Runner) (bool, 
 }
 
 func (plan readyPlan) finalState(ctx context.Context, runner Runner) []Blocker {
-	if stale, detail := plan.host.guard(runner); stale {
+	if detail, failed := finalHostGuard(plan.host, runner); failed {
 		return []Blocker{{Subject: "final:host", Detail: detail}}
 	}
 	if stale, err := plan.account.guard(ctx, runner); err != nil {

@@ -135,27 +135,27 @@ type hostBinding struct {
 	hostname *hostnameBinding
 }
 
-func (binding hostBinding) guard(runner Runner) (bool, string) {
+func (binding hostBinding) guard(runner Runner) (bool, error) {
 	inspection := observeHost(runner)
 	if len(inspection.blockers) != 0 {
-		return true, inspection.blockers[0].Detail
+		return false, fmt.Errorf("host evidence cannot be revalidated: %s", blockersDetail(inspection.blockers))
 	}
 	if !reflect.DeepEqual(inspection.facts, binding.facts) {
-		return true, "host evidence changed"
+		return true, nil
 	}
 	if binding.hostname == nil {
-		return false, ""
+		return false, nil
 	}
 	fresh := observeHostname(runner)
 	switch decision := reconcileHostname(binding.hostname.intent, fresh).(type) {
 	case hostnameExact:
-		return false, ""
+		return false, nil
 	case hostnameBlocked:
-		return true, decision.blockers[0].Detail
+		return false, fmt.Errorf("hostname evidence cannot be revalidated: %s", blockersDetail(decision.blockers))
 	case hostnameChange:
-		return true, "hostname evidence changed"
+		return true, nil
 	}
-	return true, "unknown hostname decision"
+	return false, fmt.Errorf("hostname evidence cannot be revalidated: unknown decision")
 }
 
 type hostnamePlan struct {
@@ -260,12 +260,16 @@ func verifyHostname(intent hostnameIntent, observation hostnameObservation) (boo
 		detail := "persistent=" + value.persistent + "; runtime=" + value.runtime
 		return value.persistent == intent.value && value.runtime == intent.value, detail
 	case hostnameObservationBlocked:
-		parts := make([]string, len(value.blockerList))
-		for index, blocker := range value.blockerList {
-			parts[index] = blocker.Subject + ": " + blocker.Detail
-		}
-		return false, strings.Join(parts, "; ")
+		return false, blockersDetail(value.blockerList)
 	default:
 		return false, "unknown hostname observation"
 	}
+}
+
+func blockersDetail(blockers []Blocker) string {
+	parts := make([]string, len(blockers))
+	for index, blocker := range blockers {
+		parts[index] = blocker.Subject + ": " + blocker.Detail
+	}
+	return strings.Join(parts, "; ")
 }

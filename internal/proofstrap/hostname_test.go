@@ -84,6 +84,16 @@ func TestHostnameChangePlansOneNoninteractiveStaticAndTransientCommand(t *testin
 	}
 }
 
+func TestHostnameChangeCannotBypassMissingAccountPrerequisite(t *testing.T) {
+	runner := hostnameRunner(hostnameRead("old"))
+	state := hostnameState("node-1")
+	state.Modules = []string{"audio"}
+	review := Plan(state, runner)
+	if !review.Blocked() || !blockerContains(review.Blockers, "user-service demand requires an explicit account") || len(review.Changes) != 0 || len(runner.fileResults[persistentHostnamePath]) != 1 || containsString(runner.pathCalls, "hostnamectl") {
+		t.Fatalf("review=%#v pathCalls=%#v hostnameReads=%#v", review, runner.pathCalls, runner.fileResults[persistentHostnamePath])
+	}
+}
+
 func TestHostnameChangeUsesExistingNoninteractiveRootAuthority(t *testing.T) {
 	state := hostnameState("node-1")
 	runner := hostnameRunner(hostnameRead("old"))
@@ -175,6 +185,89 @@ func TestExactHostnameDriftStopsUnrelatedAction(t *testing.T) {
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Stale || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted || containsString(runner.calls, "/usr/bin/start") {
 		t.Fatalf("receipt=%#v calls=%#v", receipt, runner.calls)
+	}
+}
+
+func TestExactHostnameDriftAfterAppliedActionFailsRemainingActions(t *testing.T) {
+	runner := hostnameRunner(hostnameRead("node-1"), hostnameRead("node-1"), hostnameRead("drifted"))
+	steps := []step{
+		{id: "service:first", detail: "first", access: rootStep, command: Command{Name: "/usr/bin/first"}, before: func(context.Context, Runner) error { return nil }, verify: func(context.Context, Runner) (bool, string) { return true, "active" }},
+		{id: "service:second", detail: "second", access: rootStep, command: Command{Name: "/usr/bin/second"}, before: func(context.Context, Runner) error { return nil }, verify: func(context.Context, Runner) (bool, string) { return true, "active" }},
+	}
+	runner.results["/usr/bin/first"] = []Result{{}}
+	plan := readyPlan{
+		plan: ReviewPlan{Changes: []Change{steps[0].projection(), steps[1].projection()}},
+		host: hostBinding{
+			facts:    observeHost(runner).facts,
+			hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+		},
+		steps: steps, commands: []Command{steps[0].command, steps[1].command},
+	}
+	receipt := plan.apply(runner, ApplyReceipt{})
+	if receipt.Status != Failed || len(receipt.Outcomes) != 2 || receipt.Outcomes[0].Status != Applied || receipt.Outcomes[1].Status != Unattempted || containsString(runner.calls, "/usr/bin/second") {
+		t.Fatalf("receipt=%#v calls=%#v", receipt, runner.calls)
+	}
+}
+
+func TestUnreadableExactHostnameGuardFailsInsteadOfReportingStale(t *testing.T) {
+	read := hostnameRead("node-1")
+	read[0].err = errors.New("persistent unavailable")
+	runner := hostnameRunner(read)
+	plan := readyPlan{host: hostBinding{
+		facts:    observeHost(runner).facts,
+		hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+	}}
+	receipt := plan.apply(runner, ApplyReceipt{})
+	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "guard:host" {
+		t.Fatalf("receipt=%#v", receipt)
+	}
+}
+
+func TestUnreadableExactHostnameImmediatelyBeforeActionFailsUnattempted(t *testing.T) {
+	unreadable := hostnameRead("node-1")
+	unreadable[1].err = errors.New("runtime unavailable")
+	runner := hostnameRunner(hostnameRead("node-1"), unreadable)
+	plannedStep := step{
+		id: "service:start", detail: "start", access: rootStep,
+		command: Command{Name: "/usr/bin/start"},
+		before:  func(context.Context, Runner) error { return nil },
+		verify:  func(context.Context, Runner) (bool, string) { return true, "active" },
+	}
+	projection := plannedStep.projection()
+	plan := readyPlan{
+		plan: ReviewPlan{Changes: []Change{projection}},
+		host: hostBinding{
+			facts:    observeHost(runner).facts,
+			hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+		},
+		steps: []step{plannedStep}, commands: []Command{plannedStep.command},
+	}
+	receipt := plan.apply(runner, ApplyReceipt{})
+	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "guard:host" || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted || containsString(runner.calls, "/usr/bin/start") {
+		t.Fatalf("receipt=%#v calls=%#v", receipt, runner.calls)
+	}
+}
+
+func TestUnreadableExactHostnameImmediatelyBeforePackageMutationFailsUnattempted(t *testing.T) {
+	unreadable := hostnameRead("node-1")
+	unreadable[0].err = errors.New("persistent unavailable")
+	runner := hostnameRunner(hostnameRead("node-1"), unreadable)
+	command := Command{Name: "/usr/bin/zypper", Args: []string{"install", "curl"}}
+	projected := Command{Name: command.Name, Args: append([]string(nil), command.Args...)}
+	change := Change{ID: "package-install:zypper", Command: &projected}
+	plan := packagePlan{
+		plan: ReviewPlan{Changes: []Change{change}},
+		host: hostBinding{
+			facts:    observeHost(runner).facts,
+			hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+		},
+		projection: change, command: command,
+	}
+	receipt := plan.apply(runner, ApplyReceipt{}, func(_ context.Context, _ Runner, _ Command, guard packageMutationGuard) packageResult {
+		return packageResult{err: guard()}
+	})
+	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "guard:host" || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted {
+		t.Fatalf("receipt=%#v", receipt)
 	}
 }
 

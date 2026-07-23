@@ -96,6 +96,10 @@ type accountMutationGuardFailed struct{ detail string }
 
 func (failure accountMutationGuardFailed) Error() string { return failure.detail }
 
+type hostMutationGuardFailed struct{ detail string }
+
+func (failure hostMutationGuardFailed) Error() string { return failure.detail }
+
 type boundSelection struct {
 	services     services
 	packageNeeds []resolvedPackage
@@ -167,6 +171,11 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 	if len(review.Blockers) != 0 {
 		return blocked(review)
 	}
+	needsUserAccount := selected.requiresUserAccount()
+	if needsUserAccount && state.account == nil {
+		review.Blockers = append(review.Blockers, Blocker{Subject: "account:target", Detail: "user-service demand requires an explicit account"})
+		return blocked(review)
+	}
 	boundHost := hostBinding{facts: host.facts}
 	if state.machine != nil && state.machine.hostname != nil {
 		observed := observeHostname(runner)
@@ -181,11 +190,6 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 			review.Facts = append(review.Facts, hostnameFacts(decision.before)...)
 			return planHostnameChange(review, host.facts, *state.machine.hostname, decision.before, runner)
 		}
-	}
-	needsUserAccount := selected.requiresUserAccount()
-	if needsUserAccount && state.account == nil {
-		review.Blockers = append(review.Blockers, Blocker{Subject: "account:target", Detail: "user-service demand requires an explicit account"})
-		return blocked(review)
 	}
 	var account accountBinding
 	accountAbsent := false

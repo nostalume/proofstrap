@@ -48,7 +48,7 @@ read intent
 
 Foundational transitions are isolated. Hostname establishment or creation of a primary group, locked account, home, or required package completes as one verified step and returns `replan_required`. The next decision is made only from a fresh Plan.
 
-Hostname intent is lower-case ASCII DNS-style syntax with Linux's 64-byte host-name limit. Observation reads persistent `/etc/hostname` and runtime `/proc/sys/kernel/hostname` state independently. Exact state needs no mutation authority and remains a guarded precondition before and after later effects in the same desired state. A change requires systemd PID 1 and executes noninteractively through `hostnamectl --static --transient`; pretty hostname is outside the owned state.
+Hostname intent is lower-case ASCII DNS-style syntax with Linux's 64-byte host-name limit. Observation reads persistent `/etc/hostname` and runtime `/proc/sys/kernel/hostname` state independently. Exact state needs no mutation authority and remains a guarded precondition before and after later effects in the same desired state: confirmed drift is stale, while inability to revalidate is a failed blocker. A change requires systemd PID 1 and executes noninteractively through `hostnamectl --static --transient`; pretty hostname is outside the owned state.
 
 Package and service behaviors own their native names and evidence. Host distribution identity is provenance, not a switch that silently selects behavior. Service work begins only after delivering packages are installed and rooted.
 
