@@ -154,6 +154,25 @@ func TestRunPlanRendersAccountOnlyIdentification(t *testing.T) {
 	}
 }
 
+func TestRunPlanRendersHostnameOnlyChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proofstrap.toml")
+	if err := os.WriteFile(path, []byte("[host]\nhostname = \"node-1\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := zypperRunner(0)
+	runner.files["/etc/hostname"] = []byte("old\n")
+	runner.files["/proc/sys/kernel/hostname"] = []byte("old\n")
+	runner.paths["hostnamectl"] = "/usr/bin/hostnamectl"
+	code, stdout, stderr := runCLI(t, runner, "plan", "--config", path)
+	wantCommand := "Command hostname: /usr/bin/hostnamectl --no-ask-password --static --transient set-hostname node-1"
+	if code != 0 || !strings.Contains(stdout, "Plan hostname: node-1\n") || !strings.Contains(stdout, wantCommand) || !strings.Contains(stdout, "Plan digest: sha256:") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("hostname-only root plan ran a command: %#v", runner.calls)
+	}
+}
+
 func TestRenderPlanEscapesAccountReviewControlCharacters(t *testing.T) {
 	plan := proofstrap.ReviewPlan{
 		Account: proofstrap.PresentAccountReview{State: "present", Name: "alice", UID: 1000, Shell: "/bin/bash\nBlocker forged: detail", PrimaryGroup: "alice", PrimaryGID: 1000, Home: "/home/alice\nPlan digest: forged", HomeMode: "0700"},
@@ -166,6 +185,20 @@ func TestRenderPlanEscapesAccountReviewControlCharacters(t *testing.T) {
 	}
 	if strings.Contains(rendered.String(), "\nBlocker forged:") || strings.Contains(rendered.String(), "\nPlan digest: forged") || strings.Contains(rendered.String(), "\nChange forged:") || !strings.Contains(rendered.String(), `\nBlocker forged`) || !strings.Contains(rendered.String(), `\nChange forged`) {
 		t.Fatalf("unsafe rendering: %q", rendered.String())
+	}
+}
+
+func TestRenderPlanShowsDigestBoundHostnameIntent(t *testing.T) {
+	plan := proofstrap.ReviewPlan{
+		HostSettings: &proofstrap.HostSettingsReview{Hostname: "node-1"},
+		Host:         proofstrap.HostFacts{ID: "test", PID1: "systemd"},
+	}
+	var rendered bytes.Buffer
+	if err := renderPlan(&rendered, plan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered.String(), "Plan hostname: node-1\n") {
+		t.Fatalf("hostname intent is hidden: %q", rendered.String())
 	}
 }
 

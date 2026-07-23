@@ -119,7 +119,7 @@ func reconcileAccountCreation(name string, account accountDecision, group primar
 	}
 }
 
-func planAccountCreation(review ReviewPlan, host HostFacts, account accountBinding, group primaryGroupBinding, intent presentAccountIntent, runner Runner) planned {
+func planAccountCreation(review ReviewPlan, host hostBinding, account accountBinding, group primaryGroupBinding, intent presentAccountIntent, runner Runner) planned {
 	useradd, err := runner.LookPath("useradd")
 	if err != nil {
 		review.Blockers = append(review.Blockers, Blocker{Subject: "account:" + intent.name, Detail: "useradd executable is unavailable: " + err.Error()})

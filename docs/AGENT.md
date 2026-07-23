@@ -2,7 +2,7 @@
 
 ## Goal
 
-Proofstrap is a declarative Linux bootstrap CLI. It turns selected capabilities and optional explicit account intent into a reviewed, digest-bound plan; applies only accepted plans; and verifies every attempted system effect. It manages supported system packages and services, not dotfiles or user-owned application configuration.
+Proofstrap is a declarative Linux bootstrap CLI. It turns selected capabilities, exact host settings, and optional explicit account intent into a reviewed, digest-bound plan; applies only accepted plans; and verifies every attempted system effect. It manages supported system packages, services, and exact hostname establishment, not dotfiles or user-owned application configuration.
 
 ## Tech stack
 

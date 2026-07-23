@@ -45,8 +45,7 @@ func (plan primaryGroupPlan) apply(runner Runner, receipt ApplyReceipt) ApplyRec
 		return receipt
 	}
 	ctx := context.Background()
-	inspection := observeHost(runner)
-	if len(inspection.blockers) != 0 || !reflect.DeepEqual(inspection.facts, plan.host) {
+	if stale, _ := plan.host.guard(runner); stale {
 		receipt.Status = Stale
 		return receipt
 	}
@@ -66,6 +65,11 @@ func (plan primaryGroupPlan) apply(runner Runner, receipt ApplyReceipt) ApplyRec
 	} else if stale {
 		receipt.Status = Stale
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "primary group evidence changed immediately before mutation"}}
+		return receipt
+	}
+	if stale, detail := plan.host.guard(runner); stale {
+		receipt.Status = Stale
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: detail + " immediately before mutation"}}
 		return receipt
 	}
 	execution := runner.Run(ctx, plan.command)
@@ -94,6 +98,12 @@ func (plan primaryGroupPlan) apply(runner Runner, receipt ApplyReceipt) ApplyRec
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: FailedAction, Detail: detail}}
 		return receipt
 	}
+	if stale, detail := plan.host.guard(runner); stale {
+		receipt.Status = Failed
+		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: verificationDetail + "; " + detail}}
+		return receipt
+	}
 	receipt.Status = ReplanRequired
 	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: "verified primary group creation; replan required"}}
 	return receipt
@@ -107,8 +117,7 @@ func (plan accountCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRe
 		return receipt
 	}
 	ctx := context.Background()
-	inspection := observeHost(runner)
-	if len(inspection.blockers) != 0 || !reflect.DeepEqual(inspection.facts, plan.host) {
+	if stale, _ := plan.host.guard(runner); stale {
 		receipt.Status = Stale
 		return receipt
 	}
@@ -124,6 +133,11 @@ func (plan accountCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRe
 	} else if stale {
 		receipt.Status = Stale
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "account evidence changed immediately before account creation"}}
+		return receipt
+	}
+	if stale, detail := plan.host.guard(runner); stale {
+		receipt.Status = Stale
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: detail + " immediately before account creation"}}
 		return receipt
 	}
 	execution := runner.Run(ctx, plan.command)
@@ -153,6 +167,12 @@ func (plan accountCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRe
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: accountDetail + "; " + groupDetail}}
 		return receipt
 	}
+	if stale, detail := plan.host.guard(runner); stale {
+		receipt.Status = Failed
+		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: accountDetail + "; " + detail}}
+		return receipt
+	}
 	receipt.Status = ReplanRequired
 	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: "verified locked account creation; replan required"}}
 	return receipt
@@ -166,8 +186,7 @@ func (plan homeCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRecei
 		return receipt
 	}
 	ctx := context.Background()
-	inspection := observeHost(runner)
-	if len(inspection.blockers) != 0 || !reflect.DeepEqual(inspection.facts, plan.host) {
+	if stale, _ := plan.host.guard(runner); stale {
 		receipt.Status = Stale
 		return receipt
 	}
@@ -183,6 +202,11 @@ func (plan homeCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRecei
 	} else if stale {
 		receipt.Status = Stale
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "account, lock, or home evidence changed immediately before home creation"}}
+		return receipt
+	}
+	if stale, detail := plan.host.guard(runner); stale {
+		receipt.Status = Stale
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: detail + " immediately before home creation"}}
 		return receipt
 	}
 	execution := runner.Run(ctx, plan.command)
@@ -212,6 +236,12 @@ func (plan homeCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyRecei
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: verification}}
 		return receipt
 	}
+	if stale, detail := plan.host.guard(runner); stale {
+		receipt.Status = Failed
+		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: verification + "; " + detail}}
+		return receipt
+	}
 	receipt.Status = ReplanRequired
 	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: "verified home creation; replan required"}}
 	return receipt
@@ -231,8 +261,7 @@ func (plan packagePlan) apply(runner Runner, receipt ApplyReceipt, effect func(c
 		receipt.Status = Failed
 		return receipt
 	}
-	inspection := observeHost(runner)
-	if len(inspection.blockers) != 0 || !reflect.DeepEqual(inspection.facts, plan.host) {
+	if stale, _ := plan.host.guard(runner); stale {
 		receipt.Status = Stale
 		return receipt
 	}
@@ -251,6 +280,9 @@ func (plan packagePlan) apply(runner Runner, receipt ApplyReceipt, effect func(c
 		}
 		if stale {
 			return stalePrecondition{detail: "account evidence changed immediately before package mutation"}
+		}
+		if stale, detail := plan.host.guard(runner); stale {
+			return stalePrecondition{detail: detail + " immediately before package mutation"}
 		}
 		return nil
 	}
@@ -287,6 +319,12 @@ func (plan packagePlan) apply(runner Runner, receipt ApplyReceipt, effect func(c
 		receipt.Outcomes = []ActionOutcome{{Action: plan.plan.Changes[0].ID, Status: Applied, Detail: "verified; " + detail}}
 		return receipt
 	}
+	if stale, detail := plan.host.guard(runner); stale {
+		receipt.Status = Failed
+		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.plan.Changes[0].ID, Status: Applied, Detail: "verified; " + detail}}
+		return receipt
+	}
 	receipt.Status = ReplanRequired
 	receipt.Outcomes = []ActionOutcome{{Action: plan.plan.Changes[0].ID, Status: Applied, Detail: "verified; replan required"}}
 	return receipt
@@ -302,8 +340,7 @@ func (plan readyPlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt {
 		return receipt
 	}
 	ctx := context.Background()
-	inspection := observeHost(runner)
-	if len(inspection.blockers) != 0 || !reflect.DeepEqual(inspection.facts, plan.host) {
+	if stale, _ := plan.host.guard(runner); stale {
 		receipt.Status = Stale
 		return receipt
 	}
@@ -392,6 +429,14 @@ func (plan readyPlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt {
 				return receipt
 			}
 		}
+		if stale, detail := plan.host.guard(runner); stale {
+			receipt.Status = Failed
+			if len(receipt.Outcomes) == 0 {
+				receipt.Status = Stale
+			}
+			receipt.Outcomes = append(receipt.Outcomes, unattemptedOutcomes(plan.steps, i, detail+" immediately before action")...)
+			return receipt
+		}
 		stepContext, cancel := context.WithTimeout(ctx, step.timeout)
 		result := runner.Run(stepContext, plan.commands[i])
 		cancel()
@@ -479,9 +524,8 @@ func (plan readyPlan) guardConflicts(ctx context.Context, runner Runner) (bool, 
 }
 
 func (plan readyPlan) finalState(ctx context.Context, runner Runner) []Blocker {
-	host := observeHost(runner)
-	if len(host.blockers) != 0 || !reflect.DeepEqual(host.facts, plan.host) {
-		return []Blocker{{Subject: "final:host", Detail: "host evidence changed during apply"}}
+	if stale, detail := plan.host.guard(runner); stale {
+		return []Blocker{{Subject: "final:host", Detail: detail}}
 	}
 	if stale, err := plan.account.guard(ctx, runner); err != nil {
 		return []Blocker{{Subject: "final:account", Detail: err.Error()}}

@@ -1,8 +1,8 @@
 # Proofstrap
 
-Proofstrap is a declarative Linux bootstrap CLI. You choose system capabilities, Proofstrap inspects the host, and it produces a digest-bound plan before changing anything. An accepted plan is rebuilt from fresh evidence at apply time, and every attempted package, service, account, group, or home change is observed again afterward.
+Proofstrap is a declarative Linux bootstrap CLI. You choose system capabilities and exact host settings, Proofstrap inspects the host, and it produces a digest-bound plan before changing anything. An accepted plan is rebuilt from fresh evidence at apply time, and every attempted hostname, package, service, account, group, or home change is observed again afterward.
 
-Proofstrap manages supported system packages and services. It does not manage dotfiles, desktop application settings, disks, bootloaders, or general machine configuration.
+Proofstrap manages supported system packages, services, and exact hostname establishment. It does not manage dotfiles, desktop application settings, disks, bootloaders, or general machine configuration.
 
 ## Installation
 
@@ -70,10 +70,13 @@ proofstrap plan network
 
 ### Use a configuration file
 
-Use `--config` when account intent or a reusable module selection is needed:
+Use `--config` when host settings, account intent, or a reusable module selection is needed:
 
 ```toml
 modules = ["audio"]
+
+[host]
+hostname = "node-1"
 
 [account]
 state = "present"
@@ -95,11 +98,11 @@ proofstrap plan --config ./proofstrap.toml
 proofstrap apply --config ./proofstrap.toml --accept sha256:<reviewed-digest>
 ```
 
-Use either positional module IDs or `--config`, not both. Config decoding is strict: unknown fields are rejected. Account creation is deliberately create-only and proceeds through separate primary-group, locked-account, and home plans. Proofstrap does not repair an existing identity, set a usable password, or manage supplementary memberships.
+Use either positional module IDs or `--config`, not both. Config decoding is strict: unknown fields are rejected. A desired hostname must be lowercase ASCII DNS-style syntax and at most 64 bytes. Proofstrap independently observes `/etc/hostname` and the kernel runtime hostname; a required systemd change sets only static and transient names, verifies both, and returns `replan_required`. Account creation is deliberately create-only and proceeds through separate primary-group, locked-account, and home plans. Proofstrap does not repair an existing identity, set a usable password, or manage supplementary memberships.
 
 ## Supported systems
 
-Proofstrap recognizes direct package installation through Apt, Pacman, Zypper, DNF5, and DNF4. Apt and Pacman also support explicit package-root repair. `curl`, `git`, and `vim` are package-only bootstrap capabilities. Service management is systemd-only; `network` and `audio` are the current package-backed service capabilities.
+Proofstrap recognizes direct package installation through Apt, Pacman, Zypper, DNF5, and DNF4. Apt and Pacman also support explicit package-root repair. `curl`, `git`, and `vim` are package-only bootstrap capabilities. Service management and hostname mutation are systemd-only; an already exact hostname remains independently reviewable without admitting a mutator. `network` and `audio` are the current package-backed service capabilities.
 
 See [Architecture](docs/architecture.md) for the conceptual model and workflow. Project goal and stack are summarized in [Agent context](docs/AGENT.md).
 

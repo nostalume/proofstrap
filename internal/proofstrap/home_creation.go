@@ -191,7 +191,7 @@ func verifyHomeCreation(intent homeIntent, uid, gid uint32, snapshot homeSnapsho
 	}
 }
 
-func planHomeCreation(review ReviewPlan, host HostFacts, account accountBinding, group primaryGroupBinding, intent presentAccountIntent, runner Runner) planned {
+func planHomeCreation(review ReviewPlan, host hostBinding, account accountBinding, group primaryGroupBinding, intent presentAccountIntent, runner Runner) planned {
 	executable, err := runner.ExecutableIdentity()
 	if err != nil {
 		review.Blockers = append(review.Blockers, Blocker{Subject: "home:" + intent.home.path, Detail: "proofstrap executable is unavailable: " + err.Error()})

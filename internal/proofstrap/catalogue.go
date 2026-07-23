@@ -310,8 +310,8 @@ func (compiled compiledCatalogue) selectFor(state DesiredState) (selection, []Bl
 	selected := selection{}
 	seen := make(map[moduleID]bool)
 	var blockers []Blocker
-	if len(state.Modules) == 0 && state.account == nil {
-		return selected, []Blocker{{Subject: "desired-state", Detail: "at least one module is required"}}
+	if state.Empty() {
+		return selected, []Blocker{{Subject: "desired-state", Detail: "at least one module, account, or host setting is required"}}
 	}
 	var visit func(moduleID)
 	visit = func(id moduleID) {

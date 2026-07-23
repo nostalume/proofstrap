@@ -124,6 +124,7 @@ type testRunner struct {
 	uids             []uint32
 	uidErr           error
 	files            map[string][]byte
+	fileResults      map[string][]fileResult
 	lstats           map[string][]pathResult
 	executable       string
 	executableDigest string
@@ -148,6 +149,11 @@ type pathResult struct {
 	err  error
 }
 
+type fileResult struct {
+	contents []byte
+	err      error
+}
+
 func (runner *testRunner) EffectiveUID() (uint32, error) {
 	runner.euidCalls++
 	runner.events = append(runner.events, "euid")
@@ -165,6 +171,10 @@ func (runner *testRunner) ExecutableIdentity() (ExecutableIdentity, error) {
 }
 func (runner *testRunner) ReadFile(path string) ([]byte, error) {
 	runner.events = append(runner.events, "read:"+path)
+	if queue := runner.fileResults[path]; len(queue) != 0 {
+		runner.fileResults[path] = queue[1:]
+		return queue[0].contents, queue[0].err
+	}
 	if value, ok := runner.files[path]; ok {
 		return value, nil
 	}

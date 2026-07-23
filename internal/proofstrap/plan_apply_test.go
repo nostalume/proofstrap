@@ -73,7 +73,7 @@ func TestPackageApplyLeavesDeadlinesToBehaviorCommands(t *testing.T) {
 	projected := Command{Name: command.Name, Args: append([]string(nil), command.Args...)}
 	change := Change{ID: "package-install:apt", Command: &projected}
 	plan := packagePlan{
-		plan: ReviewPlan{Changes: []Change{change}}, host: observeHost(runner).facts,
+		plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
 		projection: change, command: command,
 	}
 	receipt := plan.apply(runner, ApplyReceipt{}, func(ctx context.Context, _ Runner, effective Command, _ packageMutationGuard) packageResult {

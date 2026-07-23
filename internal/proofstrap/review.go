@@ -25,6 +25,10 @@ type Change struct {
 	Command *Command `json:"command,omitempty"`
 }
 
+type HostSettingsReview struct {
+	Hostname string `json:"hostname"`
+}
+
 //sumtype:decl
 type AccountReview interface {
 	accountReview()
@@ -57,12 +61,13 @@ func (value PresentAccountReview) Summary() string {
 }
 
 type ReviewPlan struct {
-	Modules  []string      `json:"modules"`
-	Account  AccountReview `json:"account,omitempty"`
-	Host     HostFacts     `json:"host"`
-	Facts    []Fact        `json:"facts"`
-	Changes  []Change      `json:"changes"`
-	Blockers []Blocker     `json:"blockers"`
+	Modules      []string            `json:"modules"`
+	Account      AccountReview       `json:"account,omitempty"`
+	HostSettings *HostSettingsReview `json:"host_settings,omitempty"`
+	Host         HostFacts           `json:"host"`
+	Facts        []Fact              `json:"facts"`
+	Changes      []Change            `json:"changes"`
+	Blockers     []Blocker           `json:"blockers"`
 }
 
 func (plan ReviewPlan) Blocked() bool { return len(plan.Blockers) != 0 }
@@ -71,6 +76,7 @@ func (plan ReviewPlan) Digest() string {
 	canonical := plan
 	canonical.Modules = append([]string(nil), plan.Modules...)
 	canonical.Account = cloneAccountReview(plan.Account)
+	canonical.HostSettings = cloneHostSettingsReview(plan.HostSettings)
 	canonical.Facts = append([]Fact(nil), plan.Facts...)
 	canonical.Changes = cloneChanges(plan.Changes)
 	canonical.Blockers = append([]Blocker(nil), plan.Blockers...)
@@ -88,6 +94,21 @@ func (plan ReviewPlan) Digest() string {
 	}
 	digest := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func reviewHostSettings(intent *machineIntent) *HostSettingsReview {
+	if intent == nil || intent.hostname == nil {
+		return nil
+	}
+	return &HostSettingsReview{Hostname: intent.hostname.value}
+}
+
+func cloneHostSettingsReview(source *HostSettingsReview) *HostSettingsReview {
+	if source == nil {
+		return nil
+	}
+	clone := *source
+	return &clone
 }
 
 func reviewAccount(intent accountIntent) AccountReview {

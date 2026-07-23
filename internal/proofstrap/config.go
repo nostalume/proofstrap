@@ -14,6 +14,11 @@ import (
 type desiredStateFile struct {
 	Modules []string            `toml:"modules"`
 	Account *desiredAccountFile `toml:"account"`
+	Host    *desiredHostFile    `toml:"host"`
+}
+
+type desiredHostFile struct {
+	Hostname *string `toml:"hostname"`
 }
 
 type desiredAccountFile struct {
@@ -50,11 +55,32 @@ func ReadDesiredState(path string) (DesiredState, error) {
 	if err != nil {
 		return DesiredState{}, fmt.Errorf("read %q: %w", path, err)
 	}
+	machine, err := desired.Host.intent()
+	if err != nil {
+		return DesiredState{}, fmt.Errorf("read %q: %w", path, err)
+	}
 	state, err := newDesiredState(desired.Modules, account)
 	if err != nil {
 		return DesiredState{}, fmt.Errorf("read %q: %w", path, err)
 	}
+	state.machine = machine
 	return state, nil
+}
+
+type machineIntent struct{ hostname *hostnameIntent }
+
+func (raw *desiredHostFile) intent() (*machineIntent, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	if raw.Hostname == nil {
+		return nil, fmt.Errorf("host requires hostname")
+	}
+	hostname, err := newHostnameIntent(*raw.Hostname)
+	if err != nil {
+		return nil, err
+	}
+	return &machineIntent{hostname: &hostname}, nil
 }
 
 //sumtype:decl
@@ -86,10 +112,12 @@ func (value existingAccountIntent) accountName() string { return value.name }
 func (value presentAccountIntent) accountName() string  { return value.name }
 
 // DesiredState is the user-owned desired state. It selects module IDs and may
-// explicitly identify one target account; it does not define module behavior.
+// explicitly identify one target account and exact host settings; it does not
+// define module behavior.
 type DesiredState struct {
 	Modules []string
 	account accountIntent
+	machine *machineIntent
 }
 
 func NewDesiredState(modules []string) (DesiredState, error) {
@@ -112,7 +140,9 @@ func newDesiredState(modules []string, account accountIntent) (DesiredState, err
 	return DesiredState{Modules: cleaned, account: account}, nil
 }
 
-func (state DesiredState) Empty() bool { return len(state.Modules) == 0 && state.account == nil }
+func (state DesiredState) Empty() bool {
+	return len(state.Modules) == 0 && state.account == nil && state.machine == nil
+}
 
 var accountNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,30}[a-z0-9_$-]?$`)
 

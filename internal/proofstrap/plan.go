@@ -46,7 +46,7 @@ type planned interface {
 type blockedPlan struct{ plan ReviewPlan }
 type packagePlan struct {
 	plan       ReviewPlan
-	host       HostFacts
+	host       hostBinding
 	account    accountBinding
 	projection Change
 	command    Command
@@ -61,7 +61,7 @@ type installPlan struct {
 }
 type primaryGroupPlan struct {
 	plan       ReviewPlan
-	host       HostFacts
+	host       hostBinding
 	account    accountBinding
 	group      primaryGroupBinding
 	projection Change
@@ -69,7 +69,7 @@ type primaryGroupPlan struct {
 }
 type accountCreatePlan struct {
 	plan              ReviewPlan
-	host              HostFacts
+	host              hostBinding
 	account           accountBinding
 	group             primaryGroupBinding
 	projection        Change
@@ -78,7 +78,7 @@ type accountCreatePlan struct {
 }
 type homeCreatePlan struct {
 	plan       ReviewPlan
-	host       HostFacts
+	host       hostBinding
 	account    accountBinding
 	group      primaryGroupBinding
 	projection Change
@@ -104,7 +104,7 @@ type boundSelection struct {
 }
 type readyPlan struct {
 	plan            ReviewPlan
-	host            HostFacts
+	host            hostBinding
 	account         accountBinding
 	targetUser      bool
 	bound           boundSelection
@@ -140,6 +140,7 @@ func blocked(review ReviewPlan) blockedPlan {
 func canonicalReview(review ReviewPlan) ReviewPlan {
 	review.Modules = append([]string(nil), review.Modules...)
 	review.Account = cloneAccountReview(review.Account)
+	review.HostSettings = cloneHostSettingsReview(review.HostSettings)
 	review.Facts = append([]Fact(nil), review.Facts...)
 	review.Changes = cloneChanges(review.Changes)
 	review.Blockers = append([]Blocker(nil), review.Blockers...)
@@ -156,7 +157,7 @@ func canonicalReview(review ReviewPlan) ReviewPlan {
 
 func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) planned {
 	selected, blockers := catalogue.selectFor(state)
-	review := ReviewPlan{Modules: selected.moduleStrings(), Account: reviewAccount(state.account), Blockers: blockers}
+	review := ReviewPlan{Modules: selected.moduleStrings(), Account: reviewAccount(state.account), HostSettings: reviewHostSettings(state.machine), Blockers: blockers}
 	if len(blockers) != 0 {
 		return blocked(review)
 	}
@@ -165,6 +166,21 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 	review.Blockers = append(review.Blockers, host.blockers...)
 	if len(review.Blockers) != 0 {
 		return blocked(review)
+	}
+	boundHost := hostBinding{facts: host.facts}
+	if state.machine != nil && state.machine.hostname != nil {
+		observed := observeHostname(runner)
+		switch decision := reconcileHostname(*state.machine.hostname, observed).(type) {
+		case hostnameExact:
+			review.Facts = append(review.Facts, decision.facts...)
+			boundHost.hostname = &hostnameBinding{intent: *state.machine.hostname}
+		case hostnameBlocked:
+			review.Blockers = append(review.Blockers, decision.blockers...)
+			return blocked(review)
+		case hostnameChange:
+			review.Facts = append(review.Facts, hostnameFacts(decision.before)...)
+			return planHostnameChange(review, host.facts, *state.machine.hostname, decision.before, runner)
+		}
 	}
 	needsUserAccount := selected.requiresUserAccount()
 	if needsUserAccount && state.account == nil {
@@ -207,7 +223,7 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 				switch creation := reconcileAccountCreation(desired.name, reconcileAccount(state.account, account.observed), decision, accountLockUnobserved{}).(type) {
 				case accountCreateEligible:
 					review.Facts = append(review.Facts, creation.facts...)
-					return planAccountCreation(review, host.facts, account, group, desired, runner)
+					return planAccountCreation(review, boundHost, account, group, desired, runner)
 				case accountCreationBlocked:
 					review.Blockers = append(review.Blockers, creation.blockers...)
 					return blocked(review)
@@ -230,7 +246,7 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 					review.Facts = append(review.Facts, homeDecision.facts...)
 				case homeCreateEligible:
 					review.Facts = append(review.Facts, homeDecision.facts...)
-					return planHomeCreation(review, host.facts, account, group, desired, runner)
+					return planHomeCreation(review, boundHost, account, group, desired, runner)
 				case homeBlocked:
 					review.Blockers = append(review.Blockers, homeDecision.blockers...)
 					return blocked(review)
@@ -268,7 +284,7 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 			review.Changes = append(review.Changes, projection)
 			review = canonicalReview(review)
 			return primaryGroupPlan{
-				plan: review, host: host.facts, account: account,
+				plan: review, host: boundHost, account: account,
 				group:      primaryGroupBinding{intent: desired.primaryGroup, observed: groupSnapshot},
 				projection: projection, command: effective,
 			}
@@ -332,7 +348,7 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 		review.Changes = append(review.Changes, projection)
 		review = canonicalReview(review)
 		return rootPlan{
-			packagePlan: packagePlan{plan: review, host: host.facts, account: account, projection: projection, command: effective},
+			packagePlan: packagePlan{plan: review, host: boundHost, account: account, projection: projection, command: effective},
 			change:      state,
 		}
 	case packageInstallChange:
@@ -352,7 +368,7 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 		review.Changes = append(review.Changes, projection)
 		review = canonicalReview(review)
 		return installPlan{
-			packagePlan: packagePlan{plan: review, host: host.facts, account: account, projection: projection, command: effective},
+			packagePlan: packagePlan{plan: review, host: boundHost, account: account, projection: projection, command: effective},
 			change:      state,
 		}
 	}
@@ -446,7 +462,7 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 	}
 	review = canonicalReview(review)
 	return readyPlan{
-		plan: review, host: host.facts, account: account, targetUser: needsUserAccount, bound: bound,
+		plan: review, host: boundHost, account: account, targetUser: needsUserAccount, bound: bound,
 		packageBehavior: packageBehavior, packageEvidence: packageEvidence,
 		services: serviceObservations, steps: steps, commands: commands,
 	}

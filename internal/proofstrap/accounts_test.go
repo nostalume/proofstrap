@@ -75,7 +75,7 @@ func TestApplyReportsIndeterminateAccountGuard(t *testing.T) {
 				projected := Command{Name: command.Name, Args: append([]string(nil), command.Args...)}
 				change := Change{ID: "package-install:zypper", Command: &projected}
 				plan := packagePlan{
-					plan: ReviewPlan{Changes: []Change{change}}, host: observeHost(runner).facts,
+					plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
 					account: account, projection: change, command: command,
 				}
 				return plan.apply(runner, ApplyReceipt{}, func(context.Context, Runner, Command, packageMutationGuard) packageResult {
@@ -87,7 +87,7 @@ func TestApplyReportsIndeterminateAccountGuard(t *testing.T) {
 		{
 			name: "ready plan",
 			apply: func(runner *testRunner, account accountBinding) ApplyReceipt {
-				plan := readyPlan{plan: ReviewPlan{}, host: observeHost(runner).facts, account: account}
+				plan := readyPlan{plan: ReviewPlan{}, host: hostBinding{facts: observeHost(runner).facts}, account: account}
 				return plan.apply(runner, ApplyReceipt{})
 			},
 		},
@@ -326,7 +326,7 @@ func TestReadyApplyGuardsFullAccountBeforeEveryMutation(t *testing.T) {
 	runner.results["/usr/bin/first"] = []Result{{}}
 	plan := readyPlan{
 		plan:       ReviewPlan{Changes: []Change{steps[0].projection(), steps[1].projection()}},
-		host:       observeHost(runner).facts,
+		host:       hostBinding{facts: observeHost(runner).facts},
 		account:    accountBinding{intent: intent, observed: observed},
 		targetUser: true,
 		steps:      steps,
@@ -355,7 +355,7 @@ func TestReadyApplyGuardsAccountAfterStepPreconditions(t *testing.T) {
 	}
 	runner.results["/usr/bin/start"] = []Result{{}}
 	plan := readyPlan{
-		plan: ReviewPlan{Changes: []Change{plannedStep.projection()}}, host: observeHost(runner).facts,
+		plan: ReviewPlan{Changes: []Change{plannedStep.projection()}}, host: hostBinding{facts: observeHost(runner).facts},
 		account: accountBinding{intent: intent, observed: observed}, steps: []step{plannedStep}, commands: []Command{plannedStep.command},
 	}
 	receipt := plan.apply(runner, ApplyReceipt{})
@@ -389,7 +389,7 @@ func TestReadyApplyRejectsTargetUIDDriftBeforeActions(t *testing.T) {
 	addAccountResults(runner, "alice", 1000, 1)
 	entry := passwdEntry{name: "alice", uid: 1000, primaryGID: 1000, home: "/home/alice", shell: "/bin/bash"}
 	plan := readyPlan{
-		plan: ReviewPlan{}, host: observeHost(runner).facts,
+		plan: ReviewPlan{}, host: hostBinding{facts: observeHost(runner).facts},
 		account:    accountBinding{intent: existingAccountIntent{name: "alice"}, observed: exactAccountSnapshot(entry)},
 		targetUser: true,
 	}
@@ -417,7 +417,7 @@ func TestPackageApplyReportsPostMutationAccountDrift(t *testing.T) {
 	projected := Command{Name: command.Name, Args: append([]string(nil), command.Args...)}
 	change := Change{ID: "package-install:zypper", Command: &projected}
 	plan := packagePlan{
-		plan: ReviewPlan{Changes: []Change{change}}, host: observeHost(runner).facts,
+		plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
 		account:    accountBinding{intent: existingAccountIntent{name: "alice"}, observed: exactAccountSnapshot(entry)},
 		projection: change, command: command,
 	}
@@ -447,7 +447,7 @@ func TestPackageApplyReportsIndeterminateImmediateAccountGuard(t *testing.T) {
 	projected := Command{Name: command.Name, Args: append([]string(nil), command.Args...)}
 	change := Change{ID: "package-install:zypper", Command: &projected}
 	plan := packagePlan{
-		plan: ReviewPlan{Changes: []Change{change}}, host: observeHost(runner).facts,
+		plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
 		account:    accountBinding{intent: existingAccountIntent{name: "alice"}, observed: exactAccountSnapshot(entry)},
 		projection: change, command: command,
 	}

@@ -30,6 +30,26 @@ func TestReadDesiredStateParsesExplicitExistingAccount(t *testing.T) {
 	}
 }
 
+func TestReadDesiredStateParsesExactHostnameIntent(t *testing.T) {
+	state, err := ReadDesiredState(writeDesiredFile(t, "[host]\nhostname = \"node-1\"\n"))
+	if err != nil || state.machine == nil || state.machine.hostname == nil || state.machine.hostname.value != "node-1" || state.Empty() {
+		t.Fatalf("state=%#v err=%v", state, err)
+	}
+}
+
+func TestReadDesiredStateRejectsEmptyOrFutureHostSettings(t *testing.T) {
+	for name, contents := range map[string]string{
+		"empty host":      "[host]\n",
+		"future timezone": "[host]\nhostname = \"node-1\"\ntimezone = \"UTC\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ReadDesiredState(writeDesiredFile(t, contents)); err == nil {
+				t.Fatal("unsupported host intent was accepted")
+			}
+		})
+	}
+}
+
 func TestReadDesiredStateParsesCanonicalPresentAccount(t *testing.T) {
 	state, err := ReadDesiredState(writeDesiredFile(t, `
 modules = ["audio"]

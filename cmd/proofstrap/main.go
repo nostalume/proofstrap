@@ -84,7 +84,7 @@ func runModules(arguments []string, stdout, stderr io.Writer) int {
 func runPlan(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	configPath := flags.String("config", "", "TOML file containing a modules list")
+	configPath := flags.String("config", "", "TOML desired-state file")
 	if err := flags.Parse(arguments); err != nil {
 		return 2
 	}
@@ -108,7 +108,7 @@ func runPlan(arguments []string, stdout, stderr io.Writer) int {
 func runApply(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("apply", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	configPath := flags.String("config", "", "TOML file containing a modules list")
+	configPath := flags.String("config", "", "TOML desired-state file")
 	accepted := flags.String("accept", "", "digest printed by proofstrap plan")
 	receiptPath := flags.String("receipt", "", "optional receipt output file")
 	if err := flags.Parse(arguments); err != nil {
@@ -186,6 +186,9 @@ func renderPlan(stdout io.Writer, plan proofstrap.ReviewPlan) error {
 	fmt.Fprintf(&rendered, "Plan modules: %v\n", plan.Modules)
 	if plan.Account != nil {
 		fmt.Fprintf(&rendered, "Plan account: %s\n", safeReviewText(plan.Account.Summary()))
+	}
+	if plan.HostSettings != nil {
+		fmt.Fprintf(&rendered, "Plan hostname: %s\n", safeReviewText(plan.HostSettings.Hostname))
 	}
 	fmt.Fprintf(&rendered, "Host OS ID: %s\n", safeReviewText(plan.Host.ID))
 	fmt.Fprintf(&rendered, "Host OS version: %s\n", safeReviewText(plan.Host.Version))
