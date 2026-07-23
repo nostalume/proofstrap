@@ -35,6 +35,20 @@ proofstrap plan network
 proofstrap plan audio
 ```
 
+For a minimal server baseline, select the package-only `curl` and `git` capabilities:
+
+```sh
+proofstrap plan curl git
+```
+
+Vim is an independent opt-in capability for systems that need it:
+
+```sh
+proofstrap plan curl git vim
+```
+
+The `curl` and `git` capabilities both require the system CA certificate package; Proofstrap deduplicates that shared requirement. Capability IDs and their native package bindings are owned by Proofstrap—the configuration does not accept arbitrary package-manager names.
+
 Planning is read-only. The output contains facts, blockers, proposed changes, and a SHA-256 digest.
 
 ### Apply an accepted plan
@@ -85,7 +99,7 @@ Use either positional module IDs or `--config`, not both. Config decoding is str
 
 ## Supported systems
 
-Proofstrap recognizes direct package installation through Apt, Pacman, Zypper, DNF5, and DNF4. Apt and Pacman also support explicit package-root repair. Service management is systemd-only. `network` and `audio` are the current package-backed service capabilities.
+Proofstrap recognizes direct package installation through Apt, Pacman, Zypper, DNF5, and DNF4. Apt and Pacman also support explicit package-root repair. `curl`, `git`, and `vim` are package-only bootstrap capabilities. Service management is systemd-only; `network` and `audio` are the current package-backed service capabilities.
 
 See [Architecture](docs/architecture.md) for the conceptual model and workflow. Project goal and stack are summarized in [Agent context](docs/AGENT.md).
 

@@ -72,7 +72,7 @@ func TestRunModulesIsSortedAndDoesNotCreateRunner(t *testing.T) {
 	t.Cleanup(func() { runnerFactory = previous })
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"modules"}, &stdout, &stderr)
-	want := "audio\ndbus\nhyprland\nnetwork\npavucontrol\nqpwgraph\nsway\nwayland\nwl-paste\nxclip\nxsel\n"
+	want := "audio\ncurl\ndbus\ngit\nhyprland\nnetwork\npavucontrol\nqpwgraph\nsway\nvim\nwayland\nwl-paste\nxclip\nxsel\n"
 	if code != 0 || stdout.String() != want || stderr.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}

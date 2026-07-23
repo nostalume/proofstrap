@@ -9,13 +9,42 @@ import (
 
 func TestModulesReturnsSortedIndependentCatalogueIDs(t *testing.T) {
 	first := Modules()
-	want := []string{"audio", "dbus", "hyprland", "network", "pavucontrol", "qpwgraph", "sway", "wayland", "wl-paste", "xclip", "xsel"}
+	want := []string{"audio", "curl", "dbus", "git", "hyprland", "network", "pavucontrol", "qpwgraph", "sway", "vim", "wayland", "wl-paste", "xclip", "xsel"}
 	if !reflect.DeepEqual(first, want) || !sort.StringsAreSorted(first) {
 		t.Fatalf("modules=%#v want=%#v", first, want)
 	}
 	first[0] = "changed"
 	if reflect.DeepEqual(first, Modules()) {
 		t.Fatalf("caller mutated catalogue listing: %#v", Modules())
+	}
+}
+
+func TestBootstrapPackageModulesAreExact(t *testing.T) {
+	want := map[moduleID]moduleDefinition{
+		"curl": {requirements: []requirement{
+			packageRequirement{packageKey: "ca-certificates"},
+			packageRequirement{packageKey: "curl"},
+		}},
+		"git": {requirements: []requirement{
+			packageRequirement{packageKey: "ca-certificates"},
+			packageRequirement{packageKey: "git"},
+		}},
+		"vim": {requirements: []requirement{
+			packageRequirement{packageKey: "vim"},
+		}},
+	}
+	raw := rawCatalogue()
+	for id, definition := range want {
+		if got := raw.modules[id]; !reflect.DeepEqual(got, definition) {
+			t.Errorf("module=%s definition=%#v want=%#v", id, got, definition)
+		}
+	}
+	selected, blockers := production.selectFor(DesiredState{Modules: []string{"curl", "git"}})
+	if len(blockers) != 0 {
+		t.Fatal(blockers)
+	}
+	if got := selected.packageKeys(); !reflect.DeepEqual(got, []PackageKey{"ca-certificates", "curl", "git"}) {
+		t.Fatalf("package keys=%#v", got)
 	}
 }
 
@@ -75,6 +104,18 @@ func TestCapabilitiesHaveCompleteFiveManagerPackageBindings(t *testing.T) {
 		constructZypperBehavior(paths, "1.14.87"), constructDNF5Behavior(paths, "5.2.0"), constructDNF4Behavior(paths, "4.21.0"),
 	}
 	want := map[moduleID]map[packageManager]map[PackageKey]string{
+		"curl": {
+			apt: {"ca-certificates": "ca-certificates", "curl": "curl"}, pacman: {"ca-certificates": "ca-certificates", "curl": "curl"},
+			zypper: {"ca-certificates": "ca-certificates", "curl": "curl"}, dnf5: {"ca-certificates": "ca-certificates", "curl": "curl"}, dnf4: {"ca-certificates": "ca-certificates", "curl": "curl"},
+		},
+		"git": {
+			apt: {"ca-certificates": "ca-certificates", "git": "git"}, pacman: {"ca-certificates": "ca-certificates", "git": "git"},
+			zypper: {"ca-certificates": "ca-certificates", "git": "git-core"}, dnf5: {"ca-certificates": "ca-certificates", "git": "git-core"}, dnf4: {"ca-certificates": "ca-certificates", "git": "git-core"},
+		},
+		"vim": {
+			apt: {"vim": "vim"}, pacman: {"vim": "vim"}, zypper: {"vim": "vim"},
+			dnf5: {"vim": "vim-enhanced"}, dnf4: {"vim": "vim-enhanced"},
+		},
 		"network": {
 			apt: {"networkmanager": "network-manager"}, pacman: {"networkmanager": "networkmanager"},
 			zypper: {"networkmanager": "NetworkManager"}, dnf5: {"networkmanager": "NetworkManager"}, dnf4: {"networkmanager": "NetworkManager"},
@@ -153,6 +194,7 @@ func TestCandidatesRemainDeferredWithoutFiveManagerBindings(t *testing.T) {
 
 func TestCurrentPackageBindingsAreExact(t *testing.T) {
 	base := map[PackageKey]string{
+		"ca-certificates": "ca-certificates", "curl": "curl", "git": "git", "vim": "vim",
 		"dbus": "dbus", "wayland": "wayland", "sway": "sway", "swayidle": "swayidle", "swaylock": "swaylock",
 		"grim": "grim", "slurp": "slurp", "hyprland": "hyprland", "networkmanager": "NetworkManager",
 		"pipewire": "pipewire", "wireplumber": "wireplumber", "pipewire-pulse": "pipewire-pulseaudio",
@@ -187,9 +229,9 @@ func TestCurrentPackageBindingsAreExact(t *testing.T) {
 	}{
 		{manager: apt, got: aptPackageNames(), want: without(with(map[PackageKey]string{"networkmanager": "network-manager", "wayland": "libwayland-client0", "pipewire-pulse": "pipewire-pulse"}), "hyprland")},
 		{manager: pacman, got: pacmanPackageNames(), want: with(map[PackageKey]string{"networkmanager": "networkmanager", "pipewire-pulse": "pipewire-pulse"})},
-		{manager: zypper, got: zypperPackageNames(), want: with(map[PackageKey]string{"dbus": "dbus-1", "wayland": "libwayland-client0"})},
-		{manager: dnf5, got: constructDNF5Behavior(paths, "5.2.0").names, want: without(with(map[PackageKey]string{"wayland": "libwayland-client"}), "hyprland")},
-		{manager: dnf4, got: constructDNF4Behavior(paths, "4.21.0").names, want: without(with(map[PackageKey]string{"wayland": "libwayland-client"}), "sway", "swayidle", "swaylock", "grim", "slurp", "hyprland", "qpwgraph", "wl-clipboard", "xclip", "xsel")},
+		{manager: zypper, got: zypperPackageNames(), want: with(map[PackageKey]string{"dbus": "dbus-1", "wayland": "libwayland-client0", "git": "git-core"})},
+		{manager: dnf5, got: constructDNF5Behavior(paths, "5.2.0").names, want: without(with(map[PackageKey]string{"wayland": "libwayland-client", "vim": "vim-enhanced", "git": "git-core"}), "hyprland")},
+		{manager: dnf4, got: constructDNF4Behavior(paths, "4.21.0").names, want: without(with(map[PackageKey]string{"wayland": "libwayland-client", "vim": "vim-enhanced", "git": "git-core"}), "sway", "swayidle", "swaylock", "grim", "slurp", "hyprland", "qpwgraph", "wl-clipboard", "xclip", "xsel")},
 	}
 	for _, test := range tests {
 		t.Run(test.manager.String(), func(t *testing.T) {

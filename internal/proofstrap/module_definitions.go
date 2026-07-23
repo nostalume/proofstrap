@@ -6,6 +6,7 @@ func rawCatalogue() catalogue {
 		return serviceRequirement{packageKey: packageKey, serviceKey: serviceKey, scope: scope}
 	}
 	packages := []PackageKey{
+		"ca-certificates", "curl", "git", "vim",
 		"dbus", "wayland", "sway", "swayidle", "swaylock", "grim", "slurp", "hyprland",
 		"networkmanager", "pipewire", "wireplumber", "pipewire-pulse", "alsa-utils",
 		"qpwgraph", "pavucontrol", "wl-clipboard", "xclip", "xsel",
@@ -16,6 +17,9 @@ func rawCatalogue() catalogue {
 	}
 	return catalogue{
 		modules: map[moduleID]moduleDefinition{
+			"curl":    {requirements: []requirement{packageOnly("ca-certificates"), packageOnly("curl")}},
+			"git":     {requirements: []requirement{packageOnly("ca-certificates"), packageOnly("git")}},
+			"vim":     {requirements: []requirement{packageOnly("vim")}},
 			"dbus":    {requirements: []requirement{packageOnly("dbus")}},
 			"wayland": {requires: []moduleID{"dbus"}, requirements: []requirement{packageOnly("wayland")}},
 			"sway": {requires: []moduleID{"wayland"}, excludes: []moduleID{"hyprland"}, requirements: []requirement{

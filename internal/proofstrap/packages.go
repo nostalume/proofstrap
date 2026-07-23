@@ -77,6 +77,7 @@ type packageBehavior struct {
 
 func basePackageNames() map[PackageKey]string {
 	return map[PackageKey]string{
+		"ca-certificates": "ca-certificates", "curl": "curl", "git": "git", "vim": "vim",
 		"dbus": "dbus", "wayland": "wayland", "sway": "sway", "swayidle": "swayidle", "swaylock": "swaylock",
 		"grim": "grim", "slurp": "slurp", "hyprland": "hyprland", "networkmanager": "NetworkManager",
 		"pipewire": "pipewire", "wireplumber": "wireplumber", "pipewire-pulse": "pipewire-pulseaudio",
@@ -106,12 +107,15 @@ func zypperPackageNames() map[PackageKey]string {
 	names := basePackageNames()
 	names["dbus"] = "dbus-1"
 	names["wayland"] = "libwayland-client0"
+	names["git"] = "git-core"
 	return names
 }
 
 func dnfPackageNames() map[PackageKey]string {
 	names := basePackageNames()
 	names["wayland"] = "libwayland-client"
+	names["git"] = "git-core"
+	names["vim"] = "vim-enhanced"
 	return names
 }
 
