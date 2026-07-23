@@ -12,3 +12,4 @@ Proofstrap is a declarative Linux bootstrap CLI. It turns selected capabilities 
 - `github.com/pelletier/go-toml/v2` for strict TOML decoding
 - Go `testing` with table-driven, side-effect-free tests
 - `go-check-sumtype` for sealed sum-type exhaustiveness
+- GitHub Actions for continuous integration
