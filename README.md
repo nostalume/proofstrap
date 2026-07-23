@@ -1,279 +1,92 @@
-# Bootstrap
+# Proofstrap
 
-A modular, dependency-based approach to building Linux systems from atomic components.
+Proofstrap is a declarative Linux bootstrap CLI. You choose system capabilities, Proofstrap inspects the host, and it produces a digest-bound plan before changing anything. An accepted plan is rebuilt from fresh evidence at apply time, and every attempted package, service, account, group, or home change is observed again afterward.
 
-## Motive
-
-Traditional bootstrap approaches treat Linux system setup as monolithic—you get a "desktop environment" that installs 200+ packages with unknown dependencies, no way to swap components, and no understanding of what's happening under the hood.
-
-**Bootstrap** solves this by providing **atomic, composable modules**:
-- Each component is independent
-- Explicit dependencies
-- Provable requirements
-- Mix and match to build exactly what you need
-
-## Introduction
-
-Bootstrap is a distribution-agnostic framework for building Linux systems from the ground up. It uses a flat module system where each module defines its own dependencies, and the system automatically resolves the correct installation order.
-
-Store your `bootstrap.conf` in your dotfiles (git, home-manager, chezmoi, etc.) for portable, reproducible system configurations.
-
-## Features
-
-- **Flat Modules** — No folders, no categories. All modules in one list.
-- **Dependency-Driven** — Order determined by `MODULE_REQUIRES`, not folder structure.
-- **Composable** — User selects modules, system resolves order automatically.
-- **Portable Config** — `bootstrap.conf` stored in your dotfiles.
-- **Multi-Distro** — Supports Arch, Debian, Fedora, and more.
-- **Multi-Init** — Works with systemd, openrc, runit.
-- **Verification** — Built-in proof system to verify installations.
+Proofstrap manages supported system packages and services. It does not manage dotfiles, desktop application settings, disks, bootloaders, or general machine configuration.
 
 ## Installation
 
-### 1. Clone the Repository
+Proofstrap requires Linux and Go 1.26.5.
 
-```bash
-git clone https://github.com/lvyuemeng/bootstrap.git
-cd bootstrap
+Install the latest source version with Go:
+
+```sh
+go install github.com/nostalume/proofstrap/cmd/proofstrap@latest
 ```
 
-### 2. Create bootstrap.conf
+Ensure `GOBIN`, or `GOPATH/bin` when `GOBIN` is unset, is on `PATH`.
 
-In your dotfiles repository, create `bootstrap.conf`:
+## How to use
 
-```bash
-# bootstrap.conf
-MODULES=(
-    "dbus"
-    "udev"
-    "sway"
-    "bluetooth-stack"
-    "audio-pipewire"
-    "network-manager"
-)
+### List capabilities
 
-# Optional: custom config overrides
-OVERRIDES=(
-    "~/.config/sway/config"
-)
+```sh
+proofstrap modules
 ```
 
-### 3. Run Bootstrap
+### Review a plan
 
-```bash
-./bootstrap.sh install
+Select one or more capabilities:
+
+```sh
+proofstrap plan network
+proofstrap plan audio
 ```
 
-That's it. The system:
-- Resolves dependencies from `MODULE_REQUIRES`
-- Installs in correct order
-- Links your configs
+Planning is read-only. The output contains facts, blockers, proposed changes, and a SHA-256 digest.
 
-## Usage
+### Apply an accepted plan
 
-### Commands
+Pass the exact digest from the reviewed plan:
 
-```bash
-# Install all modules from bootstrap.conf
-./bootstrap.sh install
-
-# Install specific module (auto-resolves deps)
-./bootstrap.sh install sway
-
-# Show dependency tree
-./bootstrap.sh deps sway
-
-# Verify installation
-./bootstrap.sh verify [module]
-
-# Run proof checks
-./bootstrap.sh proof <module>
-
-# Show status
-./bootstrap.sh status
-
-# Reset state (force re-install)
-./bootstrap.sh reset
-
-# Show help
-./bootstrap.sh help
+```sh
+proofstrap apply --accept sha256:<reviewed-digest> network
 ```
 
-### Environment Variables
+Proofstrap rebuilds the plan from live evidence before applying it. If the host changed, the digest is stale and no mutation starts. Some verified foundational or package changes return `replan_required`; run `plan` again and review the new digest instead of automatically repeating Apply.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BOOTSTRAP_DIR` | (auto) | Bootstrap installation directory |
-| `TARGET_ROOT` | `/` | Target system root |
-| `TARGET_USER` | (current) | Target user |
+Proofstrap never prompts for privilege credentials. If sudo authentication is required, refresh it outside Proofstrap and plan again:
 
-## Module System
-
-### Available Modules
-
-| Category | Modules |
-|----------|---------|
-| **Core** | dbus, udev, polkit, wayland |
-| **Window Managers** | i3, sway, hyprland, niri, river, labwc, openbox |
-| **Audio** | audio-pipewire, audio-pulseaudio, audio-alsa |
-| **GPU** | gpu-intel, gpu-amd, gpu-nvidia |
-| **Network** | network-manager |
-| **Bluetooth** | bluetooth-stack |
-| **Terminal** | kitty, foot |
-| **Status Bars** | polybar (X11), waybar (Wayland) |
-| **Notifications** | dunst (X11), mako (Wayland) |
-| **Launchers** | wofi |
-| **Clipboard** | clipman, wl-paste, xclip, xsel |
-
-### Creating a Module
-
-```bash
-# modules/my-module.sh
-MODULE_NAME="my-module"
-MODULE_DESCRIPTION="My custom module"
-
-MODULE_REQUIRES=("dbus")
-
-declare -A MODULE_PACKAGES
-MODULE_PACKAGES[arch]="package-name"
-MODULE_PACKAGES[debian]="package-name"
-
-module_install() {
-    pkg_install "${MODULE_PACKAGES[$distro]}"
-    # ... custom install steps
-}
-
-module_proofs() {
-    proof_command "my-command"
-}
+```sh
+sudo -v
+proofstrap plan network
 ```
 
-### Module Contract
+### Use a configuration file
 
-Each module must define:
+Use `--config` when account intent or a reusable module selection is needed:
 
-```bash
-MODULE_NAME="module-name"
-MODULE_DESCRIPTION="Description"
+```toml
+modules = ["audio"]
 
-# Dependencies (required)
-MODULE_REQUIRES=("dbus" "kernel:btusb")
-MODULE_OPTIONAL=("audio-pipewire")
+[account]
+state = "present"
+name = "alice"
+uid = 1000
+shell = "/bin/bash"
 
-# What this module provides
-MODULE_PROVIDES=("bluetooth:daemon")
+[account.primary_group]
+name = "alice"
+gid = 1000
 
-# Distribution-specific packages
-declare -A MODULE_PACKAGES
-MODULE_PACKAGES[arch]="package-name"
-MODULE_PACKAGES[debian]="package-name"
-
-# Installation function
-module_install() { ... }
-
-# Verification function
-module_proofs() { ... }
+[account.home]
+path = "/home/alice"
+mode = "0700"
 ```
 
-## Configuration
-
-### User Config Integration
-
-Bootstrap links configs from your dotfiles:
-
-1. Create config in your dotfiles (anywhere)
-2. Add to `OVERRIDES` in `bootstrap.conf`:
-   ```bash
-   OVERRIDES=("~/.config/sway/config")
-   ```
-
-### Config Precedence
-
-| Source | Priority |
-|--------|----------|
-| OVERRIDES in bootstrap.conf | Highest |
-| ~/.config/<module>/ | Medium |
-| Module defaults | Lowest |
-
-## API Reference
-
-### File Operations
-
-```bash
-config_link "source" "target"           # Symlink file
-config_link_dir "source" "target"       # Symlink directory
-config_copy "source" "target"           # Copy file
-config_copy_dir "source" "target"       # Copy directory
-config_backup "file" [backup_dir]      # Backup file
-config_exists "path"                    # Check existence
-config_is_link "path"                   # Check if symlink
-config_ensure_dir "path"                # Ensure directory exists
+```sh
+proofstrap plan --config ./proofstrap.toml
+proofstrap apply --config ./proofstrap.toml --accept sha256:<reviewed-digest>
 ```
 
-### Proof Functions
+Use either positional module IDs or `--config`, not both. Config decoding is strict: unknown fields are rejected. Account creation is deliberately create-only and proceeds through separate primary-group, locked-account, and home plans. Proofstrap does not repair an existing identity, set a usable password, or manage supplementary memberships.
 
-```bash
-proof_command "cmd"              # Check command exists
-proof_process "name"            # Check process running
-proof_service_active "svc"      # Check systemd service
-proof_dbus_service "name"       # Check D-Bus service
-proof_kernel_module "mod"       # Check kernel module
-proof_file "path"               # Check file exists
-```
+## Supported systems
 
-### Distro Functions
+Proofstrap recognizes direct package installation through Apt, Pacman, Zypper, DNF5, and DNF4. Apt and Pacman also support explicit package-root repair. Service management is systemd-only. `network` and `audio` are the current package-backed service capabilities.
 
-```bash
-distro=$(distro_detect)    # Detect: arch, debian, fedora
-init=$(init_detect)        # Detect: systemd, openrc, runit
-
-pkg_install "packages"    # Install packages
-pkg_remove "packages"     # Remove packages
-
-svc_enable "service"       # Enable service
-svc_start "service"        # Start service
-svc_stop "service"         # Stop service
-svc_status "service"       # Check service status
-```
-
-### Dependency Functions
-
-```bash
-deps_resolve "module1" "module2"    # Resolve dependencies
-deps_order "module1" "module2"      # Return installation order
-deps_check "module"                 # Check if dependencies met
-```
-
-### State Functions
-
-```bash
-state_load        # Load state from bootstrap.state.json
-state_save        # Save current state
-state_get "module"  # Get state for specific module
-state_set "module" "installed"  # Set module state
-```
-
-## Debugging
-
-```bash
-# Check service status
-systemctl status <service>
-journalctl -u <service>
-
-# Check proofs
-./bootstrap.sh proof <module>
-
-# Check deps resolution
-./bootstrap.sh deps <module>
-
-# Verify all modules
-./bootstrap.sh verify
-```
+See [Architecture](docs/architecture.md) for the conceptual model and workflow. Project goal and stack are summarized in [Agent context](docs/AGENT.md).
 
 ## License
 
-MIT License - see [license](license) file for details.
-
----
-
-Built with the philosophy of **flat modules**, **explicit dependencies**, and **user control**.
+Proofstrap is licensed under the [MIT License](LICENSE).

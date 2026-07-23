@@ -1,0 +1,20 @@
+# Build outputs
+/proofstrap
+/bin/
+/dist/
+
+# Go tooling
+*.test
+*.prof
+/coverage.out
+
+# Local development scratch
+.hermes/
+docs/report/
+/docs/p0-checklist.md
+/.rumdl_cache/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
