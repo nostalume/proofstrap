@@ -16,6 +16,8 @@ go install github.com/nostalume/proofstrap/cmd/proofstrap@latest
 
 Ensure `GOBIN`, or `GOPATH/bin` when `GOBIN` is unset, is on `PATH`.
 
+Tagged releases provide Linux `amd64` and `arm64` archives on the GitHub Releases page. Download the archive for your architecture, verify it with the published `checksums.txt`, and place `proofstrap` on `PATH`.
+
 ## How to use
 
 ### List capabilities

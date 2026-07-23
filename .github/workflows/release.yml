@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build release archives
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            name="proofstrap_${GITHUB_REF_NAME}_linux_${arch}"
+            staging="$RUNNER_TEMP/$name"
+            mkdir -p "$staging"
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w" \
+              -o "$staging/proofstrap" ./cmd/proofstrap
+            cp README.md LICENSE "$staging/"
+            tar -C "$RUNNER_TEMP" -czf "dist/$name.tar.gz" "$name"
+          done
+          cd dist
+          sha256sum ./*.tar.gz > checksums.txt
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --title "$GITHUB_REF_NAME"
+          fi
