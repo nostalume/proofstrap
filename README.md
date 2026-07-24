@@ -6,17 +6,18 @@ Proofstrap manages supported system packages, services, and exact hostname and t
 
 ## Installation
 
-Proofstrap requires Linux and Go 1.26.5.
+Proofstrap requires Linux. Prebuilt releases are static executables and do not require Go.
 
-Install the latest source version with Go:
+The version-controlled [`install.sh`](install.sh) installs the latest `amd64` or `arm64` release with `curl`, `sha256sum`, and `tar`. Download it so you can inspect the installer before running it:
 
 ```sh
-go install github.com/nostalume/proofstrap/cmd/proofstrap@latest
+curl --fail --location --show-error --silent \
+  https://raw.githubusercontent.com/nostalume/proofstrap/main/install.sh \
+  -o install.sh
+sh install.sh
 ```
 
-Ensure `GOBIN`, or `GOPATH/bin` when `GOBIN` is unset, is on `PATH`.
-
-Tagged releases provide Linux `amd64` and `arm64` archives on the GitHub Releases page. Download the archive for your architecture, verify it with the published `checksums.txt`, and place `proofstrap` on `PATH`.
+The Linux-only installer defaults to `$HOME/.local/bin`; set `PROOFSTRAP_INSTALL_DIR` to choose another destination. It requires exactly one checksum row for the selected archive, verifies the archive before reading its fixed executable member, and publishes through a same-directory atomic rename only after successful verification. A failed write cannot replace an existing binary. Ensure the chosen directory is on `PATH`. Tagged archives, `checksums.txt`, and `install.sh` are also available on the GitHub Releases page.
 
 ## How to use
 
@@ -105,7 +106,7 @@ Use either positional module IDs or `--config`, not both. Config decoding is str
 
 Proofstrap recognizes direct package installation through Apt, Pacman, Zypper, DNF5, and DNF4. Apt and Pacman also support explicit package-root repair. `curl`, `git`, and `vim` are package-only bootstrap capabilities. Service, hostname, and timezone mutation are systemd-only; already exact host settings remain independently reviewable without admitting mutators. `network` and `audio` are the current package-backed service capabilities.
 
-See [Architecture](docs/architecture.md) for the conceptual model and workflow. Project goal and stack are summarized in [Agent context](docs/AGENT.md).
+See [Contract introduction](docs/contracts.md) for the behavior users and integrations may rely on, and [Architecture](docs/architecture.md) for the implementation model and workflow. Project goal and stack are summarized in [Agent context](docs/AGENT.md).
 
 ## License
 

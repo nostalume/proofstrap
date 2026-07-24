@@ -37,7 +37,7 @@ jobs:
         run: |
           mkdir -p dist
           for arch in amd64 arm64; do
-            name="proofstrap_${GITHUB_REF_NAME}_linux_${arch}"
+            name="proofstrap_linux_${arch}"
             staging="$RUNNER_TEMP/$name"
             mkdir -p "$staging"
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
@@ -48,6 +48,7 @@ jobs:
           done
           cd dist
           sha256sum ./*.tar.gz > checksums.txt
+          cp ../install.sh install.sh
 
       - name: Publish GitHub release
         env:
