@@ -74,25 +74,7 @@ proofstrap plan network
 Use `--config` when host settings, account intent, or a reusable module selection is needed:
 
 ```toml
-modules = ["audio"]
-
-[host]
-hostname = "node-1"
-timezone = "Europe/Berlin"
-
-[account]
-state = "present"
-name = "alice"
-uid = 1000
-shell = "/bin/bash"
-
-[account.primary_group]
-name = "alice"
-gid = 1000
-
-[account.home]
-path = "/home/alice"
-mode = "0700"
+modules = ["curl", "git", "vim"]
 ```
 
 ```sh
@@ -100,13 +82,13 @@ proofstrap plan --config ./proofstrap.toml
 proofstrap apply --config ./proofstrap.toml --accept sha256:<reviewed-digest>
 ```
 
-Use either positional module IDs or `--config`, not both. Config decoding is strict: unknown fields are rejected. A desired hostname must be lowercase ASCII DNS-style syntax and at most 64 bytes. Proofstrap independently observes `/etc/hostname` and the kernel runtime hostname; a required systemd change sets only static and transient names, verifies both, and returns `replan_required`. A desired timezone uses systemd's relative zone-name grammar. Proofstrap observes the `/etc/localtime` symlink, requires its canonical target to remain under `/usr/share/zoneinfo`, verifies a regular file, and reads only the `TZif` header; UTC remains valid when no UTC zonefile is installed. A required systemd change runs noninteractively through `timedatectl`, verifies the resulting state, and returns `replan_required`. Because timedated may update the hardware clock when its live `LocalRTC` property is true, timezone mutation requires fresh `LocalRTC=false` evidence immediately before execution. Account creation is deliberately create-only and proceeds through separate primary-group, locked-account, and home transitions with a fresh plan after each verified effect. Proofstrap does not repair an existing identity, set a usable password, or manage supplementary memberships.
+See the [Configuration guide](docs/config.md) for file discovery, the complete TOML schema, host and account examples, validation rules, receipts, and the plan/apply/replan workflow.
 
 ## Supported systems
 
 Proofstrap recognizes direct package installation through Apt, Pacman, Zypper, DNF5, and DNF4. Apt and Pacman also support explicit package-root repair. `curl`, `git`, and `vim` are package-only bootstrap capabilities. Service, hostname, and timezone mutation are systemd-only; already exact host settings remain independently reviewable without admitting mutators. `network` and `audio` are the current package-backed service capabilities.
 
-See [Contract introduction](docs/contracts.md) for the behavior users and integrations may rely on, and [Architecture](docs/architecture.md) for the implementation model and workflow. Project goal and stack are summarized in [Agent context](docs/AGENT.md).
+See the [Configuration guide](docs/config.md) for user setup and [Architecture](docs/architecture.md) for the implementation model and workflow. Project goal and stack are summarized in [Agent context](docs/AGENT.md).
 
 ## License
 
