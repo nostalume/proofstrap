@@ -9,7 +9,7 @@ The design separates six concepts:
 1. **Intent** — selected capabilities, optional exact host settings, and optional explicit account identity.
 2. **Catalogue** — immutable relationships between capabilities and abstract package or service requirements.
 3. **Behavior** — platform-specific ownership of names, observations, reconciliation rules, and effects.
-4. **Evidence** — typed observations of the current host, hostname, package roots, services, identity, authority, and filesystem state.
+4. **Evidence** — typed observations of the current host, hostname, timezone, package roots, services, identity, authority, and filesystem state.
 5. **Review** — a canonical public projection of facts, blockers, and proposed changes, bound by a semantic digest.
 6. **Receipt** — the verified outcome of Apply, including partial progress and any required replan.
 
@@ -24,7 +24,7 @@ Rendered review data is never executable authority. Apply reconstructs private b
 
 ## Boundaries
 
-Proofstrap owns supported system package and service establishment plus explicitly modeled exact host settings. The current host-setting boundary is persistent and runtime hostname establishment only. It does not own dotfiles, user application configuration, package removal, repository policy, boot state, disks, credentials, or broad system repair.
+Proofstrap owns supported system package and service establishment plus explicitly modeled exact host settings. The current host-setting boundary is persistent/runtime hostname establishment and `/etc/localtime` timezone establishment. It does not own clocks, RTC policy, NTP policy, dotfiles, user application configuration, package removal, repository policy, boot state, disks, credentials, or broad system repair.
 
 Support is explicit and fail-closed. A package manager, service manager, authority path, identity source, or filesystem transition is admitted only when its evidence and mutation laws are known. Unknown, conflicting, ambiguous, or stale evidence blocks before mutation.
 
@@ -39,6 +39,7 @@ read intent
 -> compile and validate selected capabilities
 -> observe host and demanded behaviors
 -> reconcile exact persistent and runtime hostname evidence
+-> reconcile exact timezone symlink and zoneinfo evidence
 -> reconcile foundational identity state
 -> reconcile package evidence
 -> reconcile service evidence and conflicts
@@ -46,9 +47,11 @@ read intent
 -> render facts, blockers, changes, and digest
 ```
 
-Foundational transitions are isolated. Hostname establishment or creation of a primary group, locked account, home, or required package completes as one verified step and returns `replan_required`. The next decision is made only from a fresh Plan.
+Foundational transitions are isolated. Hostname or timezone establishment, or creation of a primary group, locked account, home, or required package, completes as one verified step and returns `replan_required`. The next decision is made only from a fresh Plan.
 
 Hostname intent is lower-case ASCII DNS-style syntax with Linux's 64-byte host-name limit. Observation reads persistent `/etc/hostname` and runtime `/proc/sys/kernel/hostname` state independently. Exact state needs no mutation authority and remains a guarded precondition before and after later effects in the same desired state: confirmed drift is stale, while inability to revalidate is a failed blocker. A change requires systemd PID 1 and executes noninteractively through `hostnamectl --static --transient`; pretty hostname is outside the owned state.
+
+Timezone intent follows systemd's relative zone-name grammar under `/usr/share/zoneinfo`; `UTC` is always valid even when its zonefile is absent. Observation requires `/etc/localtime` to be an absolute or relative symlink into that tree and independently verifies that the canonical target remains in the tree, is a regular file, and begins with a bounded `TZif` header read, including valid in-tree aliases; a missing `/etc/localtime` is the documented UTC default. Exact state needs no mutator, authority, or RTC inspection and is guarded across later effects. A change requires systemd PID 1 and executes `timedatectl --no-ask-password set-timezone ZONE`. Because timedated caches RTC mode and may synchronize a local-time RTC while changing timezone, mutation queries timedated's live `LocalRTC` property during Plan and again immediately before execution; only `LocalRTC=false` is admitted. As with other immediate guards, a concurrent privileged writer in the remaining probe-to-command interval is outside the boundary Proofstrap can make atomic. Proofstrap does not own or repair RTC mode.
 
 Package and service behaviors own their native names and evidence. Host distribution identity is provenance, not a switch that silently selects behavior. Service work begins only after delivering packages are installed and rooted.
 

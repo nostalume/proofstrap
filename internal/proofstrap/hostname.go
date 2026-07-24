@@ -133,6 +133,7 @@ type hostnameBinding struct {
 type hostBinding struct {
 	facts    HostFacts
 	hostname *hostnameBinding
+	timezone *timezoneBinding
 }
 
 func (binding hostBinding) guard(runner Runner) (bool, error) {
@@ -143,19 +144,30 @@ func (binding hostBinding) guard(runner Runner) (bool, error) {
 	if !reflect.DeepEqual(inspection.facts, binding.facts) {
 		return true, nil
 	}
-	if binding.hostname == nil {
-		return false, nil
+	if binding.hostname != nil {
+		fresh := observeHostname(runner)
+		switch decision := reconcileHostname(binding.hostname.intent, fresh).(type) {
+		case hostnameExact:
+		case hostnameBlocked:
+			return false, fmt.Errorf("hostname evidence cannot be revalidated: %s", blockersDetail(decision.blockers))
+		case hostnameChange:
+			return true, nil
+		default:
+			return false, fmt.Errorf("hostname evidence cannot be revalidated: unknown decision")
+		}
 	}
-	fresh := observeHostname(runner)
-	switch decision := reconcileHostname(binding.hostname.intent, fresh).(type) {
-	case hostnameExact:
-		return false, nil
-	case hostnameBlocked:
-		return false, fmt.Errorf("hostname evidence cannot be revalidated: %s", blockersDetail(decision.blockers))
-	case hostnameChange:
-		return true, nil
+	if binding.timezone != nil {
+		switch decision := reconcileTimezone(binding.timezone.intent, observeTimezone(runner)).(type) {
+		case timezoneExact:
+		case timezoneBlocked:
+			return false, fmt.Errorf("timezone evidence cannot be revalidated: %s", blockersDetail(decision.blockers))
+		case timezoneChange:
+			return true, nil
+		default:
+			return false, fmt.Errorf("timezone evidence cannot be revalidated: unknown decision")
+		}
 	}
-	return false, fmt.Errorf("hostname evidence cannot be revalidated: unknown decision")
+	return false, nil
 }
 
 type hostnamePlan struct {

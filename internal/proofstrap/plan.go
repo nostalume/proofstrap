@@ -191,6 +191,20 @@ func planFor(state DesiredState, runner Runner, catalogue compiledCatalogue) pla
 			return planHostnameChange(review, host.facts, *state.machine.hostname, decision.before, runner)
 		}
 	}
+	if state.machine != nil && state.machine.timezone != nil {
+		observed := observeTimezone(runner)
+		switch decision := reconcileTimezone(*state.machine.timezone, observed).(type) {
+		case timezoneExact:
+			review.Facts = append(review.Facts, decision.facts...)
+			boundHost.timezone = &timezoneBinding{intent: *state.machine.timezone}
+		case timezoneBlocked:
+			review.Blockers = append(review.Blockers, decision.blockers...)
+			return blocked(review)
+		case timezoneChange:
+			review.Facts = append(review.Facts, timezoneFacts(decision.before)...)
+			return planTimezoneChange(review, boundHost, *state.machine.timezone, decision.before, runner)
+		}
+	}
 	var account accountBinding
 	accountAbsent := false
 	if state.account != nil {

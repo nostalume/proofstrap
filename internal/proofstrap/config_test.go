@@ -37,10 +37,24 @@ func TestReadDesiredStateParsesExactHostnameIntent(t *testing.T) {
 	}
 }
 
-func TestReadDesiredStateRejectsEmptyOrFutureHostSettings(t *testing.T) {
+func TestReadDesiredStateParsesExactTimezoneIntent(t *testing.T) {
+	state, err := ReadDesiredState(writeDesiredFile(t, "[host]\ntimezone = \"Europe/Berlin\"\n"))
+	if err != nil || state.machine == nil || state.machine.timezone == nil || state.machine.timezone.value != "Europe/Berlin" || state.machine.hostname != nil || state.Empty() {
+		t.Fatalf("state=%#v err=%v", state, err)
+	}
+}
+
+func TestReadDesiredStateParsesCombinedHostIntent(t *testing.T) {
+	state, err := ReadDesiredState(writeDesiredFile(t, "[host]\nhostname = \"node-1\"\ntimezone = \"Etc/UTC\"\n"))
+	if err != nil || state.machine == nil || state.machine.hostname == nil || state.machine.timezone == nil {
+		t.Fatalf("state=%#v err=%v", state, err)
+	}
+}
+
+func TestReadDesiredStateRejectsEmptyOrUnknownHostSettings(t *testing.T) {
 	for name, contents := range map[string]string{
-		"empty host":      "[host]\n",
-		"future timezone": "[host]\nhostname = \"node-1\"\ntimezone = \"UTC\"\n",
+		"empty host":    "[host]\n",
+		"unknown field": "[host]\ntimezone = \"UTC\"\nclock = \"utc\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := ReadDesiredState(writeDesiredFile(t, contents)); err == nil {

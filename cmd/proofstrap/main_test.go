@@ -202,6 +202,20 @@ func TestRenderPlanShowsDigestBoundHostnameIntent(t *testing.T) {
 	}
 }
 
+func TestRenderPlanShowsDigestBoundTimezoneIntent(t *testing.T) {
+	plan := proofstrap.ReviewPlan{
+		HostSettings: &proofstrap.HostSettingsReview{Timezone: "Europe/Berlin"},
+		Host:         proofstrap.HostFacts{ID: "test", PID1: "systemd"},
+	}
+	var rendered bytes.Buffer
+	if err := renderPlan(&rendered, plan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered.String(), "Plan timezone: Europe/Berlin\n") || strings.Contains(rendered.String(), "Plan hostname:") {
+		t.Fatalf("timezone intent is hidden or hostname is fabricated: %q", rendered.String())
+	}
+}
+
 func TestRunPlanRejectsAuthorizeFlagBeforeCreatingRunner(t *testing.T) {
 	previous := runnerFactory
 	runnerFactory = func() proofstrap.Runner {

@@ -19,6 +19,7 @@ type desiredStateFile struct {
 
 type desiredHostFile struct {
 	Hostname *string `toml:"hostname"`
+	Timezone *string `toml:"timezone"`
 }
 
 type desiredAccountFile struct {
@@ -67,20 +68,34 @@ func ReadDesiredState(path string) (DesiredState, error) {
 	return state, nil
 }
 
-type machineIntent struct{ hostname *hostnameIntent }
+type machineIntent struct {
+	hostname *hostnameIntent
+	timezone *timezoneIntent
+}
 
 func (raw *desiredHostFile) intent() (*machineIntent, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	if raw.Hostname == nil {
-		return nil, fmt.Errorf("host requires hostname")
+	if raw.Hostname == nil && raw.Timezone == nil {
+		return nil, fmt.Errorf("host requires hostname or timezone")
 	}
-	hostname, err := newHostnameIntent(*raw.Hostname)
-	if err != nil {
-		return nil, err
+	intent := &machineIntent{}
+	if raw.Hostname != nil {
+		hostname, err := newHostnameIntent(*raw.Hostname)
+		if err != nil {
+			return nil, err
+		}
+		intent.hostname = &hostname
 	}
-	return &machineIntent{hostname: &hostname}, nil
+	if raw.Timezone != nil {
+		timezone, err := newTimezoneIntent(*raw.Timezone)
+		if err != nil {
+			return nil, err
+		}
+		intent.timezone = &timezone
+	}
+	return intent, nil
 }
 
 //sumtype:decl

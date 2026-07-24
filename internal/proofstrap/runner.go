@@ -114,6 +114,22 @@ type OSRunner struct{}
 
 func (OSRunner) EffectiveUID() (uint32, error)        { return uint32(os.Geteuid()), nil }
 func (OSRunner) ReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
+func (OSRunner) Readlink(path string) (string, error) { return os.Readlink(path) }
+func (OSRunner) EvalSymlinks(path string) (string, error) {
+	return filepath.EvalSymlinks(path)
+}
+func (OSRunner) ReadFilePrefix(path string, size int) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	contents := make([]byte, size)
+	if _, err := io.ReadFull(file, contents); err != nil {
+		return nil, err
+	}
+	return contents, nil
+}
 func (OSRunner) LookPath(name string) (string, error) { return exec.LookPath(name) }
 
 func (OSRunner) ExecutableIdentity() (ExecutableIdentity, error) {

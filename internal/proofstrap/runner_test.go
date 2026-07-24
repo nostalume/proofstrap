@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"syscall"
 	"testing"
@@ -112,6 +113,17 @@ func TestOSRunnerRejectsChangedRunningExecutableDigest(t *testing.T) {
 	}
 }
 
+func TestOSRunnerReadsSymlinkTargetWithoutFollowingIt(t *testing.T) {
+	path := t.TempDir() + "/localtime"
+	if err := os.Symlink("../usr/share/zoneinfo/Etc/UTC", path); err != nil {
+		t.Fatal(err)
+	}
+	target, err := (OSRunner{}).Readlink(path)
+	if err != nil || target != "../usr/share/zoneinfo/Etc/UTC" {
+		t.Fatalf("target=%q err=%v", target, err)
+	}
+}
+
 func TestOSRunnerSuppliesPrivateCommandInput(t *testing.T) {
 	result := (OSRunner{}).Run(context.Background(), Command{Name: "sh", Args: []string{"-c", "read value; printf %s \"$value\""}, stdin: "private\n"})
 	if result.ExitCode != 0 || result.Err != nil || result.Stdout != "private" {
@@ -125,6 +137,8 @@ type testRunner struct {
 	uidErr           error
 	files            map[string][]byte
 	fileResults      map[string][]fileResult
+	readlinks        map[string][]linkResult
+	evalSymlinks     map[string][]linkResult
 	lstats           map[string][]pathResult
 	executable       string
 	executableDigest string
@@ -154,6 +168,11 @@ type fileResult struct {
 	err      error
 }
 
+type linkResult struct {
+	target string
+	err    error
+}
+
 func (runner *testRunner) EffectiveUID() (uint32, error) {
 	runner.euidCalls++
 	runner.events = append(runner.events, "euid")
@@ -179,6 +198,35 @@ func (runner *testRunner) ReadFile(path string) ([]byte, error) {
 		return value, nil
 	}
 	return nil, errors.New("missing file")
+}
+func (runner *testRunner) Readlink(path string) (string, error) {
+	runner.events = append(runner.events, "readlink:"+path)
+	queue := runner.readlinks[path]
+	if len(queue) == 0 {
+		return "", errors.New("missing link result")
+	}
+	runner.readlinks[path] = queue[1:]
+	return queue[0].target, queue[0].err
+}
+func (runner *testRunner) EvalSymlinks(path string) (string, error) {
+	runner.events = append(runner.events, "eval:"+path)
+	queue := runner.evalSymlinks[path]
+	if len(queue) == 0 {
+		return "", errors.New("missing symlink result")
+	}
+	runner.evalSymlinks[path] = queue[1:]
+	return queue[0].target, queue[0].err
+}
+func (runner *testRunner) ReadFilePrefix(path string, size int) ([]byte, error) {
+	runner.events = append(runner.events, fmt.Sprintf("prefix:%d:%s", size, path))
+	contents, ok := runner.files[path]
+	if !ok {
+		return nil, errors.New("missing file")
+	}
+	if len(contents) < size {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return append([]byte(nil), contents[:size]...), nil
 }
 func (runner *testRunner) Lstat(path string) (PathInfo, error) {
 	runner.lstatCalls = append(runner.lstatCalls, path)

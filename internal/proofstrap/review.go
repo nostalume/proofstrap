@@ -26,7 +26,8 @@ type Change struct {
 }
 
 type HostSettingsReview struct {
-	Hostname string `json:"hostname"`
+	Hostname string `json:"hostname,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
 }
 
 //sumtype:decl
@@ -97,10 +98,17 @@ func (plan ReviewPlan) Digest() string {
 }
 
 func reviewHostSettings(intent *machineIntent) *HostSettingsReview {
-	if intent == nil || intent.hostname == nil {
+	if intent == nil {
 		return nil
 	}
-	return &HostSettingsReview{Hostname: intent.hostname.value}
+	review := &HostSettingsReview{}
+	if intent.hostname != nil {
+		review.Hostname = intent.hostname.value
+	}
+	if intent.timezone != nil {
+		review.Timezone = intent.timezone.value
+	}
+	return review
 }
 
 func cloneHostSettingsReview(source *HostSettingsReview) *HostSettingsReview {

@@ -188,7 +188,12 @@ func renderPlan(stdout io.Writer, plan proofstrap.ReviewPlan) error {
 		fmt.Fprintf(&rendered, "Plan account: %s\n", safeReviewText(plan.Account.Summary()))
 	}
 	if plan.HostSettings != nil {
-		fmt.Fprintf(&rendered, "Plan hostname: %s\n", safeReviewText(plan.HostSettings.Hostname))
+		if plan.HostSettings.Hostname != "" {
+			fmt.Fprintf(&rendered, "Plan hostname: %s\n", safeReviewText(plan.HostSettings.Hostname))
+		}
+		if plan.HostSettings.Timezone != "" {
+			fmt.Fprintf(&rendered, "Plan timezone: %s\n", safeReviewText(plan.HostSettings.Timezone))
+		}
 	}
 	fmt.Fprintf(&rendered, "Host OS ID: %s\n", safeReviewText(plan.Host.ID))
 	fmt.Fprintf(&rendered, "Host OS version: %s\n", safeReviewText(plan.Host.Version))
