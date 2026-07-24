@@ -114,6 +114,35 @@ func TestReadDesiredStateRejectsInvalidAccountIntent(t *testing.T) {
 	}
 }
 
+func TestValidateAccountNamePreservesLinuxGrammarBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		valid bool
+	}{
+		{name: "a", valid: true},
+		{name: "_", valid: true},
+		{name: "a-", valid: true},
+		{name: "a_", valid: true},
+		{name: "a$", valid: true},
+		{name: strings.Repeat("a", 32), valid: true},
+		{name: strings.Repeat("a", 31) + "$", valid: true},
+		{name: ""},
+		{name: "Alice"},
+		{name: "-alice"},
+		{name: "al$ice"},
+		{name: "alice$$"},
+		{name: strings.Repeat("a", 31) + "_"},
+		{name: strings.Repeat("a", 33)},
+		{name: "álîce"},
+		{name: "alice\n"},
+	} {
+		err := validateAccountName(test.name)
+		if (err == nil) != test.valid {
+			t.Errorf("name=%q valid=%t err=%v", test.name, test.valid, err)
+		}
+	}
+}
+
 func writeDesiredFile(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "proofstrap.toml")

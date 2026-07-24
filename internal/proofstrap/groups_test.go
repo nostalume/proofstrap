@@ -28,16 +28,15 @@ func TestObservePrimaryGroupUsesReviewedGetentForGlobalAndLocalNameAndGID(t *tes
 	}
 }
 
-func TestParseGroupEntryPreservesNoncredentialFieldsAndRequiresExactFraming(t *testing.T) {
-	entry, err := parseGroupEntry("alice:x:1000:alice,bob\n")
+func TestParseGroupEntryPreservesNoncredentialFields(t *testing.T) {
+	entry, err := parseGroupEntry("alice:x:1000:alice,bob")
 	if err != nil || entry.name != "alice" || entry.gid != 1000 || !reflect.DeepEqual(entry.members, []string{"alice", "bob"}) {
 		t.Fatalf("entry=%#v err=%v", entry, err)
 	}
 	for _, malformed := range []string{
-		"alice:x:1000:alice",
-		"alice:x:1000:alice\n\n",
-		"alice:x:not-a-gid:alice\n",
-		"alice:x:1000\n",
+		"alice:x:not-a-gid:alice",
+		"alice:x:1000",
+		"alice:x:1000:alice,",
 	} {
 		if _, err := parseGroupEntry(malformed); err == nil {
 			t.Fatalf("accepted malformed group record %q", malformed)
@@ -47,7 +46,7 @@ func TestParseGroupEntryPreservesNoncredentialFieldsAndRequiresExactFraming(t *t
 
 func TestParseGroupEntryRejectsCredentialMaterial(t *testing.T) {
 	for _, marker := range []string{"", "!", "*", "$6$hash"} {
-		if _, err := parseGroupEntry("alice:" + marker + ":1000:alice\n"); err == nil {
+		if _, err := parseGroupEntry("alice:" + marker + ":1000:alice"); err == nil {
 			t.Fatalf("accepted group credential field %q", marker)
 		}
 	}
@@ -120,10 +119,11 @@ func TestPlanKeepsPrimaryGIDIndependentFromAccountUID(t *testing.T) {
 
 func TestPlanExistingAccountIntentDoesNotObserveOrMutatePrimaryGroup(t *testing.T) {
 	runner := baseRunner()
+	delete(runner.files, "/proc/1/comm")
 	addAccountResults(runner, "alice", 1000, 1)
 	review := Plan(DesiredState{account: existingAccountIntent{name: "alice"}}, runner)
-	if review.Blocked() || containsCallFragment(runner.calls, " group ") || containsString(runner.pathCalls, "groupadd") {
-		t.Fatalf("review=%#v calls=%#v paths=%#v", review, runner.calls, runner.pathCalls)
+	if review.Blocked() || containsCallFragment(runner.calls, " group ") || containsString(runner.pathCalls, "groupadd") || containsString(runner.events, "read:/proc/1/comm") {
+		t.Fatalf("review=%#v calls=%#v paths=%#v events=%#v", review, runner.calls, runner.pathCalls, runner.events)
 	}
 }
 

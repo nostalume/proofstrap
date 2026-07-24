@@ -18,12 +18,6 @@ const (
 
 type timezoneIntent struct{ value string }
 
-type timezoneFilesystem interface {
-	Readlink(path string) (string, error)
-	EvalSymlinks(path string) (string, error)
-	ReadFilePrefix(path string, size int) ([]byte, error)
-}
-
 func newTimezoneIntent(value string) (timezoneIntent, error) {
 	if err := validateTimezone(value); err != nil {
 		return timezoneIntent{}, err
@@ -80,11 +74,7 @@ func observeTimezone(runner Runner) timezoneObservation {
 	if info.Kind != SymlinkPath {
 		return blockedTimezone(localtimePath + " must be a symbolic link into " + zoneinfoRoot)
 	}
-	filesystem, ok := runner.(timezoneFilesystem)
-	if !ok {
-		return blockedTimezone("runner does not support timezone filesystem evidence")
-	}
-	target, err := filesystem.Readlink(localtimePath)
+	target, err := runner.Readlink(localtimePath)
 	if err != nil {
 		return blockedTimezone("readlink " + localtimePath + ": " + err.Error())
 	}
@@ -151,11 +141,7 @@ func installedTimezone(runner Runner, intent timezoneIntent) error {
 }
 
 func verifyTimezoneData(runner Runner, path string) error {
-	filesystem, ok := runner.(timezoneFilesystem)
-	if !ok {
-		return fmt.Errorf("runner does not support timezone filesystem evidence")
-	}
-	canonical, err := filesystem.EvalSymlinks(path)
+	canonical, err := runner.EvalSymlinks(path)
 	if err != nil {
 		return fmt.Errorf("resolve timezone data %s: %w", path, err)
 	}
@@ -163,14 +149,8 @@ func verifyTimezoneData(runner Runner, path string) error {
 	if !strings.HasPrefix(canonical, zoneinfoRoot+"/") {
 		return fmt.Errorf("timezone data %s resolves outside %s", path, zoneinfoRoot)
 	}
-	info, err := runner.Lstat(canonical)
-	if err != nil {
-		return fmt.Errorf("lstat timezone data %s: %w", canonical, err)
-	}
-	if info.Kind != RegularPath {
-		return fmt.Errorf("timezone data %s is not a regular file", canonical)
-	}
-	contents, err := filesystem.ReadFilePrefix(canonical, 4)
+	relative := strings.TrimPrefix(canonical, zoneinfoRoot+"/")
+	contents, err := runner.ReadRegularFilePrefixBeneath(zoneinfoRoot, relative, 4)
 	if err != nil {
 		return fmt.Errorf("read timezone data %s: %w", canonical, err)
 	}
@@ -199,8 +179,6 @@ func admitTimezoneRTC(runner Runner, command Command) (Fact, error) {
 	}
 }
 
-type timezoneBinding struct{ intent timezoneIntent }
-
 type timezonePlan struct {
 	plan       ReviewPlan
 	host       hostBinding
@@ -215,10 +193,17 @@ func (timezonePlan) planned()                 {}
 func (value timezonePlan) review() ReviewPlan { return value.plan }
 
 func planTimezoneChange(review ReviewPlan, host hostBinding, intent timezoneIntent, before timezoneObserved, runner Runner) planned {
-	if review.Host.PID1 != "systemd" {
+	pid1, err := observePID1(runner)
+	if err != nil {
+		review.Blockers = append(review.Blockers, Blocker{Subject: "timezone:mutator", Detail: "PID 1 cannot be observed: " + err.Error()})
+		return blocked(review)
+	}
+	if pid1 != "systemd" {
 		review.Blockers = append(review.Blockers, Blocker{Subject: "timezone:mutator", Detail: "timezone changes require systemd PID 1"})
 		return blocked(review)
 	}
+	host.pid1 = pid1
+	review.Facts = append(review.Facts, Fact{Subject: "service-manager", Detail: "systemd"})
 	if err := installedTimezone(runner, intent); err != nil {
 		review.Blockers = append(review.Blockers, Blocker{Subject: "timezone:zoneinfo", Detail: err.Error()})
 		return blocked(review)
@@ -254,9 +239,8 @@ func planTimezoneChange(review ReviewPlan, host hostBinding, intent timezoneInte
 }
 
 func (plan timezonePlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt {
-	projected := Command{Name: plan.command.Name, Args: append([]string(nil), plan.command.Args...)}
-	if len(plan.plan.Changes) != 1 || !reflect.DeepEqual(plan.plan.Changes[0], plan.projection) || plan.projection.Command == nil || !reflect.DeepEqual(*plan.projection.Command, projected) {
-		receipt.Status = Failed
+	if !matchesSingleProjectedCommand(plan.plan, plan.projection, plan.command) {
+		receipt.transition(receiptTransition{failed: true})
 		return receipt
 	}
 	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
@@ -265,32 +249,32 @@ func (plan timezonePlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt
 	fresh := observeTimezone(runner)
 	switch decision := reconcileTimezone(plan.intent, fresh).(type) {
 	case timezoneBlocked:
-		receipt.Status = Failed
+		status, _ := receipt.transition(receiptTransition{failed: true})
 		receipt.Blockers = decision.blockers
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "timezone evidence cannot be revalidated"}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "timezone evidence cannot be revalidated"}}
 		return receipt
 	case timezoneExact:
-		receipt.Status = Stale
+		status, _ := receipt.transition(receiptTransition{stale: true})
 		_, detail := verifyTimezone(plan.intent, fresh)
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "timezone already exact immediately before mutation: " + detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "timezone already exact immediately before mutation: " + detail}}
 		return receipt
 	case timezoneChange:
 		if !reflect.DeepEqual(decision.before, plan.before) {
-			receipt.Status = Stale
-			receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "timezone evidence changed immediately before mutation"}}
+			status, _ := receipt.transition(receiptTransition{stale: true})
+			receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "timezone evidence changed immediately before mutation"}}
 			return receipt
 		}
 	}
 	if err := installedTimezone(runner, plan.intent); err != nil {
-		receipt.Status = Failed
+		status, _ := receipt.transition(receiptTransition{failed: true})
 		receipt.Blockers = []Blocker{{Subject: "guard:timezone:zoneinfo", Detail: err.Error()}}
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: err.Error()}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: err.Error()}}
 		return receipt
 	}
 	if _, err := admitTimezoneRTC(runner, plan.rtcProbe); err != nil {
-		receipt.Status = Failed
+		status, _ := receipt.transition(receiptTransition{failed: true})
 		receipt.Blockers = []Blocker{{Subject: "guard:timezone:rtc", Detail: err.Error()}}
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: err.Error()}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: err.Error()}}
 		return receipt
 	}
 	if guarded, stop, _ := immediateHostGuard(receipt, plan.host, runner, plan.projection.ID, "host evidence changed immediately before timezone mutation"); stop {
@@ -303,27 +287,19 @@ func (plan timezonePlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt
 		detail = "timedatectl failed: " + resultDetail(execution) + "; " + detail
 	}
 	if hostDetail, failed := finalHostGuard(plan.host, runner); failed {
-		receipt.Status = Failed
+		status, _ := receipt.transition(receiptTransition{attempted: true, verified: verified, failed: true})
 		receipt.Blockers = append(post.blockers(), Blocker{Subject: "final:host", Detail: hostDetail})
-		status := FailedAction
-		if verified {
-			status = Applied
-		}
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: detail + "; " + hostDetail}}
 		return receipt
 	}
 	if execution.Err != nil || execution.ExitCode != 0 || !verified {
-		status := FailedAction
-		if verified {
-			status = Applied
-		}
-		receipt.Status = Failed
+		status, _ := receipt.transition(receiptTransition{attempted: true, verified: verified, failed: true})
 		receipt.Blockers = post.blockers()
 		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: detail}}
 		return receipt
 	}
-	receipt.Status = ReplanRequired
-	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: "verified timezone " + plan.intent.value + "; replan required"}}
+	status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, progress: true})
+	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "verified timezone " + plan.intent.value + "; replan required"}}
 	return receipt
 }
 

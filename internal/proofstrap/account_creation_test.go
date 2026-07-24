@@ -82,12 +82,9 @@ func TestAccountBindingGuardDetectsLockStatusDrift(t *testing.T) {
 	runner := &testRunner{results: map[string][]Result{}}
 	setAccountResults(runner, []Result{{Stdout: "alice:x:1000:1000::/home/alice:/bin/bash\n"}})
 	runner.results["/usr/bin/passwd -S alice"] = []Result{{Stdout: "alice P 2026-07-23 0 99999 7 -1\n"}}
-	binding := accountBinding{
-		intent:   presentAccountForTest(),
-		observed: exactAccountSnapshot(entry),
-		lock: accountLockBinding{
-			name: "alice", command: Command{Name: "/usr/bin/passwd", Args: []string{"-S", "alice"}}, observed: accountLocked{name: "alice"},
-		},
+	binding := identifiedAccount(presentAccountForTest(), exactAccountSnapshot(entry))
+	binding.lock = accountLockBinding{
+		name: "alice", command: Command{Name: "/usr/bin/passwd", Args: []string{"-S", "alice"}}, observed: accountLocked{name: "alice"},
 	}
 	stale, err := binding.guard(context.Background(), runner)
 	if err != nil || !stale {

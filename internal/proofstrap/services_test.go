@@ -7,6 +7,36 @@ import (
 	"testing"
 )
 
+func TestServiceObservationKindMakesMissingExplicit(t *testing.T) {
+	need := serviceNeed{key: "networkmanager", scope: SystemService, target: serviceActive}
+	state := serviceObservationAt(serviceObservations{}, resolvedServiceNeed{need: need, unit: "NetworkManager.service"})
+	missing, ok := state.(serviceMissing)
+	if !ok || missing.need != need || missing.unit != "NetworkManager.service" || serviceObservationDetail(state) != "observation is missing" {
+		t.Fatalf("state=%#v detail=%q", state, serviceObservationDetail(state))
+	}
+}
+
+func TestSystemdAdmissionIsExact(t *testing.T) {
+	if err := requireSystemd("systemd"); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireSystemd("openrc"); err == nil || err.Error() != `unsupported service manager "openrc"` {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestServiceTargetPrecedenceNamesEnableBeforeActive(t *testing.T) {
+	if serviceTargetPrecedence(serviceEnabled) >= serviceTargetPrecedence(serviceActive) {
+		t.Fatal("service enable must precede service start")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("unknown service target was assigned an execution precedence")
+		}
+	}()
+	serviceTargetPrecedence(0)
+}
+
 func TestServiceBehaviorBindsExactProductionUnits(t *testing.T) {
 	for _, test := range []struct {
 		module string
@@ -34,7 +64,7 @@ func TestServiceBehaviorBindsExactProductionUnits(t *testing.T) {
 			if len(blockers) != 0 {
 				t.Fatal(blockers)
 			}
-			demand, blockers := (services{manager: systemd}).bind(selected)
+			demand, blockers := (services{}).bind(selected)
 			if len(blockers) != 0 || len(demand.needs) != len(test.want) {
 				t.Fatalf("demand=%#v blockers=%#v", demand, blockers)
 			}
@@ -49,11 +79,11 @@ func TestServiceBehaviorBindsExactProductionUnits(t *testing.T) {
 
 func TestServicesForUsesPID1NotOSIdentity(t *testing.T) {
 	runner := &testRunner{paths: map[string]string{"systemctl": "/usr/bin/systemctl"}}
-	behavior, err := servicesFor(HostFacts{ID: "unknown", Like: []string{"alpine"}, PID1: "systemd"}, runner)
-	if err != nil || behavior.manager != systemd || behavior.path != "/usr/bin/systemctl" {
+	behavior, err := servicesFor("systemd", runner)
+	if err != nil || behavior.path != "/usr/bin/systemctl" {
 		t.Fatalf("behavior=%#v err=%v", behavior, err)
 	}
-	if _, err := servicesFor(HostFacts{ID: "fedora", PID1: "openrc"}, runner); err == nil {
+	if _, err := servicesFor("openrc", runner); err == nil {
 		t.Fatal("unsupported service manager was admitted")
 	}
 }
@@ -62,7 +92,7 @@ func TestServiceBehaviorProvesExecutableOnlyWhenObserved(t *testing.T) {
 	runner := &testRunner{paths: map[string]string{"systemctl": "/usr/bin/systemctl"}, results: map[string][]Result{
 		"/usr/bin/systemctl is-active NetworkManager.service": {{ExitCode: 0, Stdout: "active\n"}},
 	}}
-	behavior, err := servicesFor(HostFacts{PID1: "systemd"}, runner)
+	behavior, err := servicesFor("systemd", runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +155,7 @@ func TestEnabledClassificationRequiresCompatibleExitStatus(t *testing.T) {
 }
 
 func TestServiceInspectionRejectsMissingAndExtraRows(t *testing.T) {
-	behavior := services{manager: systemd, path: "/usr/bin/systemctl"}
+	behavior := services{path: "/usr/bin/systemctl"}
 	first := resolvedServiceNeed{need: serviceNeed{key: "pipewire", scope: UserService, target: serviceEnabled}, unit: "pipewire.service"}
 	second := resolvedServiceNeed{need: serviceNeed{key: "wireplumber", scope: UserService, target: serviceEnabled}, unit: "wireplumber.service"}
 	for _, output := range []string{"enabled\n", "enabled\nenabled\nenabled\n"} {
@@ -143,7 +173,7 @@ func TestServiceInspectionRejectsMissingAndExtraRows(t *testing.T) {
 }
 
 func TestServiceInspectionClassifiesEachMixedBatchRowDespiteExistentialExit(t *testing.T) {
-	behavior := services{manager: systemd, path: "/usr/bin/systemctl"}
+	behavior := services{path: "/usr/bin/systemctl"}
 	for _, test := range []struct {
 		name      string
 		target    serviceTarget
@@ -175,7 +205,7 @@ func TestServiceInspectionClassifiesEachMixedBatchRowDespiteExistentialExit(t *t
 }
 
 func TestServiceReconciliationBuildsCanonicalPrivateStep(t *testing.T) {
-	behavior := services{manager: systemd, path: "/usr/bin/systemctl"}
+	behavior := services{path: "/usr/bin/systemctl"}
 	needs := []resolvedServiceNeed{
 		{need: serviceNeed{key: "wireplumber", scope: UserService, target: serviceActive}, unit: "wireplumber.service"},
 		{need: serviceNeed{key: "pipewire", scope: UserService, target: serviceActive}, unit: "pipewire.service"},
@@ -196,14 +226,14 @@ func TestServiceReconciliationBuildsCanonicalPrivateStep(t *testing.T) {
 	if !reflect.DeepEqual(step.command, want) || step.id != "services:user:start" || step.access != directStep {
 		t.Fatalf("step=%#v", step)
 	}
-	projection := step.projection()
+	projection := step.projectionFor(step.command)
 	if projection.Command == nil || !reflect.DeepEqual(*projection.Command, want) {
 		t.Fatalf("projection=%#v", projection)
 	}
 }
 
 func TestServicePostStateReportsPartialGroupedMutationPerUnit(t *testing.T) {
-	behavior := services{manager: systemd, path: "/usr/bin/systemctl"}
+	behavior := services{path: "/usr/bin/systemctl"}
 	needs := []resolvedServiceNeed{
 		{need: serviceNeed{key: "pipewire", scope: UserService, target: serviceActive}, unit: "pipewire.service"},
 		{need: serviceNeed{key: "wireplumber", scope: UserService, target: serviceActive}, unit: "wireplumber.service"},
@@ -223,11 +253,10 @@ func TestServicePostStateReportsPartialGroupedMutationPerUnit(t *testing.T) {
 }
 
 func TestAbortServiceConflictUsesDecisiveActiveState(t *testing.T) {
-	behavior := services{manager: systemd, path: "/usr/bin/systemctl"}
+	behavior := services{path: "/usr/bin/systemctl"}
 	conflict := resolvedServiceConflict{
-		conflict: serviceConflict{wanted: "wanted", other: "other", scope: SystemService},
-		wanted:   "Wanted.service",
-		other:    "Other.service",
+		wantedKey: "wanted", otherKey: "other", scope: SystemService,
+		wantedUnit: "Wanted.service", otherUnit: "Other.service",
 	}
 	for _, test := range []struct {
 		name     string

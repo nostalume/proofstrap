@@ -9,6 +9,25 @@ import (
 	"time"
 )
 
+func TestAccountBindingUsesClosedEvidenceStates(t *testing.T) {
+	entry := passwdEntry{name: "alice", uid: 1000}
+	snapshot := accountSnapshot{getentPath: "/usr/bin/getent", globalName: passwdFound{entry: entry}}
+	if stale, err := unboundAccount().guard(context.Background(), &testRunner{}); err != nil || stale {
+		t.Fatalf("unbound stale=%v err=%v", stale, err)
+	}
+	identified := identifiedAccount(existingAccountIntent{name: "alice"}, snapshot)
+	if uid, ok := identified.uid(); !ok || uid != 1000 {
+		t.Fatalf("identified uid=%d ok=%v", uid, ok)
+	}
+	absent := absentAccount(presentAccountIntent{name: "alice", uid: 1000}, snapshot)
+	if _, ok := absent.uid(); ok {
+		t.Fatal("absent account exposed an observed uid")
+	}
+	if _, err := (accountBinding{}).guard(context.Background(), &testRunner{}); err == nil {
+		t.Fatal("zero account binding was treated as unbound")
+	}
+}
+
 func TestObserveAccountUsesExactGlobalAndLocalNSSQueries(t *testing.T) {
 	entry := "alice:x:1000:1000:Alice:/home/alice:/bin/bash\n"
 	runner := &testRunner{
@@ -36,28 +55,19 @@ func TestObserveAccountUsesExactGlobalAndLocalNSSQueries(t *testing.T) {
 	}
 }
 
-func TestParsePasswdEntryPreservesNoncredentialFieldsAndRejectsExtraFraming(t *testing.T) {
-	entry, err := parsePasswdEntry("alice:x:1000:1000:Alice Example:/home/alice:/bin/bash \n")
+func TestParsePasswdEntryPreservesNoncredentialFields(t *testing.T) {
+	entry, err := parsePasswdEntry("alice:x:1000:1000:Alice Example:/home/alice:/bin/bash ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if entry.gecos != "Alice Example" || entry.shell != "/bin/bash " {
 		t.Fatalf("entry=%#v", entry)
 	}
-	for _, malformed := range []string{
-		"alice:x:1000:1000:Alice:/home/alice:/bin/bash",
-		"alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\n",
-		"\nalice:x:1000:1000:Alice:/home/alice:/bin/bash\n",
-	} {
-		if _, err := parsePasswdEntry(malformed); err == nil {
-			t.Fatalf("accepted malformed framing %q", malformed)
-		}
-	}
 }
 
 func TestParsePasswdEntryRejectsCredentialMaterial(t *testing.T) {
 	for _, marker := range []string{"", "!", "*", "$6$hash"} {
-		if _, err := parsePasswdEntry("alice:" + marker + ":1000:1000:Alice:/home/alice:/bin/bash\n"); err == nil {
+		if _, err := parsePasswdEntry("alice:" + marker + ":1000:1000:Alice:/home/alice:/bin/bash"); err == nil {
 			t.Fatalf("accepted passwd credential field %q", marker)
 		}
 	}
@@ -77,11 +87,12 @@ func TestApplyReportsIndeterminateAccountGuard(t *testing.T) {
 				plan := packagePlan{
 					plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
 					account: account, projection: change, command: command,
+					change: packageEffect(func(context.Context, Runner, Command, packageMutationGuard) packageResult {
+						t.Fatal("indeterminate account guard admitted package effect")
+						return packageResult{}
+					}),
 				}
-				return plan.apply(runner, ApplyReceipt{}, func(context.Context, Runner, Command, packageMutationGuard) packageResult {
-					t.Fatal("indeterminate account guard admitted package effect")
-					return packageResult{}
-				})
+				return plan.apply(runner, ApplyReceipt{})
 			},
 		},
 		{
@@ -102,7 +113,7 @@ func TestApplyReportsIndeterminateAccountGuard(t *testing.T) {
 			runner.results["/usr/bin/getent passwd 1000"] = []Result{entryResult}
 			runner.results["/usr/bin/getent -s files passwd 1000"] = []Result{entryResult}
 			entry := passwdEntry{name: "alice", uid: 1000, primaryGID: 1000, gecos: "Alice", home: "/home/alice", shell: "/bin/bash"}
-			receipt := test.apply(runner, accountBinding{intent: existingAccountIntent{name: "alice"}, observed: exactAccountSnapshot(entry)})
+			receipt := test.apply(runner, identifiedAccount(existingAccountIntent{name: "alice"}, exactAccountSnapshot(entry)))
 			if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "guard:account" || !strings.Contains(receipt.Blockers[0].Detail, "NSS unavailable") {
 				t.Fatalf("receipt=%#v", receipt)
 			}
@@ -273,14 +284,14 @@ func TestAccountGuardReusesReviewedGetentPath(t *testing.T) {
 	runner := baseRunner()
 	addAccountResults(runner, "alice", 1000, 2)
 	intent := existingAccountIntent{name: "alice"}
-	observed := observeAccount(context.Background(), runner, intent)
+	observed := observeAccount(context.Background(), runner, intent).(accountSnapshot)
 	runner.paths["getent"] = "/tmp/getent"
 	entry := Result{Stdout: "alice:x:1000:1000::/home/alice:/bin/bash\n"}
 	runner.results["/tmp/getent passwd alice"] = []Result{entry}
 	runner.results["/tmp/getent -s files passwd alice"] = []Result{entry}
 	runner.results["/tmp/getent passwd 1000"] = []Result{entry}
 	runner.results["/tmp/getent -s files passwd 1000"] = []Result{entry}
-	stale, err := (accountBinding{intent: intent, observed: observed}).guard(context.Background(), runner)
+	stale, err := identifiedAccount(intent, observed).guard(context.Background(), runner)
 	if err != nil || stale || countString(runner.pathCalls, "getent") != 1 || containsString(runner.calls, "/tmp/getent passwd alice") {
 		t.Fatalf("stale=%v err=%v paths=%#v calls=%#v", stale, err, runner.pathCalls, runner.calls)
 	}
@@ -312,7 +323,7 @@ func TestReadyApplyGuardsFullAccountBeforeEveryMutation(t *testing.T) {
 	runner.uid = 1000
 	addAccountResults(runner, "alice", 1000, 1)
 	intent := existingAccountIntent{name: "alice"}
-	observed := observeAccount(context.Background(), runner, intent)
+	observed := observeAccount(context.Background(), runner, intent).(accountSnapshot)
 	exact := Result{Stdout: "alice:x:1000:1000::/home/alice:/bin/bash\n"}
 	changed := Result{Stdout: "alice:x:1000:1000:Changed:/home/alice:/bin/bash\n"}
 	runner.results["/usr/bin/getent passwd alice"] = []Result{exact, exact, changed}
@@ -325,12 +336,11 @@ func TestReadyApplyGuardsFullAccountBeforeEveryMutation(t *testing.T) {
 	}
 	runner.results["/usr/bin/first"] = []Result{{}}
 	plan := readyPlan{
-		plan:       ReviewPlan{Changes: []Change{steps[0].projection(), steps[1].projection()}},
+		plan:       ReviewPlan{Changes: []Change{steps[0].projectionFor(steps[0].command), steps[1].projectionFor(steps[1].command)}},
 		host:       hostBinding{facts: observeHost(runner).facts},
-		account:    accountBinding{intent: intent, observed: observed},
+		account:    identifiedAccount(intent, observed),
 		targetUser: true,
-		steps:      steps,
-		commands:   []Command{steps[0].command, steps[1].command},
+		steps:      mustPrepareSteps(t, steps),
 	}
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Failed || len(receipt.Outcomes) != 2 || receipt.Outcomes[0].Status != Applied || receipt.Outcomes[1].Status != Unattempted || containsString(runner.calls, "/usr/bin/second") {
@@ -342,7 +352,7 @@ func TestReadyApplyGuardsAccountAfterStepPreconditions(t *testing.T) {
 	runner := baseRunner()
 	addAccountResults(runner, "alice", 1000, 4)
 	intent := existingAccountIntent{name: "alice"}
-	observed := observeAccount(context.Background(), runner, intent)
+	observed := observeAccount(context.Background(), runner, intent).(accountSnapshot)
 	changed := Result{Stdout: "alice:x:1000:1000:Changed:/home/alice:/bin/bash\n"}
 	plannedStep := step{
 		id: "service:start", detail: "start", access: directStep,
@@ -355,8 +365,8 @@ func TestReadyApplyGuardsAccountAfterStepPreconditions(t *testing.T) {
 	}
 	runner.results["/usr/bin/start"] = []Result{{}}
 	plan := readyPlan{
-		plan: ReviewPlan{Changes: []Change{plannedStep.projection()}}, host: hostBinding{facts: observeHost(runner).facts},
-		account: accountBinding{intent: intent, observed: observed}, steps: []step{plannedStep}, commands: []Command{plannedStep.command},
+		plan: ReviewPlan{Changes: []Change{plannedStep.projectionFor(plannedStep.command)}}, host: hostBinding{facts: observeHost(runner).facts},
+		account: identifiedAccount(intent, observed), steps: mustPrepareSteps(t, []step{plannedStep}),
 	}
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Stale || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted || containsString(runner.calls, "/usr/bin/start") {
@@ -390,7 +400,7 @@ func TestReadyApplyRejectsTargetUIDDriftBeforeActions(t *testing.T) {
 	entry := passwdEntry{name: "alice", uid: 1000, primaryGID: 1000, home: "/home/alice", shell: "/bin/bash"}
 	plan := readyPlan{
 		plan: ReviewPlan{}, host: hostBinding{facts: observeHost(runner).facts},
-		account:    accountBinding{intent: existingAccountIntent{name: "alice"}, observed: exactAccountSnapshot(entry)},
+		account:    identifiedAccount(existingAccountIntent{name: "alice"}, exactAccountSnapshot(entry)),
 		targetUser: true,
 	}
 	receipt := plan.apply(runner, ApplyReceipt{})
@@ -418,12 +428,11 @@ func TestPackageApplyReportsPostMutationAccountDrift(t *testing.T) {
 	change := Change{ID: "package-install:zypper", Command: &projected}
 	plan := packagePlan{
 		plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
-		account:    accountBinding{intent: existingAccountIntent{name: "alice"}, observed: exactAccountSnapshot(entry)},
+		account:    identifiedAccount(existingAccountIntent{name: "alice"}, exactAccountSnapshot(entry)),
 		projection: change, command: command,
+		change: packageEffect(func(context.Context, Runner, Command, packageMutationGuard) packageResult { return packageResult{} }),
 	}
-	receipt := plan.apply(runner, ApplyReceipt{}, func(context.Context, Runner, Command, packageMutationGuard) packageResult {
-		return packageResult{}
-	})
+	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "final:account" || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Applied {
 		t.Fatalf("receipt=%#v", receipt)
 	}
@@ -448,12 +457,13 @@ func TestPackageApplyReportsIndeterminateImmediateAccountGuard(t *testing.T) {
 	change := Change{ID: "package-install:zypper", Command: &projected}
 	plan := packagePlan{
 		plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
-		account:    accountBinding{intent: existingAccountIntent{name: "alice"}, observed: exactAccountSnapshot(entry)},
+		account:    identifiedAccount(existingAccountIntent{name: "alice"}, exactAccountSnapshot(entry)),
 		projection: change, command: command,
+		change: packageEffect(func(_ context.Context, _ Runner, _ Command, guard packageMutationGuard) packageResult {
+			return packageResult{err: guard()}
+		}),
 	}
-	receipt := plan.apply(runner, ApplyReceipt{}, func(_ context.Context, _ Runner, _ Command, guard packageMutationGuard) packageResult {
-		return packageResult{err: guard()}
-	})
+	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "guard:account" || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted {
 		t.Fatalf("receipt=%#v", receipt)
 	}

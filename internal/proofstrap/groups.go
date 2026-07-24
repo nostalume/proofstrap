@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type groupEntry struct {
@@ -70,36 +69,25 @@ func observePrimaryGroup(ctx context.Context, runner Runner, getent string, inte
 }
 
 func lookupGroup(ctx context.Context, runner Runner, getent string, local bool, key string) groupLookup {
-	args := []string{"group", key}
+	source := nssGlobal
 	if local {
-		args = []string{"-s", "files", "group", key}
+		source = nssFiles
 	}
-	result := runner.Run(ctx, Command{Name: getent, Args: args, timeout: 5 * time.Second})
-	if result.Err == nil && result.ExitCode == 2 && result.Stdout == "" && result.Stderr == "" {
+	record, err := lookupNSSRecord(ctx, runner, getent, source, "group", key)
+	if err != nil {
+		return groupLookupFailed{detail: err.Error()}
+	}
+	if record.missing {
 		return groupMissing{}
 	}
-	if result.Err != nil || result.ExitCode != 0 || result.Stderr != "" {
-		return groupLookupFailed{detail: resultDetail(result)}
-	}
-	entry, err := parseGroupEntry(result.Stdout)
+	entry, err := parseGroupEntry(record.value)
 	if err != nil {
 		return groupLookupFailed{detail: err.Error()}
 	}
 	return groupFound{entry: entry}
 }
 
-func parseGroupEntry(output string) (groupEntry, error) {
-	if !strings.HasSuffix(output, "\n") {
-		return groupEntry{}, fmt.Errorf("group record is not newline terminated")
-	}
-	record := strings.TrimSuffix(output, "\n")
-	if record == "" || strings.Contains(record, "\n") {
-		count := 0
-		if record != "" {
-			count = strings.Count(record, "\n") + 1
-		}
-		return groupEntry{}, fmt.Errorf("group lookup returned %d records", count)
-	}
+func parseGroupEntry(record string) (groupEntry, error) {
 	fields := strings.Split(record, ":")
 	if len(fields) != 4 {
 		return groupEntry{}, fmt.Errorf("group record has %d fields, want 4", len(fields))

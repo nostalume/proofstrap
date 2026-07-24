@@ -9,19 +9,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"unicode"
 
 	"github.com/nostalume/proofstrap/internal/proofstrap"
+	"golang.org/x/sys/unix"
 )
 
-var runnerFactory = func() proofstrap.Runner { return proofstrap.OSRunner{} }
-
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], proofstrap.OSRunner{}, os.Stdout, os.Stderr))
 }
 
-func run(arguments []string, stdout, stderr io.Writer) int {
+func run(arguments []string, runner proofstrap.Runner, stdout, stderr io.Writer) int {
 	if len(arguments) == 0 {
 		fmt.Fprintln(stderr, "usage: proofstrap <modules|plan|apply> [OPTIONS] [MODULE...]")
 		return 2
@@ -30,18 +28,18 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	case "modules":
 		return runModules(arguments[1:], stdout, stderr)
 	case "plan":
-		return runPlan(arguments[1:], stdout, stderr)
+		return runPlan(arguments[1:], runner, stdout, stderr)
 	case "apply":
-		return runApply(arguments[1:], stdout, stderr)
+		return runApply(arguments[1:], runner, stdout, stderr)
 	case "_create-home":
-		return runCreateHome(arguments[1:], stderr)
+		return runCreateHome(arguments[1:], runner, stderr)
 	default:
 		fmt.Fprintln(stderr, "usage: proofstrap <modules|plan|apply> [OPTIONS] [MODULE...]")
 		return 2
 	}
 }
 
-func runCreateHome(arguments []string, stderr io.Writer) int {
+func runCreateHome(arguments []string, runner proofstrap.Runner, stderr io.Writer) int {
 	flags := flag.NewFlagSet("_create-home", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	uid := flags.Uint64("uid", 0, "account uid")
@@ -60,7 +58,7 @@ func runCreateHome(arguments []string, stderr io.Writer) int {
 		return 2
 	}
 	creation := proofstrap.HomeCreation{Path: flags.Arg(0), Mode: uint32(mode), UID: uint32(*uid), GID: uint32(*gid)}
-	if err := runnerFactory().CreateHome(creation); err != nil {
+	if err := runner.CreateHome(creation); err != nil {
 		fmt.Fprintln(stderr, "create home:", err)
 		return 1
 	}
@@ -81,7 +79,7 @@ func runModules(arguments []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runPlan(arguments []string, stdout, stderr io.Writer) int {
+func runPlan(arguments []string, runner proofstrap.Runner, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "TOML desired-state file")
@@ -93,7 +91,6 @@ func runPlan(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return code
 	}
-	runner := runnerFactory()
 	plan := proofstrap.Plan(state, runner)
 	if err := renderPlan(stdout, plan); err != nil {
 		fmt.Fprintln(stderr, "plan output:", err)
@@ -105,7 +102,7 @@ func runPlan(arguments []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runApply(arguments []string, stdout, stderr io.Writer) int {
+func runApply(arguments []string, runner proofstrap.Runner, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("apply", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "TOML desired-state file")
@@ -123,7 +120,7 @@ func runApply(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "apply requires --accept DIGEST from a reviewed plan")
 		return 2
 	}
-	receipt := proofstrap.Apply(state, runnerFactory(), *accepted)
+	receipt := proofstrap.Apply(state, runner, *accepted)
 	encoded, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		fmt.Fprintln(stderr, "receipt error:", err)
@@ -147,13 +144,13 @@ func runApply(arguments []string, stdout, stderr io.Writer) int {
 }
 
 func writeReceipt(path string, encoded []byte) error {
-	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o600)
 	if err != nil {
 		return err
 	}
 	file := os.NewFile(uintptr(fd), path)
 	if file == nil {
-		syscall.Close(fd)
+		unix.Close(fd)
 		return fmt.Errorf("open receipt")
 	}
 	info, err := file.Stat()
@@ -198,7 +195,6 @@ func renderPlan(stdout io.Writer, plan proofstrap.ReviewPlan) error {
 	fmt.Fprintf(&rendered, "Host OS ID: %s\n", safeReviewText(plan.Host.ID))
 	fmt.Fprintf(&rendered, "Host OS version: %s\n", safeReviewText(plan.Host.Version))
 	fmt.Fprintf(&rendered, "Host OS ID like: %s\n", safeReviewText(fmt.Sprint(plan.Host.Like)))
-	fmt.Fprintf(&rendered, "Host PID 1: %s\n", safeReviewText(plan.Host.PID1))
 	for _, fact := range plan.Facts {
 		fmt.Fprintf(&rendered, "Fact %s: %s\n", safeReviewText(fact.Subject), safeReviewText(fact.Detail))
 	}

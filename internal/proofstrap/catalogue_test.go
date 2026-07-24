@@ -54,8 +54,8 @@ func TestSelectionBindsPackagesAndServicesIndependently(t *testing.T) {
 		t.Fatal(blockers)
 	}
 	packages, packageBlockers := (packageBehavior{manager: zypper, names: zypperPackageNames()}).bind(selected)
-	services, serviceBlockers := (services{manager: systemd}).bind(selected)
-	if len(packageBlockers) != 0 || len(serviceBlockers) != 0 || len(packages.required) != 1 || len(services.needs) != 2 {
+	services, serviceBlockers := (services{}).bind(selected)
+	if len(packageBlockers) != 0 || len(serviceBlockers) != 0 || len(packages) != 1 || len(services.needs) != 2 {
 		t.Fatalf("packages=%#v services=%#v packageBlockers=%#v serviceBlockers=%#v", packages, services, packageBlockers, serviceBlockers)
 	}
 }
@@ -135,8 +135,8 @@ func TestCapabilitiesHaveCompleteFiveManagerPackageBindings(t *testing.T) {
 		}
 		for _, behavior := range behaviors {
 			demand, blockers := behavior.bind(selected)
-			got := make(map[PackageKey]string, len(demand.required))
-			for _, item := range demand.required {
+			got := make(map[PackageKey]string, len(demand))
+			for _, item := range demand {
 				got[item.key] = item.name
 			}
 			if len(blockers) != 0 || !reflect.DeepEqual(got, managerBindings[behavior.manager]) {
@@ -175,7 +175,7 @@ func TestPackageOnlyMigrationWaveDefersWhenManagerBindingsAreIncomplete(t *testi
 		if behavior.manager == dnf4 {
 			wantBlockers = 4
 		}
-		if len(bindingBlockers) != wantBlockers || len(demand.required)+len(bindingBlockers) != len(want) {
+		if len(bindingBlockers) != wantBlockers || len(demand)+len(bindingBlockers) != len(want) {
 			t.Fatalf("manager=%s demand=%#v blockers=%#v", behavior.manager, demand, bindingBlockers)
 		}
 	}

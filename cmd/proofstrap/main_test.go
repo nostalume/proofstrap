@@ -16,11 +16,8 @@ import (
 
 func TestRunCreateHomeLeafUsesTypedCreateExclusiveOperation(t *testing.T) {
 	runner := &cliRunner{}
-	previous := runnerFactory
-	runnerFactory = func() proofstrap.Runner { return runner }
-	t.Cleanup(func() { runnerFactory = previous })
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"_create-home", "--uid", "1000", "--gid", "1000", "--mode", "0700", "--", "/home/alice"}, &stdout, &stderr)
+	code := run([]string{"_create-home", "--uid", "1000", "--gid", "1000", "--mode", "0700", "--", "/home/alice"}, runner, &stdout, &stderr)
 	want := proofstrap.HomeCreation{Path: "/home/alice", Mode: 0o700, UID: 1000, GID: 1000}
 	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 || len(runner.homeCreations) != 1 || runner.homeCreations[0] != want {
 		t.Fatalf("code=%d stdout=%q stderr=%q creations=%#v", code, stdout.String(), stderr.String(), runner.homeCreations)
@@ -37,7 +34,6 @@ func TestRunPlanUsesLiveEvidenceAndRendersActions(t *testing.T) {
 			"Host OS ID: opensuse-tumbleweed",
 			"Host OS version:",
 			"Host OS ID like: []",
-			"Host PID 1: systemd",
 			"Fact package-manager: zypper",
 			"Change package-install:zypper: install=dbus-1,grim,libwayland-client0,slurp,sway,swayidle,swaylock",
 			"Command package-install:zypper: /usr/bin/sudo -N -n /usr/bin/zypper --non-interactive install --no-recommends dbus-1 grim libwayland-client0 slurp sway swayidle swaylock",
@@ -53,6 +49,7 @@ func TestRunPlanUsesLiveEvidenceAndRendersActions(t *testing.T) {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		for _, want := range []string{
+			"Fact service-manager: systemd",
 			"Change services:system:enable: enable NetworkManager.service",
 			"Change services:system:start: start NetworkManager.service",
 		} {
@@ -64,14 +61,8 @@ func TestRunPlanUsesLiveEvidenceAndRendersActions(t *testing.T) {
 }
 
 func TestRunModulesIsSortedAndDoesNotCreateRunner(t *testing.T) {
-	previous := runnerFactory
-	runnerFactory = func() proofstrap.Runner {
-		t.Fatal("modules created a host runner")
-		return nil
-	}
-	t.Cleanup(func() { runnerFactory = previous })
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"modules"}, &stdout, &stderr)
+	code := run([]string{"modules"}, nil, &stdout, &stderr)
 	want := "audio\ncurl\ndbus\ngit\nhyprland\nnetwork\npavucontrol\nqpwgraph\nsway\nvim\nwayland\nwl-paste\nxclip\nxsel\n"
 	if code != 0 || stdout.String() != want || stderr.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -80,14 +71,14 @@ func TestRunModulesIsSortedAndDoesNotCreateRunner(t *testing.T) {
 
 func TestRunModulesRejectsArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"modules", "dbus"}, &stdout, &stderr); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "usage: proofstrap modules") {
+	if code := run([]string{"modules", "dbus"}, nil, &stdout, &stderr); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "usage: proofstrap modules") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
 func TestRunModulesReportsOutputFailure(t *testing.T) {
 	var stderr bytes.Buffer
-	if code := run([]string{"modules"}, failingWriter{}, &stderr); code != 1 || !strings.Contains(stderr.String(), "modules output:") {
+	if code := run([]string{"modules"}, nil, failingWriter{}, &stderr); code != 1 || !strings.Contains(stderr.String(), "modules output:") {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 }
@@ -176,8 +167,11 @@ func TestRunPlanRendersHostnameOnlyChange(t *testing.T) {
 func TestRenderPlanEscapesAccountReviewControlCharacters(t *testing.T) {
 	plan := proofstrap.ReviewPlan{
 		Account: proofstrap.PresentAccountReview{State: "present", Name: "alice", UID: 1000, Shell: "/bin/bash\nBlocker forged: detail", PrimaryGroup: "alice", PrimaryGID: 1000, Home: "/home/alice\nPlan digest: forged", HomeMode: "0700"},
-		Host:    proofstrap.HostFacts{PID1: "systemd\nChange forged: detail"},
-		Facts:   []proofstrap.Fact{{Subject: "account:alice", Detail: "home=/home/alice\nBlocker forged: detail"}},
+		Host:    proofstrap.HostFacts{ID: "test"},
+		Facts: []proofstrap.Fact{
+			{Subject: "account:alice", Detail: "home=/home/alice\nBlocker forged: detail"},
+			{Subject: "service-manager", Detail: "systemd\nChange forged: detail"},
+		},
 	}
 	var rendered bytes.Buffer
 	if err := renderPlan(&rendered, plan); err != nil {
@@ -191,7 +185,7 @@ func TestRenderPlanEscapesAccountReviewControlCharacters(t *testing.T) {
 func TestRenderPlanShowsDigestBoundHostnameIntent(t *testing.T) {
 	plan := proofstrap.ReviewPlan{
 		HostSettings: &proofstrap.HostSettingsReview{Hostname: "node-1"},
-		Host:         proofstrap.HostFacts{ID: "test", PID1: "systemd"},
+		Host:         proofstrap.HostFacts{ID: "test"},
 	}
 	var rendered bytes.Buffer
 	if err := renderPlan(&rendered, plan); err != nil {
@@ -205,7 +199,7 @@ func TestRenderPlanShowsDigestBoundHostnameIntent(t *testing.T) {
 func TestRenderPlanShowsDigestBoundTimezoneIntent(t *testing.T) {
 	plan := proofstrap.ReviewPlan{
 		HostSettings: &proofstrap.HostSettingsReview{Timezone: "Europe/Berlin"},
-		Host:         proofstrap.HostFacts{ID: "test", PID1: "systemd"},
+		Host:         proofstrap.HostFacts{ID: "test"},
 	}
 	var rendered bytes.Buffer
 	if err := renderPlan(&rendered, plan); err != nil {
@@ -217,14 +211,8 @@ func TestRenderPlanShowsDigestBoundTimezoneIntent(t *testing.T) {
 }
 
 func TestRunPlanRejectsAuthorizeFlagBeforeCreatingRunner(t *testing.T) {
-	previous := runnerFactory
-	runnerFactory = func() proofstrap.Runner {
-		t.Fatal("rejected plan flag created a host runner")
-		return nil
-	}
-	t.Cleanup(func() { runnerFactory = previous })
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"plan", "--authorize", "sway"}, &stdout, &stderr)
+	code := run([]string{"plan", "--authorize", "sway"}, nil, &stdout, &stderr)
 	if code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "flag provided but not defined: -authorize") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -238,11 +226,8 @@ func TestRunApplyRejectsAuthorizeFlag(t *testing.T) {
 }
 
 func TestRunPlanReportsOutputFailure(t *testing.T) {
-	old := runnerFactory
-	runnerFactory = func() proofstrap.Runner { return audioPlanRunner(1000) }
-	t.Cleanup(func() { runnerFactory = old })
 	var stderr bytes.Buffer
-	if code := run([]string{"plan", "audio"}, failingWriter{}, &stderr); code != 1 || !strings.Contains(stderr.String(), "plan output:") {
+	if code := run([]string{"plan", "audio"}, audioPlanRunner(1000), failingWriter{}, &stderr); code != 1 || !strings.Contains(stderr.String(), "plan output:") {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 }
@@ -378,11 +363,8 @@ func TestRunApplyEmitsJSONBeforeReceiptWriteFailure(t *testing.T) {
 func TestRunApplyStopsBeforeReceiptFileWhenStdoutFails(t *testing.T) {
 	digest := planDigestForRunner(t, networkRunner(), "network")
 	path := filepath.Join(t.TempDir(), "receipt.json")
-	old := runnerFactory
-	runnerFactory = func() proofstrap.Runner { return networkRunner() }
-	t.Cleanup(func() { runnerFactory = old })
 	var stderr bytes.Buffer
-	code := run([]string{"apply", "--accept", digest, "--receipt", path, "network"}, failingWriter{}, &stderr)
+	code := run([]string{"apply", "--accept", digest, "--receipt", path, "network"}, networkRunner(), failingWriter{}, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "receipt error:") {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
@@ -464,12 +446,9 @@ func TestRunApplyChecksUserManagerBeforeUserMutation(t *testing.T) {
 
 func runCLI(t *testing.T, runner proofstrap.Runner, args ...string) (int, string, string) {
 	t.Helper()
-	old := runnerFactory
-	runnerFactory = func() proofstrap.Runner { return runner }
-	t.Cleanup(func() { runnerFactory = old })
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := run(args, &stdout, &stderr)
+	code := run(args, runner, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -656,6 +635,15 @@ func (runner *cliRunner) ReadFile(path string) ([]byte, error) {
 }
 func (runner *cliRunner) Lstat(string) (proofstrap.PathInfo, error) {
 	return proofstrap.PathInfo{}, errors.New("missing path result")
+}
+func (runner *cliRunner) Readlink(string) (string, error) {
+	return "", errors.New("missing readlink result")
+}
+func (runner *cliRunner) EvalSymlinks(string) (string, error) {
+	return "", errors.New("missing symlink evaluation result")
+}
+func (runner *cliRunner) ReadRegularFilePrefixBeneath(string, string, int) ([]byte, error) {
+	return nil, errors.New("missing regular file prefix result")
 }
 func (runner *cliRunner) LookPath(name string) (string, error) {
 	if value, ok := runner.paths[name]; ok {

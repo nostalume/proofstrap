@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 
 	"github.com/pelletier/go-toml/v2"
@@ -159,8 +158,6 @@ func (state DesiredState) Empty() bool {
 	return len(state.Modules) == 0 && state.account == nil && state.machine == nil
 }
 
-var accountNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,30}[a-z0-9_$-]?$`)
-
 func (raw *desiredAccountFile) intent() (accountIntent, error) {
 	if raw == nil {
 		return nil, nil
@@ -218,7 +215,19 @@ func (raw desiredAccountFile) presentIntent() (accountIntent, error) {
 }
 
 func validateAccountName(value string) error {
-	if !accountNamePattern.MatchString(value) {
+	valid := len(value) >= 1 && len(value) <= 32
+	for index := 0; valid && index < len(value); index++ {
+		character := value[index]
+		switch {
+		case index == 0:
+			valid = character >= 'a' && character <= 'z' || character == '_'
+		case character == '$':
+			valid = index == len(value)-1
+		default:
+			valid = character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' || character == '_' && (len(value) < 32 || index < 31)
+		}
+	}
+	if !valid {
 		return fmt.Errorf("account or group name %q is invalid", value)
 	}
 	return nil

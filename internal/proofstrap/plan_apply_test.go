@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+type packageEffect func(context.Context, Runner, Command, packageMutationGuard) packageResult
+
+func (effect packageEffect) apply(ctx context.Context, runner Runner, command Command, guard packageMutationGuard) packageResult {
+	return effect(ctx, runner, command, guard)
+}
+
 func TestEquivalentIndependentPlansHaveCanonicalDigest(t *testing.T) {
 	plan := func(modules []string) ReviewPlan {
 		runner := baseRunner()
@@ -22,7 +28,69 @@ func TestEquivalentIndependentPlansHaveCanonicalDigest(t *testing.T) {
 	}
 }
 
-func TestPackagePlansNeverObserveOrProjectServiceMutation(t *testing.T) {
+func TestSingleProjectedCommandRequiresExactPrivateChange(t *testing.T) {
+	command := Command{Name: "/usr/bin/example", Args: []string{"--exact"}, stdin: "private", timeout: time.Minute}
+	projected := Command{Name: command.Name, Args: append([]string(nil), command.Args...)}
+	change := Change{ID: "example", Detail: "exact", Command: &projected}
+	if !matchesSingleProjectedCommand(ReviewPlan{Changes: []Change{change}}, change, command) {
+		t.Fatal("exact private change was rejected")
+	}
+	for _, review := range []ReviewPlan{
+		{},
+		{Changes: []Change{change, change}},
+		{Changes: []Change{{ID: "changed", Detail: change.Detail, Command: change.Command}}},
+		{Changes: []Change{{ID: change.ID, Detail: change.Detail}}},
+		{Changes: []Change{{ID: change.ID, Detail: change.Detail, Command: &Command{Name: command.Name, Args: []string{"--other"}}}}},
+	} {
+		if matchesSingleProjectedCommand(review, change, command) {
+			t.Fatalf("inexact review was admitted: %#v", review)
+		}
+	}
+}
+
+func TestPreparedStepRejectsIncompletePrivateWork(t *testing.T) {
+	valid := step{
+		id: "service:start", detail: "start", timeout: time.Second, access: directStep,
+		before: func(context.Context, Runner) error { return nil },
+		verify: func(context.Context, Runner) (bool, string) { return true, "active" },
+	}
+	command := Command{Name: "/usr/bin/systemctl", Args: []string{"start", "example.service"}, stdin: "private"}
+	prepared, err := newPreparedStep(valid, command)
+	if err != nil || prepared.step.id != valid.id || prepared.command.stdin != "private" || prepared.projection.Command == nil || prepared.projection.Command.stdin != "" {
+		t.Fatalf("prepared=%#v err=%v", prepared, err)
+	}
+	command.Args[0] = "changed"
+	if prepared.command.Args[0] != "start" || prepared.projection.Command.Args[0] != "start" {
+		t.Fatalf("prepared command aliases input: %#v", prepared)
+	}
+	for _, invalid := range []step{
+		{detail: valid.detail, timeout: valid.timeout, access: valid.access, before: valid.before, verify: valid.verify},
+		{id: valid.id, timeout: valid.timeout, access: valid.access, before: valid.before, verify: valid.verify},
+		{id: valid.id, detail: valid.detail, access: valid.access, before: valid.before, verify: valid.verify},
+		{id: valid.id, detail: valid.detail, timeout: valid.timeout, before: valid.before, verify: valid.verify},
+		{id: valid.id, detail: valid.detail, timeout: valid.timeout, access: valid.access, verify: valid.verify},
+		{id: valid.id, detail: valid.detail, timeout: valid.timeout, access: valid.access, before: valid.before},
+	} {
+		if _, err := newPreparedStep(invalid, command); err == nil {
+			t.Fatalf("incomplete step was prepared: %#v", invalid)
+		}
+	}
+}
+
+func mustPrepareSteps(t *testing.T, steps []step) []preparedStep {
+	t.Helper()
+	prepared := make([]preparedStep, len(steps))
+	for index, value := range steps {
+		var err error
+		prepared[index], err = newPreparedStep(value, value.command)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return prepared
+}
+
+func TestPackagePlansBindManagerIdentityWithoutResolvingServiceMutation(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		modules []string
@@ -47,8 +115,8 @@ func TestPackagePlansNeverObserveOrProjectServiceMutation(t *testing.T) {
 					t.Fatalf("package plan observed services: %#v", test.runner.calls)
 				}
 			}
-			if containsString(test.runner.pathCalls, "systemctl") || containsFact(review.Facts, "service-manager", "") {
-				t.Fatalf("package plan admitted service authority: paths=%#v facts=%#v", test.runner.pathCalls, review.Facts)
+			if containsString(test.runner.pathCalls, "systemctl") || !containsFact(review.Facts, "service-manager", "systemd") {
+				t.Fatalf("package plan manager boundary is incomplete: paths=%#v facts=%#v", test.runner.pathCalls, review.Facts)
 			}
 		})
 	}
@@ -74,18 +142,36 @@ func TestPackageApplyLeavesDeadlinesToBehaviorCommands(t *testing.T) {
 	change := Change{ID: "package-install:apt", Command: &projected}
 	plan := packagePlan{
 		plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
+		account:    unboundAccount(),
+		projection: change, command: command,
+		change: packageEffect(func(ctx context.Context, _ Runner, effective Command, _ packageMutationGuard) packageResult {
+			if _, ok := ctx.Deadline(); ok {
+				return packageResult{err: errors.New("package orchestration overrode command timeout")}
+			}
+			if effective.timeout != 10*time.Minute {
+				return packageResult{err: errors.New("install timeout was not retained")}
+			}
+			return packageResult{attempted: true}
+		}),
+	}
+	receipt := plan.apply(runner, ApplyReceipt{})
+	if receipt.Status != ReplanRequired {
+		t.Fatalf("receipt=%#v", receipt)
+	}
+}
+
+func TestPackagePlanRejectsMissingPrivateChange(t *testing.T) {
+	runner := baseRunner()
+	command := Command{Name: "/usr/bin/apt-get", Args: []string{"install", "dbus"}}
+	projected := Command{Name: command.Name, Args: append([]string(nil), command.Args...)}
+	change := Change{ID: "package-install:apt", Command: &projected}
+	plan := packagePlan{
+		plan: ReviewPlan{Changes: []Change{change}}, host: hostBinding{facts: observeHost(runner).facts},
+		account:    unboundAccount(),
 		projection: change, command: command,
 	}
-	receipt := plan.apply(runner, ApplyReceipt{}, func(ctx context.Context, _ Runner, effective Command, _ packageMutationGuard) packageResult {
-		if _, ok := ctx.Deadline(); ok {
-			return packageResult{err: errors.New("package orchestration overrode command timeout")}
-		}
-		if effective.timeout != 10*time.Minute {
-			return packageResult{err: errors.New("install timeout was not retained")}
-		}
-		return packageResult{attempted: true}
-	})
-	if receipt.Status != ReplanRequired {
+	receipt := plan.apply(runner, ApplyReceipt{})
+	if receipt.Status != Failed || len(receipt.Outcomes) != 0 {
 		t.Fatalf("receipt=%#v", receipt)
 	}
 }
@@ -134,7 +220,6 @@ func TestPackageOnlySelectionDoesNotRequireSystemd(t *testing.T) {
 	runner := &testRunner{
 		files: map[string][]byte{
 			"/etc/os-release":             []byte("ID=custom\n"),
-			"/proc/1/comm":                []byte("openrc\n"),
 			"/var/lib/zypp/AutoInstalled": {},
 		},
 		paths: map[string]string{"zypper": "/usr/bin/zypper", "rpm": "/usr/bin/rpm"},
@@ -144,8 +229,8 @@ func TestPackageOnlySelectionDoesNotRequireSystemd(t *testing.T) {
 		},
 	}
 	review := planFor(DesiredState{Modules: []string{"tool"}}, runner, compiled).review()
-	if review.Blocked() || containsFact(review.Facts, "service-manager", "") {
-		t.Fatalf("review=%#v calls=%#v", review, runner.calls)
+	if review.Blocked() || containsFact(review.Facts, "service-manager", "") || containsString(runner.events, "read:/proc/1/comm") {
+		t.Fatalf("review=%#v calls=%#v events=%#v", review, runner.calls, runner.events)
 	}
 }
 
@@ -159,7 +244,7 @@ func TestReadyPackageGuardUsesInventoryWithoutPlanningMutation(t *testing.T) {
 			return Command{Name: "/test/root"}
 		},
 	}
-	plan := readyPlan{packageBehavior: behavior, packageEvidence: evidence}
+	plan := readyPlan{account: unboundAccount(), packageBehavior: behavior, packageEvidence: evidence}
 	stale, err := plan.guardPackages(context.Background(), &testRunner{})
 	if stale || err != nil || rootCalls != 0 {
 		t.Fatalf("stale=%t err=%v rootCalls=%d", stale, err, rootCalls)
@@ -323,13 +408,12 @@ func TestPlanAbortConflictBlocksWithoutExecutableStep(t *testing.T) {
 }
 
 func TestConflictGuardFailsClosedBeforeMutation(t *testing.T) {
-	behavior := services{manager: systemd, path: "/usr/bin/systemctl"}
+	behavior := services{path: "/usr/bin/systemctl"}
 	conflict := resolvedServiceConflict{
-		conflict: serviceConflict{wanted: "networkmanager", other: "pipewire", scope: SystemService},
-		wanted:   "NetworkManager.service",
-		other:    "pipewire.service",
+		wantedKey: "networkmanager", otherKey: "pipewire", scope: SystemService,
+		wantedUnit: "NetworkManager.service", otherUnit: "pipewire.service",
 	}
-	plan := readyPlan{bound: boundSelection{services: behavior, conflicts: []resolvedServiceConflict{conflict}}}
+	plan := readyPlan{account: unboundAccount(), bound: boundSelection{services: behavior, conflicts: []resolvedServiceConflict{conflict}}}
 	for _, test := range []struct {
 		name  string
 		state Result
@@ -352,10 +436,11 @@ func TestConflictGuardFailsClosedBeforeMutation(t *testing.T) {
 }
 
 func TestServiceGuardCoversRequirementsWithoutSteps(t *testing.T) {
-	behavior := services{manager: systemd, path: "/usr/bin/systemctl"}
+	behavior := services{path: "/usr/bin/systemctl"}
 	need := serviceNeed{key: "networkmanager", scope: SystemService, target: serviceEnabled}
 	resolved := resolvedServiceNeed{need: need, unit: "NetworkManager.service"}
 	plan := readyPlan{
+		account:  unboundAccount(),
 		bound:    boundSelection{services: behavior, serviceNeeds: []resolvedServiceNeed{resolved}},
 		services: serviceObservations{need: serviceSatisfied{need: need, unit: resolved.unit, detail: "enabled"}},
 	}

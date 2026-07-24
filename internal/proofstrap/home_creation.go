@@ -222,3 +222,69 @@ func planHomeCreation(review ReviewPlan, host hostBinding, account accountBindin
 	review = canonicalReview(review)
 	return homeCreatePlan{plan: review, host: host, account: account, group: group, projection: projection, command: effective}
 }
+
+func (plan homeCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt {
+	if !matchesSingleProjectedCommand(plan.plan, plan.projection, plan.command) {
+		receipt.transition(receiptTransition{failed: true})
+		return receipt
+	}
+	ctx := context.Background()
+	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
+		return guarded
+	}
+	if stale, err := plan.group.guard(ctx, runner); err != nil {
+		return failedAccountGuard(receipt, plan.projection.ID, "guard:primary-group", err.Error())
+	} else if stale {
+		status, _ := receipt.transition(receiptTransition{stale: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "primary group evidence changed immediately before home creation"}}
+		return receipt
+	}
+	if stale, err := plan.account.guard(ctx, runner); err != nil {
+		return failedAccountGuard(receipt, plan.projection.ID, "guard:account", err.Error())
+	} else if stale {
+		status, _ := receipt.transition(receiptTransition{stale: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "account, lock, or home evidence changed immediately before home creation"}}
+		return receipt
+	}
+	intent, reviewedAccount, err := plan.account.presentEvidence()
+	if err != nil {
+		return failedAccountGuard(receipt, plan.projection.ID, "guard:account", err.Error())
+	}
+	if guarded, stop, _ := immediateHostGuard(receipt, plan.host, runner, plan.projection.ID, "host evidence changed immediately before home creation"); stop {
+		return guarded
+	}
+	execution := runner.Run(ctx, plan.command)
+	freshHome := observeHome(runner, intent.home)
+	homeVerified, homeDetail := verifyHomeCreation(intent.home, intent.uid, intent.primaryGroup.gid, freshHome)
+	freshAccount := observeAccountWithGetent(ctx, runner, intent, reviewedAccount.getentPath)
+	lock := observeAccountLockStatus(ctx, runner, plan.account.lock.command, intent.name)
+	accountVerified, accountDetail := verifyAccountCreation(intent, freshAccount, lock)
+	freshGroup := observePrimaryGroup(ctx, runner, plan.group.observed.getentPath, plan.group.intent)
+	groupVerified, groupDetail := verifyPrimaryGroup(plan.group.intent, freshGroup)
+	verification := homeDetail + "; " + accountDetail + "; " + groupDetail
+	if execution.Err != nil || execution.ExitCode != 0 {
+		status, _ := receipt.transition(receiptTransition{attempted: true, failed: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "home creation failed: " + resultDetail(execution) + "; " + verification}}
+		return receipt
+	}
+	if !homeVerified {
+		status, _ := receipt.transition(receiptTransition{attempted: true, failed: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: verification}}
+		return receipt
+	}
+	if !accountVerified || !groupVerified {
+		status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, failed: true})
+		receipt.Blockers = []Blocker{{Subject: "final:home-dependencies", Detail: accountDetail + "; " + groupDetail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: verification}}
+		return receipt
+	}
+	if detail, failed := finalHostGuard(plan.host, runner); failed {
+		status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, failed: true})
+		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: verification + "; " + detail}}
+		return receipt
+	}
+	status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, progress: true})
+	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "verified home creation; replan required"}}
+	return receipt
+}

@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type passwdEntry struct {
@@ -56,11 +55,69 @@ type accountIdentificationBlocked struct {
 	blockers []Blocker
 }
 
-type accountBinding struct {
+//sumtype:decl
+type accountEvidence interface{ accountEvidence() }
+
+type unboundAccountEvidence struct{}
+type identifiedAccountEvidence struct {
 	intent   accountIntent
-	observed accountObservation
+	observed accountSnapshot
+}
+type absentAccountEvidence struct {
+	intent   presentAccountIntent
+	observed accountSnapshot
+}
+
+func (unboundAccountEvidence) accountEvidence()    {}
+func (identifiedAccountEvidence) accountEvidence() {}
+func (absentAccountEvidence) accountEvidence()     {}
+
+type accountBinding struct {
+	evidence accountEvidence
 	lock     accountLockBinding
 	home     homeBinding
+}
+
+func unboundAccount() accountBinding {
+	return accountBinding{evidence: unboundAccountEvidence{}}
+}
+
+func identifiedAccount(intent accountIntent, observed accountSnapshot) accountBinding {
+	return accountBinding{evidence: identifiedAccountEvidence{intent: intent, observed: observed}}
+}
+
+func absentAccount(intent presentAccountIntent, observed accountSnapshot) accountBinding {
+	return accountBinding{evidence: absentAccountEvidence{intent: intent, observed: observed}}
+}
+
+func (binding accountBinding) reviewedEvidence() (accountIntent, accountSnapshot, bool, error) {
+	switch evidence := binding.evidence.(type) {
+	case unboundAccountEvidence:
+		return nil, accountSnapshot{}, false, nil
+	case identifiedAccountEvidence:
+		return evidence.intent, evidence.observed, true, nil
+	case absentAccountEvidence:
+		return evidence.intent, evidence.observed, true, nil
+	case nil:
+		return nil, accountSnapshot{}, false, fmt.Errorf("account binding is uninitialized")
+	default:
+		panic("unknown account evidence")
+	}
+}
+
+func (binding accountBinding) presentEvidence() (presentAccountIntent, accountSnapshot, error) {
+	intent, observed, bound, err := binding.reviewedEvidence()
+	if err != nil {
+		return presentAccountIntent{}, accountSnapshot{}, err
+	}
+	if !bound {
+		return presentAccountIntent{}, accountSnapshot{}, fmt.Errorf("present account is not bound")
+	}
+	present, ok := intent.(presentAccountIntent)
+	if !ok {
+		return presentAccountIntent{}, accountSnapshot{}, fmt.Errorf("bound account is not a present account intent")
+	}
+	return present, observed, nil
 }
 
 func (accountIdentified) accountDecision()            {}
@@ -108,36 +165,25 @@ func intendedUID(intent accountIntent, globalName, localName accountLookup) (uin
 }
 
 func lookupPasswd(ctx context.Context, runner Runner, getent string, local bool, key string) accountLookup {
-	args := []string{"passwd", key}
+	source := nssGlobal
 	if local {
-		args = []string{"-s", "files", "passwd", key}
+		source = nssFiles
 	}
-	result := runner.Run(ctx, Command{Name: getent, Args: args, timeout: 5 * time.Second})
-	if result.Err == nil && result.ExitCode == 2 && result.Stdout == "" && result.Stderr == "" {
+	record, err := lookupNSSRecord(ctx, runner, getent, source, "passwd", key)
+	if err != nil {
+		return passwdLookupFailed{detail: err.Error()}
+	}
+	if record.missing {
 		return passwdMissing{}
 	}
-	if result.Err != nil || result.ExitCode != 0 || result.Stderr != "" {
-		return passwdLookupFailed{detail: resultDetail(result)}
-	}
-	entry, err := parsePasswdEntry(result.Stdout)
+	entry, err := parsePasswdEntry(record.value)
 	if err != nil {
 		return passwdLookupFailed{detail: err.Error()}
 	}
 	return passwdFound{entry: entry}
 }
 
-func parsePasswdEntry(output string) (passwdEntry, error) {
-	if !strings.HasSuffix(output, "\n") {
-		return passwdEntry{}, fmt.Errorf("passwd record is not newline terminated")
-	}
-	record := strings.TrimSuffix(output, "\n")
-	if record == "" || strings.Contains(record, "\n") {
-		count := 0
-		if record != "" {
-			count = strings.Count(record, "\n") + 1
-		}
-		return passwdEntry{}, fmt.Errorf("passwd lookup returned %d records", count)
-	}
+func parsePasswdEntry(record string) (passwdEntry, error) {
 	fields := strings.Split(record, ":")
 	if len(fields) != 7 {
 		return passwdEntry{}, fmt.Errorf("passwd record has %d fields, want 7", len(fields))
@@ -265,22 +311,25 @@ func blockedAccount(name string, facts []Fact, detail string) accountDecision {
 }
 
 func (binding accountBinding) guard(ctx context.Context, runner Runner) (bool, error) {
-	if binding.intent == nil {
+	intent, reviewed, bound, err := binding.reviewedEvidence()
+	if err != nil {
+		return false, err
+	}
+	if !bound {
 		return false, nil
 	}
-	reviewed, ok := binding.observed.(accountSnapshot)
-	if !ok || reviewed.getentPath == "" {
+	if reviewed.getentPath == "" {
 		return false, fmt.Errorf("account observer executable is not identified")
 	}
-	current := observeAccountWithGetent(ctx, runner, binding.intent, reviewed.getentPath)
+	current := observeAccountWithGetent(ctx, runner, intent, reviewed.getentPath)
 	if failed, ok := current.(accountObservationFailed); ok {
 		return false, fmt.Errorf("account cannot be revalidated: %s", failed.detail)
 	}
 	snapshot := current.(accountSnapshot)
-	if blockers := accountLookupBlockers(binding.intent.accountName(), snapshot); len(blockers) != 0 {
+	if blockers := accountLookupBlockers(intent.accountName(), snapshot); len(blockers) != 0 {
 		return false, fmt.Errorf("account cannot be revalidated: %s", blockers[0].Detail)
 	}
-	if !reflect.DeepEqual(current, binding.observed) {
+	if !reflect.DeepEqual(snapshot, reviewed) {
 		return true, nil
 	}
 	if stale, err := binding.lock.guard(ctx, runner); err != nil || stale {
@@ -290,11 +339,11 @@ func (binding accountBinding) guard(ctx context.Context, runner Runner) (bool, e
 }
 
 func (binding accountBinding) uid() (uint32, bool) {
-	snapshot, ok := binding.observed.(accountSnapshot)
+	evidence, ok := binding.evidence.(identifiedAccountEvidence)
 	if !ok {
 		return 0, false
 	}
-	found, ok := snapshot.globalName.(passwdFound)
+	found, ok := evidence.observed.globalName.(passwdFound)
 	return found.entry.uid, ok
 }
 

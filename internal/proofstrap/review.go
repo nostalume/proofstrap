@@ -74,27 +74,31 @@ type ReviewPlan struct {
 func (plan ReviewPlan) Blocked() bool { return len(plan.Blockers) != 0 }
 
 func (plan ReviewPlan) Digest() string {
-	canonical := plan
-	canonical.Modules = append([]string(nil), plan.Modules...)
-	canonical.Account = cloneAccountReview(plan.Account)
-	canonical.HostSettings = cloneHostSettingsReview(plan.HostSettings)
-	canonical.Facts = append([]Fact(nil), plan.Facts...)
-	canonical.Changes = cloneChanges(plan.Changes)
-	canonical.Blockers = append([]Blocker(nil), plan.Blockers...)
-	sort.Strings(canonical.Modules)
-	sort.Slice(canonical.Facts, func(i, j int) bool {
-		return canonical.Facts[i].Subject < canonical.Facts[j].Subject || canonical.Facts[i].Subject == canonical.Facts[j].Subject && canonical.Facts[i].Detail < canonical.Facts[j].Detail
-	})
-	sort.Slice(canonical.Changes, func(i, j int) bool { return canonical.Changes[i].ID < canonical.Changes[j].ID })
-	sort.Slice(canonical.Blockers, func(i, j int) bool {
-		return canonical.Blockers[i].Subject < canonical.Blockers[j].Subject || canonical.Blockers[i].Subject == canonical.Blockers[j].Subject && canonical.Blockers[i].Detail < canonical.Blockers[j].Detail
-	})
+	canonical := canonicalReview(plan)
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
 		panic(err)
 	}
 	digest := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func canonicalReview(review ReviewPlan) ReviewPlan {
+	review.Modules = append([]string(nil), review.Modules...)
+	review.Account = cloneAccountReview(review.Account)
+	review.HostSettings = cloneHostSettingsReview(review.HostSettings)
+	review.Facts = append([]Fact(nil), review.Facts...)
+	review.Changes = cloneChanges(review.Changes)
+	review.Blockers = append([]Blocker(nil), review.Blockers...)
+	sort.Strings(review.Modules)
+	sort.Slice(review.Facts, func(i, j int) bool {
+		return review.Facts[i].Subject < review.Facts[j].Subject || review.Facts[i].Subject == review.Facts[j].Subject && review.Facts[i].Detail < review.Facts[j].Detail
+	})
+	sort.Slice(review.Changes, func(i, j int) bool { return review.Changes[i].ID < review.Changes[j].ID })
+	sort.Slice(review.Blockers, func(i, j int) bool {
+		return review.Blockers[i].Subject < review.Blockers[j].Subject || review.Blockers[i].Subject == review.Blockers[j].Subject && review.Blockers[i].Detail < review.Blockers[j].Detail
+	})
+	return review
 }
 
 func reviewHostSettings(intent *machineIntent) *HostSettingsReview {

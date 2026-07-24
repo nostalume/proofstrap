@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHostnameIntentAcceptsOnlyCanonicalLinuxNames(t *testing.T) {
@@ -60,13 +61,16 @@ func TestHostnameObservationRequiresExactSingleRecords(t *testing.T) {
 func TestExactHostnameNeedsNoMutatorOrAuthority(t *testing.T) {
 	state := hostnameState("node-1")
 	runner := hostnameRunner(hostnameRead("node-1"))
-	runner.files["/proc/1/comm"] = []byte("openrc\n")
+	delete(runner.files, "/proc/1/comm")
 	review := Plan(state, runner)
 	if review.Blocked() || len(review.Changes) != 0 || review.HostSettings == nil || review.HostSettings.Hostname != "node-1" {
 		t.Fatalf("review=%#v", review)
 	}
 	if containsString(runner.pathCalls, "hostnamectl") || runner.euidCalls != 0 {
 		t.Fatalf("paths=%#v euidCalls=%d", runner.pathCalls, runner.euidCalls)
+	}
+	if containsString(runner.events, "read:/proc/1/comm") {
+		t.Fatalf("exact hostname observed PID 1: events=%#v", runner.events)
 	}
 }
 
@@ -122,8 +126,8 @@ func TestExactHostnameBindingPropagatesToPackagePlan(t *testing.T) {
 	state := hostnameState("node-1")
 	state.Modules = []string{"curl"}
 	planned := planFor(state, runner, production)
-	install, ok := planned.(installPlan)
-	if !ok || install.host.hostname == nil || install.host.hostname.intent.value != "node-1" {
+	install, ok := planned.(packagePlan)
+	if !ok || install.host.hostname == nil || install.host.hostname.value != "node-1" {
 		t.Fatalf("planned=%#v", planned)
 	}
 }
@@ -169,18 +173,19 @@ func TestExactHostnameDriftStopsUnrelatedAction(t *testing.T) {
 	runner := hostnameRunner(hostnameRead("node-1"), hostnameRead("drifted"))
 	plannedStep := step{
 		id: "service:start", detail: "start", access: rootStep,
-		command: Command{Name: "/usr/bin/start"},
-		before:  func(context.Context, Runner) error { return nil },
-		verify:  func(context.Context, Runner) (bool, string) { return true, "active" },
+		command: Command{Name: "/usr/bin/start"}, timeout: time.Second,
+		before: func(context.Context, Runner) error { return nil },
+		verify: func(context.Context, Runner) (bool, string) { return true, "active" },
 	}
-	projection := plannedStep.projection()
+	projection := plannedStep.projectionFor(plannedStep.command)
 	plan := readyPlan{
 		plan: ReviewPlan{Changes: []Change{projection}},
 		host: hostBinding{
 			facts:    observeHost(runner).facts,
-			hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+			hostname: &hostnameIntent{value: "node-1"},
 		},
-		steps: []step{plannedStep}, commands: []Command{plannedStep.command},
+		account: unboundAccount(),
+		steps:   mustPrepareSteps(t, []step{plannedStep}),
 	}
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Stale || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted || containsString(runner.calls, "/usr/bin/start") {
@@ -191,17 +196,18 @@ func TestExactHostnameDriftStopsUnrelatedAction(t *testing.T) {
 func TestExactHostnameDriftAfterAppliedActionFailsRemainingActions(t *testing.T) {
 	runner := hostnameRunner(hostnameRead("node-1"), hostnameRead("node-1"), hostnameRead("drifted"))
 	steps := []step{
-		{id: "service:first", detail: "first", access: rootStep, command: Command{Name: "/usr/bin/first"}, before: func(context.Context, Runner) error { return nil }, verify: func(context.Context, Runner) (bool, string) { return true, "active" }},
-		{id: "service:second", detail: "second", access: rootStep, command: Command{Name: "/usr/bin/second"}, before: func(context.Context, Runner) error { return nil }, verify: func(context.Context, Runner) (bool, string) { return true, "active" }},
+		{id: "service:first", detail: "first", access: rootStep, command: Command{Name: "/usr/bin/first"}, timeout: time.Second, before: func(context.Context, Runner) error { return nil }, verify: func(context.Context, Runner) (bool, string) { return true, "active" }},
+		{id: "service:second", detail: "second", access: rootStep, command: Command{Name: "/usr/bin/second"}, timeout: time.Second, before: func(context.Context, Runner) error { return nil }, verify: func(context.Context, Runner) (bool, string) { return true, "active" }},
 	}
 	runner.results["/usr/bin/first"] = []Result{{}}
 	plan := readyPlan{
-		plan: ReviewPlan{Changes: []Change{steps[0].projection(), steps[1].projection()}},
+		plan: ReviewPlan{Changes: []Change{steps[0].projectionFor(steps[0].command), steps[1].projectionFor(steps[1].command)}},
 		host: hostBinding{
 			facts:    observeHost(runner).facts,
-			hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+			hostname: &hostnameIntent{value: "node-1"},
 		},
-		steps: steps, commands: []Command{steps[0].command, steps[1].command},
+		account: unboundAccount(),
+		steps:   mustPrepareSteps(t, steps),
 	}
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Failed || len(receipt.Outcomes) != 2 || receipt.Outcomes[0].Status != Applied || receipt.Outcomes[1].Status != Unattempted || containsString(runner.calls, "/usr/bin/second") {
@@ -213,9 +219,9 @@ func TestUnreadableExactHostnameGuardFailsInsteadOfReportingStale(t *testing.T) 
 	read := hostnameRead("node-1")
 	read[0].err = errors.New("persistent unavailable")
 	runner := hostnameRunner(read)
-	plan := readyPlan{host: hostBinding{
+	plan := readyPlan{account: unboundAccount(), host: hostBinding{
 		facts:    observeHost(runner).facts,
-		hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+		hostname: &hostnameIntent{value: "node-1"},
 	}}
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "guard:host" {
@@ -229,18 +235,19 @@ func TestUnreadableExactHostnameImmediatelyBeforeActionFailsUnattempted(t *testi
 	runner := hostnameRunner(hostnameRead("node-1"), unreadable)
 	plannedStep := step{
 		id: "service:start", detail: "start", access: rootStep,
-		command: Command{Name: "/usr/bin/start"},
-		before:  func(context.Context, Runner) error { return nil },
-		verify:  func(context.Context, Runner) (bool, string) { return true, "active" },
+		command: Command{Name: "/usr/bin/start"}, timeout: time.Second,
+		before: func(context.Context, Runner) error { return nil },
+		verify: func(context.Context, Runner) (bool, string) { return true, "active" },
 	}
-	projection := plannedStep.projection()
+	projection := plannedStep.projectionFor(plannedStep.command)
 	plan := readyPlan{
 		plan: ReviewPlan{Changes: []Change{projection}},
 		host: hostBinding{
 			facts:    observeHost(runner).facts,
-			hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+			hostname: &hostnameIntent{value: "node-1"},
 		},
-		steps: []step{plannedStep}, commands: []Command{plannedStep.command},
+		account: unboundAccount(),
+		steps:   mustPrepareSteps(t, []step{plannedStep}),
 	}
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "guard:host" || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted || containsString(runner.calls, "/usr/bin/start") {
@@ -259,13 +266,15 @@ func TestUnreadableExactHostnameImmediatelyBeforePackageMutationFailsUnattempted
 		plan: ReviewPlan{Changes: []Change{change}},
 		host: hostBinding{
 			facts:    observeHost(runner).facts,
-			hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+			hostname: &hostnameIntent{value: "node-1"},
 		},
+		account:    unboundAccount(),
 		projection: change, command: command,
+		change: packageEffect(func(_ context.Context, _ Runner, _ Command, guard packageMutationGuard) packageResult {
+			return packageResult{err: guard()}
+		}),
 	}
-	receipt := plan.apply(runner, ApplyReceipt{}, func(_ context.Context, _ Runner, _ Command, guard packageMutationGuard) packageResult {
-		return packageResult{err: guard()}
-	})
+	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "guard:host" || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted {
 		t.Fatalf("receipt=%#v", receipt)
 	}
@@ -273,9 +282,9 @@ func TestUnreadableExactHostnameImmediatelyBeforePackageMutationFailsUnattempted
 
 func TestHostnameOnlyApplyRejectsFinalDrift(t *testing.T) {
 	runner := hostnameRunner(hostnameRead("node-1"), hostnameRead("drifted"))
-	plan := readyPlan{host: hostBinding{
+	plan := readyPlan{account: unboundAccount(), host: hostBinding{
 		facts:    observeHost(runner).facts,
-		hostname: &hostnameBinding{intent: hostnameIntent{value: "node-1"}},
+		hostname: &hostnameIntent{value: "node-1"},
 	}}
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "final:host" {
@@ -290,6 +299,22 @@ func TestHostnameApplyReportsAppliedWhenFailedCommandReachedExactPostState(t *te
 	runner.results[hostnameCommand("node-1")] = []Result{{ExitCode: 1, Stderr: "late failure"}}
 	receipt := Apply(state, runner, review.Digest())
 	if receipt.Status != Failed || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Applied || !strings.Contains(receipt.Outcomes[0].Detail, "late failure") || !strings.Contains(receipt.Outcomes[0].Detail, "persistent=node-1; runtime=node-1") {
+		t.Fatalf("receipt=%#v", receipt)
+	}
+}
+
+func TestHostnameFailedCommandAndFinalHostDriftPreserveBothEvidence(t *testing.T) {
+	state := hostnameState("node-1")
+	review := Plan(state, hostnameRunner(hostnameRead("old")))
+	runner := hostnameRunner(hostnameRead("old"), hostnameRead("old"), hostnameRead("node-1"))
+	runner.fileResults["/proc/1/comm"] = []fileResult{
+		{contents: []byte("systemd\n")},
+		{contents: []byte("systemd\n")},
+		{contents: []byte("openrc\n")},
+	}
+	runner.results[hostnameCommand("node-1")] = []Result{{ExitCode: 1, Stderr: "late failure"}}
+	receipt := Apply(state, runner, review.Digest())
+	if receipt.Status != Failed || len(receipt.Blockers) != 1 || receipt.Blockers[0].Subject != "final:host" || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Applied || !strings.Contains(receipt.Outcomes[0].Detail, "late failure") || !strings.Contains(receipt.Outcomes[0].Detail, "host evidence changed") {
 		t.Fatalf("receipt=%#v", receipt)
 	}
 }

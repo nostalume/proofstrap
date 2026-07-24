@@ -3,13 +3,74 @@ package proofstrap
 import (
 	"context"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
 
+func TestPackageBehaviorConstructorRequiresInventoryAndInstall(t *testing.T) {
+	inventory := func(context.Context, Runner) (packageEvidence, error) { return packageEvidence{}, nil }
+	install := func([]string) Command { return Command{Name: "/usr/bin/install"} }
+	if _, err := newPackageBehavior(apt, "1", map[PackageKey]string{}, inventory, install, nil); err != nil {
+		t.Fatalf("valid behavior: %v", err)
+	}
+	for _, test := range []struct {
+		name      string
+		inventory func(context.Context, Runner) (packageEvidence, error)
+		install   func([]string) Command
+	}{
+		{name: "missing inventory", install: install},
+		{name: "missing install", inventory: inventory},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := newPackageBehavior(apt, "1", map[PackageKey]string{}, test.inventory, test.install, nil); err == nil {
+				t.Fatal("malformed behavior was accepted")
+			}
+		})
+	}
+}
+
+func TestPackageMutationTransportOwnsGuardedRunAndPostObservation(t *testing.T) {
+	before := packageEvidence{installed: packageSet{"base": {}}, rooted: packageSet{"base": {}}}
+	after := packageEvidence{installed: packageSet{"base": {}, "dbus": {}}, rooted: packageSet{"base": {}, "dbus": {}}}
+	inventories := 0
+	postHasDeadline := false
+	inventory := func(ctx context.Context, _ Runner) (packageEvidence, error) {
+		inventories++
+		if inventories == 2 {
+			_, postHasDeadline = ctx.Deadline()
+			return after, nil
+		}
+		return before, nil
+	}
+	guarded := false
+	runner := &testRunner{results: map[string][]Result{"/usr/bin/install dbus": {{}}}}
+	result, err := runPackageMutation(context.Background(), runner, inventory, before, Command{Name: "/usr/bin/install", Args: []string{"dbus"}}, func() error {
+		guarded = true
+		return nil
+	}, "package evidence changed before mutation")
+	if err != nil || !result.attempted || result.observeErr != nil || !reflect.DeepEqual(result.after, after) || inventories != 2 || !guarded || !postHasDeadline {
+		t.Fatalf("result=%#v err=%v inventories=%d guarded=%v deadline=%v", result, err, inventories, guarded, postHasDeadline)
+	}
+
+	inventories = 0
+	guarded = false
+	staleInventory := func(context.Context, Runner) (packageEvidence, error) {
+		inventories++
+		return after, nil
+	}
+	result, err = runPackageMutation(context.Background(), runner, staleInventory, before, Command{Name: "/usr/bin/install", Args: []string{"dbus"}}, func() error {
+		guarded = true
+		return nil
+	}, "package evidence changed before mutation")
+	if err == nil || result.attempted || guarded || inventories != 1 {
+		t.Fatalf("stale result=%#v err=%v inventories=%d guarded=%v", result, err, inventories, guarded)
+	}
+}
+
 func TestPackageBehaviorRequiresInstalledAndRootedNames(t *testing.T) {
-	demand := packageDemand{required: []resolvedPackage{{key: "sway", name: "sway"}}}
+	demand := []resolvedPackage{{key: "sway", name: "sway"}}
 	for _, test := range []struct {
 		name     string
 		evidence packageEvidence
@@ -57,7 +118,7 @@ func TestPackageBehaviorBlocksUnknownRootEvidence(t *testing.T) {
 	behavior := packageBehavior{inventory: func(context.Context, Runner) (packageEvidence, error) {
 		return packageEvidence{}, context.DeadlineExceeded
 	}}
-	state := behavior.inspect(context.Background(), &testRunner{}, packageDemand{required: []resolvedPackage{{key: "sway", name: "sway"}}})
+	state := behavior.inspect(context.Background(), &testRunner{}, []resolvedPackage{{key: "sway", name: "sway"}})
 	blocked, ok := state.(packageBlocked)
 	if !ok || !strings.Contains(blocked.reason, "package evidence") {
 		t.Fatalf("state=%#v", state)
@@ -141,7 +202,7 @@ func TestPacmanBehaviorBuildsExplicitRootChange(t *testing.T) {
 		},
 	}
 	behavior := constructPacmanBehavior(runner.paths, "7.0.0")
-	state := behavior.inspect(context.Background(), runner, packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}})
+	state := behavior.inspect(context.Background(), runner, []resolvedPackage{{key: "dbus", name: "dbus"}})
 	change, ok := state.(packageRootChange)
 	if !ok || change.command.String() != "/usr/bin/pacman -D --asexplicit dbus" {
 		t.Fatalf("state=%#v", state)
@@ -167,7 +228,7 @@ func TestDNFBehaviorObservesUserInstalledRoots(t *testing.T) {
 		} else {
 			behavior = constructDNF5Behavior(runner.paths, "5.2.0")
 		}
-		state := behavior.inspect(context.Background(), runner, packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}})
+		state := behavior.inspect(context.Background(), runner, []resolvedPackage{{key: "dbus", name: "dbus"}})
 		_, ok := state.(packageDone)
 		if !ok || len(runner.calls) != 2 {
 			t.Fatalf("manager=%s state=%#v calls=%#v", manager, state, runner.calls)
@@ -194,7 +255,7 @@ func TestZypperBehaviorBuildsInstallChange(t *testing.T) {
 		results: map[string][]Result{"/usr/bin/rpm -qa --qf %{NAME}\\n": {{Stdout: ""}}},
 	}
 	state := constructZypperBehavior(runner.paths, "1.14.87").inspect(
-		context.Background(), runner, packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus-1"}}},
+		context.Background(), runner, []resolvedPackage{{key: "dbus", name: "dbus-1"}},
 	)
 	change, ok := state.(packageInstallChange)
 	if !ok || change.command.String() != "/usr/bin/zypper --non-interactive install --no-recommends dbus-1" {
@@ -219,7 +280,7 @@ func TestPackageInstallChangeAllowsDependenciesAndVerifiesRoots(t *testing.T) {
 	}}
 	change := packageInstallChange{
 		behavior: behavior,
-		demand:   packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}},
+		demand:   []resolvedPackage{{key: "dbus", name: "dbus"}},
 		before:   before,
 		install:  packageSet{"dbus": {}},
 		command:  Command{Name: "/usr/bin/apt-get", Args: []string{"install", "dbus"}},
@@ -239,7 +300,7 @@ func TestPackageInstallChangeGuardsAfterInventoryBeforeMutation(t *testing.T) {
 			inventories++
 			return evidence, nil
 		}},
-		demand: packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}},
+		demand: []resolvedPackage{{key: "dbus", name: "dbus"}},
 		before: evidence, install: packageSet{"dbus": {}}, command: Command{Name: "/usr/bin/apt-get", Args: []string{"install", "dbus"}},
 	}
 	result := change.apply(context.Background(), &testRunner{}, change.command, func() error {
@@ -266,7 +327,7 @@ func TestPackageRootChangeGuardsAfterInventoryBeforeMutation(t *testing.T) {
 			inventories++
 			return evidence, nil
 		}},
-		demand: packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}},
+		demand: []resolvedPackage{{key: "dbus", name: "dbus"}},
 		before: evidence, root: packageSet{"dbus": {}}, command: Command{Name: "/usr/bin/apt-mark", Args: []string{"manual", "dbus"}},
 	}
 	result := change.apply(context.Background(), &testRunner{}, change.command, func() error {
@@ -289,7 +350,7 @@ func TestPackageInstallFailureStillObservesPostAttemptEvidence(t *testing.T) {
 	}}
 	change := packageInstallChange{
 		behavior: behavior,
-		demand:   packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}},
+		demand:   []resolvedPackage{{key: "dbus", name: "dbus"}},
 		before:   evidence,
 		install:  packageSet{"dbus": {}},
 		command:  Command{Name: "/usr/bin/apt-get", Args: []string{"install", "dbus"}},
@@ -317,7 +378,7 @@ func TestPackageInstallChangeRejectsRemovalAndCollateralRoot(t *testing.T) {
 	}}
 	change := packageInstallChange{
 		behavior: behavior,
-		demand:   packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}},
+		demand:   []resolvedPackage{{key: "dbus", name: "dbus"}},
 		before:   before,
 		install:  packageSet{"dbus": {}},
 		command:  Command{Name: "/usr/bin/apt-get", Args: []string{"install", "dbus"}},
@@ -343,7 +404,7 @@ func TestPackageRootChangeBoundsIndependentPostAttemptObservation(t *testing.T) 
 	}}
 	change := packageRootChange{
 		behavior: behavior,
-		demand:   packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}},
+		demand:   []resolvedPackage{{key: "dbus", name: "dbus"}},
 		before:   before,
 		root:     packageSet{"dbus": {}},
 		command:  Command{Name: "/usr/bin/apt-mark", Args: []string{"manual", "dbus"}},
@@ -374,7 +435,7 @@ func TestPackageRootChangeRejectsUnreviewedRootPromotion(t *testing.T) {
 	}}
 	change := packageRootChange{
 		behavior: behavior,
-		demand:   packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}},
+		demand:   []resolvedPackage{{key: "dbus", name: "dbus"}},
 		before:   before,
 		root:     packageSet{"dbus": {}},
 		command:  Command{Name: "/usr/bin/apt-mark", Args: []string{"manual", "dbus"}},
@@ -399,7 +460,7 @@ func TestPackageRootChangeReportsCollateralAfterFailedCommand(t *testing.T) {
 	}}
 	change := packageRootChange{
 		behavior: behavior,
-		demand:   packageDemand{required: []resolvedPackage{{key: "dbus", name: "dbus"}}},
+		demand:   []resolvedPackage{{key: "dbus", name: "dbus"}},
 		before:   before,
 		root:     packageSet{"dbus": {}},
 		command:  Command{Name: "/usr/bin/apt-mark", Args: []string{"manual", "dbus"}},
@@ -580,7 +641,7 @@ func TestRecognizedPackageBehaviorBindsItsOwnNativeNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	demand, blockers := behavior.bind(selected)
-	if len(blockers) != 0 || len(demand.required) != 1 || demand.required[0].name != "network-manager" {
+	if len(blockers) != 0 || len(demand) != 1 || demand[0].name != "network-manager" {
 		t.Fatalf("demand=%#v blockers=%#v", demand, blockers)
 	}
 }
@@ -594,4 +655,29 @@ func TestPackageBehaviorBindingFailsClosed(t *testing.T) {
 	if len(blockers) != 1 || blockers[0].Subject != "binding:package:networkmanager" {
 		t.Fatalf("blockers=%#v", blockers)
 	}
+}
+
+func TestPackageVersionEvidenceMatchesPreviousRE2Grammar(t *testing.T) {
+	oracle := regexp.MustCompile(`\b\d+(?:\.\d+)+\b`)
+	for _, input := range []string{
+		"zypper 1.14.87\n", "v1.2.3", "1.2x", "1.2.3x", "_1.2", "é1.2", "1.2_", "1.2-rc", "01.002", "1.", ".1.2", "1.2 and 3.4",
+	} {
+		if got, want := packageVersionEvidence(input), oracle.FindString(input); got != want {
+			t.Errorf("input=%q got=%q want=%q", input, got, want)
+		}
+	}
+	alphabet := []string{"a", "_", "-", ".", "0", "1", "é"}
+	var visit func(string, int)
+	visit = func(prefix string, remaining int) {
+		if got, want := packageVersionEvidence(prefix), oracle.FindString(prefix); got != want {
+			t.Fatalf("input=%q got=%q want=%q", prefix, got, want)
+		}
+		if remaining == 0 {
+			return
+		}
+		for _, symbol := range alphabet {
+			visit(prefix+symbol, remaining-1)
+		}
+	}
+	visit("", 5)
 }

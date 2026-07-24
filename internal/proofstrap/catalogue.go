@@ -22,6 +22,17 @@ const (
 	serviceActive
 )
 
+func serviceTargetPrecedence(target serviceTarget) int {
+	switch target {
+	case serviceEnabled:
+		return 0
+	case serviceActive:
+		return 1
+	default:
+		panic("unknown service target")
+	}
+}
+
 //sumtype:decl
 type requirement interface{ requirement() }
 

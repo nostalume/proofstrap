@@ -126,14 +126,11 @@ func hostnameFacts(observed hostnameObserved) []Fact {
 	}
 }
 
-type hostnameBinding struct {
-	intent hostnameIntent
-}
-
 type hostBinding struct {
 	facts    HostFacts
-	hostname *hostnameBinding
-	timezone *timezoneBinding
+	pid1     string
+	hostname *hostnameIntent
+	timezone *timezoneIntent
 }
 
 func (binding hostBinding) guard(runner Runner) (bool, error) {
@@ -144,9 +141,18 @@ func (binding hostBinding) guard(runner Runner) (bool, error) {
 	if !reflect.DeepEqual(inspection.facts, binding.facts) {
 		return true, nil
 	}
+	if binding.pid1 != "" {
+		pid1, err := observePID1(runner)
+		if err != nil {
+			return false, fmt.Errorf("PID 1 evidence cannot be revalidated: %w", err)
+		}
+		if pid1 != binding.pid1 {
+			return true, nil
+		}
+	}
 	if binding.hostname != nil {
 		fresh := observeHostname(runner)
-		switch decision := reconcileHostname(binding.hostname.intent, fresh).(type) {
+		switch decision := reconcileHostname(*binding.hostname, fresh).(type) {
 		case hostnameExact:
 		case hostnameBlocked:
 			return false, fmt.Errorf("hostname evidence cannot be revalidated: %s", blockersDetail(decision.blockers))
@@ -157,7 +163,7 @@ func (binding hostBinding) guard(runner Runner) (bool, error) {
 		}
 	}
 	if binding.timezone != nil {
-		switch decision := reconcileTimezone(binding.timezone.intent, observeTimezone(runner)).(type) {
+		switch decision := reconcileTimezone(*binding.timezone, observeTimezone(runner)).(type) {
 		case timezoneExact:
 		case timezoneBlocked:
 			return false, fmt.Errorf("timezone evidence cannot be revalidated: %s", blockersDetail(decision.blockers))
@@ -172,7 +178,7 @@ func (binding hostBinding) guard(runner Runner) (bool, error) {
 
 type hostnamePlan struct {
 	plan       ReviewPlan
-	host       HostFacts
+	host       hostBinding
 	intent     hostnameIntent
 	before     hostnameObserved
 	projection Change
@@ -183,10 +189,16 @@ func (hostnamePlan) planned()                 {}
 func (value hostnamePlan) review() ReviewPlan { return value.plan }
 
 func planHostnameChange(review ReviewPlan, host HostFacts, intent hostnameIntent, before hostnameObserved, runner Runner) planned {
-	if host.PID1 != "systemd" {
+	pid1, err := observePID1(runner)
+	if err != nil {
+		review.Blockers = append(review.Blockers, Blocker{Subject: "hostname:mutator", Detail: "PID 1 cannot be observed: " + err.Error()})
+		return blocked(review)
+	}
+	if pid1 != "systemd" {
 		review.Blockers = append(review.Blockers, Blocker{Subject: "hostname:mutator", Detail: "hostname changes require systemd PID 1"})
 		return blocked(review)
 	}
+	review.Facts = append(review.Facts, Fact{Subject: "service-manager", Detail: "systemd"})
 	hostnamectl, err := runner.LookPath("hostnamectl")
 	if err != nil {
 		review.Blockers = append(review.Blockers, Blocker{Subject: "hostname:mutator", Detail: "hostnamectl executable is unavailable: " + err.Error()})
@@ -208,61 +220,62 @@ func planHostnameChange(review ReviewPlan, host HostFacts, intent hostnameIntent
 	projection := Change{ID: "hostname", Detail: "set persistent and runtime hostname to " + intent.value, Command: &projected}
 	review.Changes = append(review.Changes, projection)
 	return hostnamePlan{
-		plan: canonicalReview(review), host: host, intent: intent, before: before,
+		plan: canonicalReview(review), host: hostBinding{facts: host, pid1: pid1}, intent: intent, before: before,
 		projection: projection, command: effective,
 	}
 }
 
 func (plan hostnamePlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt {
-	projected := Command{Name: plan.command.Name, Args: append([]string(nil), plan.command.Args...)}
-	if len(plan.plan.Changes) != 1 || !reflect.DeepEqual(plan.plan.Changes[0], plan.projection) || plan.projection.Command == nil || !reflect.DeepEqual(*plan.projection.Command, projected) {
-		receipt.Status = Failed
+	if !matchesSingleProjectedCommand(plan.plan, plan.projection, plan.command) {
+		receipt.transition(receiptTransition{failed: true})
 		return receipt
 	}
-	inspection := observeHost(runner)
-	if len(inspection.blockers) != 0 || !reflect.DeepEqual(inspection.facts, plan.host) {
-		receipt.Status = Stale
-		return receipt
+	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
+		return guarded
 	}
 	fresh := observeHostname(runner)
 	if blockers := fresh.blockers(); len(blockers) != 0 {
-		receipt.Status = Failed
+		status, _ := receipt.transition(receiptTransition{failed: true})
 		receipt.Blockers = blockers
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "hostname evidence cannot be revalidated"}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "hostname evidence cannot be revalidated"}}
 		return receipt
 	}
 	if !reflect.DeepEqual(fresh, plan.before) {
-		receipt.Status = Stale
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Unattempted, Detail: "hostname evidence changed immediately before mutation"}}
+		status, _ := receipt.transition(receiptTransition{stale: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "hostname evidence changed immediately before mutation"}}
 		return receipt
 	}
 	execution := runner.Run(context.Background(), plan.command)
 	post := observeHostname(runner)
 	verified, detail := verifyHostname(plan.intent, post)
 	if execution.Err != nil || execution.ExitCode != 0 {
-		outcome := FailedAction
+		executionDetail := "hostnamectl failed: " + resultDetail(execution) + "; post-state: " + detail
 		if verified {
-			outcome = Applied
+			if hostDetail, failed := finalHostGuard(plan.host, runner); failed {
+				status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, failed: true})
+				receipt.Blockers = []Blocker{{Subject: "final:host", Detail: hostDetail}}
+				receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: executionDetail + "; " + hostDetail}}
+				return receipt
+			}
 		}
-		receipt.Status = Failed
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: outcome, Detail: "hostnamectl failed: " + resultDetail(execution) + "; post-state: " + detail}}
+		status, _ := receipt.transition(receiptTransition{attempted: true, verified: verified, failed: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: executionDetail}}
 		return receipt
 	}
 	if !verified {
-		receipt.Status = Failed
+		status, _ := receipt.transition(receiptTransition{attempted: true, failed: true})
 		receipt.Blockers = post.blockers()
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: FailedAction, Detail: "post-state: " + detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "post-state: " + detail}}
 		return receipt
 	}
-	finalHost := observeHost(runner)
-	if len(finalHost.blockers) != 0 || !reflect.DeepEqual(finalHost.facts, plan.host) {
-		receipt.Status = Failed
-		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: "host identity changed after hostname mutation"}}
-		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: detail}}
+	if detail, failed := finalHostGuard(plan.host, runner); failed {
+		status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, failed: true})
+		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: detail}}
 		return receipt
 	}
-	receipt.Status = ReplanRequired
-	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: Applied, Detail: detail + "; replan required"}}
+	status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, progress: true})
+	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: detail + "; replan required"}}
 	return receipt
 }
 

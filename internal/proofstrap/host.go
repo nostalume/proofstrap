@@ -12,7 +12,6 @@ type HostFacts struct {
 	ID      string   `json:"id"`
 	Version string   `json:"version,omitempty"`
 	Like    []string `json:"like,omitempty"`
-	PID1    string   `json:"pid1"`
 }
 
 type hostInspection struct {
@@ -38,16 +37,19 @@ func observeHost(runner Runner) hostInspection {
 		}
 	}
 
-	contents, err = runner.ReadFile("/proc/1/comm")
-	if err != nil {
-		inspection.blockers = append(inspection.blockers, Blocker{Subject: "service-manager", Detail: err.Error()})
-		return inspection
-	}
-	inspection.facts.PID1 = strings.TrimSpace(string(contents))
-	if inspection.facts.PID1 == "" {
-		inspection.blockers = append(inspection.blockers, Blocker{Subject: "service-manager", Detail: "PID 1 name is empty"})
-	}
 	return inspection
+}
+
+func observePID1(runner Runner) (string, error) {
+	contents, err := runner.ReadFile("/proc/1/comm")
+	if err != nil {
+		return "", err
+	}
+	pid1 := strings.TrimSpace(string(contents))
+	if pid1 == "" {
+		return "", fmt.Errorf("PID 1 name is empty")
+	}
+	return pid1, nil
 }
 
 func normalizeIDLike(value string) []string {

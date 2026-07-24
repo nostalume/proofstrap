@@ -206,3 +206,69 @@ func verifyAccountCreation(intent presentAccountIntent, observed accountObservat
 	}
 	return false, "account creation could not be verified"
 }
+
+func (plan accountCreatePlan) apply(runner Runner, receipt ApplyReceipt) ApplyReceipt {
+	if !matchesSingleProjectedCommand(plan.plan, plan.projection, plan.command) {
+		receipt.transition(receiptTransition{failed: true})
+		return receipt
+	}
+	ctx := context.Background()
+	if guarded, stop := initialHostGuard(receipt, plan.host, runner); stop {
+		return guarded
+	}
+	if stale, err := plan.group.guard(ctx, runner); err != nil {
+		return failedAccountGuard(receipt, plan.projection.ID, "guard:primary-group", err.Error())
+	} else if stale {
+		status, _ := receipt.transition(receiptTransition{stale: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "primary group evidence changed immediately before account creation"}}
+		return receipt
+	}
+	if stale, err := plan.account.guard(ctx, runner); err != nil {
+		return failedAccountGuard(receipt, plan.projection.ID, "guard:account", err.Error())
+	} else if stale {
+		status, _ := receipt.transition(receiptTransition{stale: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "account evidence changed immediately before account creation"}}
+		return receipt
+	}
+	intent, reviewedAccount, err := plan.account.presentEvidence()
+	if err != nil {
+		return failedAccountGuard(receipt, plan.projection.ID, "guard:account", err.Error())
+	}
+	if guarded, stop, _ := immediateHostGuard(receipt, plan.host, runner, plan.projection.ID, "host evidence changed immediately before account creation"); stop {
+		return guarded
+	}
+	execution := runner.Run(ctx, plan.command)
+	freshAccount := observeAccountWithGetent(ctx, runner, intent, reviewedAccount.getentPath)
+	lock := accountLockObservation(accountLockUnobserved{})
+	if _, identified := reconcileAccount(intent, freshAccount).(accountIdentified); identified {
+		lock = observeAccountLockStatus(ctx, runner, plan.lockStatusCommand, intent.name)
+	}
+	accountVerified, accountDetail := verifyAccountCreation(intent, freshAccount, lock)
+	freshGroup := observePrimaryGroup(ctx, runner, plan.group.observed.getentPath, plan.group.intent)
+	groupVerified, groupDetail := verifyPrimaryGroup(plan.group.intent, freshGroup)
+	if execution.Err != nil || execution.ExitCode != 0 {
+		status, _ := receipt.transition(receiptTransition{attempted: true, failed: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "useradd failed: " + resultDetail(execution) + "; " + accountDetail + "; " + groupDetail}}
+		return receipt
+	}
+	if !accountVerified {
+		status, _ := receipt.transition(receiptTransition{attempted: true, failed: true})
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: accountDetail}}
+		return receipt
+	}
+	if !groupVerified {
+		status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, failed: true})
+		receipt.Blockers = []Blocker{{Subject: "final:primary-group", Detail: groupDetail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: accountDetail + "; " + groupDetail}}
+		return receipt
+	}
+	if detail, failed := finalHostGuard(plan.host, runner); failed {
+		status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, failed: true})
+		receipt.Blockers = []Blocker{{Subject: "final:host", Detail: detail}}
+		receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: accountDetail + "; " + detail}}
+		return receipt
+	}
+	status, _ := receipt.transition(receiptTransition{attempted: true, verified: true, progress: true})
+	receipt.Outcomes = []ActionOutcome{{Action: plan.projection.ID, Status: status, Detail: "verified locked account creation; replan required"}}
+	return receipt
+}

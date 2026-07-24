@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTimezoneIntentRejectsNoncanonicalZoneinfoPaths(t *testing.T) {
@@ -18,11 +19,12 @@ func TestTimezoneIntentRejectsNoncanonicalZoneinfoPaths(t *testing.T) {
 
 func TestExactTimezoneNeedsNoMutatorAuthorityOrRTCInspection(t *testing.T) {
 	runner := timezoneRunner("Europe/Berlin")
+	delete(runner.files, "/proc/1/comm")
 	review := Plan(timezoneState("Europe/Berlin"), runner)
 	if review.Blocked() || len(review.Changes) != 0 || review.HostSettings == nil || review.HostSettings.Timezone != "Europe/Berlin" || !containsFact(review.Facts, "timezone", "Europe/Berlin") {
 		t.Fatalf("review=%#v", review)
 	}
-	if containsString(runner.pathCalls, "timedatectl") || runner.euidCalls != 0 || containsString(runner.calls, timezoneRTCCommand()) {
+	if containsString(runner.pathCalls, "timedatectl") || runner.euidCalls != 0 || containsString(runner.calls, timezoneRTCCommand()) || containsString(runner.events, "read:/proc/1/comm") {
 		t.Fatalf("paths=%#v events=%#v euid=%d", runner.pathCalls, runner.events, runner.euidCalls)
 	}
 }
@@ -74,20 +76,21 @@ func TestExactTimezoneBindingPropagatesToPackagePlan(t *testing.T) {
 	state := timezoneState("Europe/Berlin")
 	state.Modules = []string{"curl"}
 	planned := planFor(state, runner, production)
-	install, ok := planned.(installPlan)
-	if !ok || install.host.timezone == nil || install.host.timezone.intent.value != "Europe/Berlin" {
+	install, ok := planned.(packagePlan)
+	if !ok || install.host.timezone == nil || install.host.timezone.value != "Europe/Berlin" {
 		t.Fatalf("planned=%#v", planned)
 	}
 }
 
 func TestExactTimezoneDriftStopsUnrelatedAction(t *testing.T) {
 	runner := timezoneRunner("Europe/Berlin", "Etc/UTC")
-	plannedStep := step{id: "service:start", detail: "start", access: rootStep, command: Command{Name: "/usr/bin/start"}, before: func(context.Context, Runner) error { return nil }, verify: func(context.Context, Runner) (bool, string) { return true, "active" }}
-	projection := plannedStep.projection()
+	plannedStep := step{id: "service:start", detail: "start", access: rootStep, command: Command{Name: "/usr/bin/start"}, timeout: time.Second, before: func(context.Context, Runner) error { return nil }, verify: func(context.Context, Runner) (bool, string) { return true, "active" }}
+	projection := plannedStep.projectionFor(plannedStep.command)
 	plan := readyPlan{
-		plan:  ReviewPlan{Changes: []Change{projection}},
-		host:  hostBinding{facts: observeHost(runner).facts, timezone: &timezoneBinding{intent: mustTimezone("Europe/Berlin")}},
-		steps: []step{plannedStep}, commands: []Command{plannedStep.command},
+		plan:    ReviewPlan{Changes: []Change{projection}},
+		host:    hostBinding{facts: observeHost(runner).facts, timezone: &timezoneIntent{value: "Europe/Berlin"}},
+		account: unboundAccount(),
+		steps:   mustPrepareSteps(t, []step{plannedStep}),
 	}
 	receipt := plan.apply(runner, ApplyReceipt{})
 	if receipt.Status != Stale || len(receipt.Outcomes) != 1 || receipt.Outcomes[0].Status != Unattempted || containsString(runner.calls, "/usr/bin/start") {
@@ -183,7 +186,6 @@ func TestTimezoneObservationAcceptsAbsoluteZoneinfoSymlink(t *testing.T) {
 	runner.lstats[localtimePath] = []pathResult{{info: PathInfo{Kind: SymlinkPath}}}
 	runner.readlinks[localtimePath] = []linkResult{{target: "/usr/share/zoneinfo/Etc/UTC"}}
 	runner.evalSymlinks[zoneinfoRoot+"/Etc/UTC"] = []linkResult{{target: zoneinfoRoot + "/Etc/UTC"}}
-	runner.lstats[zoneinfoRoot+"/Etc/UTC"] = []pathResult{{info: PathInfo{Kind: RegularPath}}}
 	runner.files[zoneinfoRoot+"/Etc/UTC"] = []byte("TZif")
 	if _, ok := reconcileTimezone(mustTimezone("Etc/UTC"), observeTimezone(runner)).(timezoneExact); !ok {
 		t.Fatal("absolute zoneinfo symlink was not admitted")
@@ -192,14 +194,12 @@ func TestTimezoneObservationAcceptsAbsoluteZoneinfoSymlink(t *testing.T) {
 
 func TestTimezoneObservationAcceptsZoneinfoAliasThatResolvesToTZif(t *testing.T) {
 	runner := timezoneRunner("Europe/Berlin")
-	runner.lstats[zoneinfoRoot+"/Europe/Berlin"][0] = pathResult{info: PathInfo{Kind: SymlinkPath}}
 	runner.evalSymlinks[zoneinfoRoot+"/Europe/Berlin"][0] = linkResult{target: zoneinfoRoot + "/Etc/UTC"}
-	runner.lstats[zoneinfoRoot+"/Etc/UTC"] = []pathResult{{info: PathInfo{Kind: RegularPath}}}
 	runner.files[zoneinfoRoot+"/Etc/UTC"] = []byte("TZif")
 	if _, ok := reconcileTimezone(mustTimezone("Europe/Berlin"), observeTimezone(runner)).(timezoneExact); !ok {
 		t.Fatal("zoneinfo alias resolving to TZif was not admitted")
 	}
-	if !containsString(runner.events, "prefix:4:"+zoneinfoRoot+"/Etc/UTC") || containsString(runner.events, "read:"+zoneinfoRoot+"/Etc/UTC") {
+	if !containsString(runner.events, "regular-prefix:4:"+zoneinfoRoot+"/Etc/UTC") || containsString(runner.events, "read:"+zoneinfoRoot+"/Etc/UTC") {
 		t.Fatalf("events=%#v", runner.events)
 	}
 }
@@ -215,8 +215,8 @@ func TestTimezoneObservationRejectsZoneinfoAliasEscapingRoot(t *testing.T) {
 
 func TestTimezoneObservationRejectsNonregularCanonicalTargetBeforeRead(t *testing.T) {
 	runner := timezoneRunner("Europe/Berlin")
-	runner.lstats[zoneinfoRoot+"/Europe/Berlin"][0] = pathResult{info: PathInfo{Kind: OtherPath}}
-	if _, ok := reconcileTimezone(mustTimezone("Europe/Berlin"), observeTimezone(runner)).(timezoneBlocked); !ok || containsString(runner.events, "prefix:4:") {
+	runner.regularPrefixes[zoneinfoRoot+"/Europe/Berlin"] = []fileResult{{err: errors.New("not a regular file")}}
+	if _, ok := reconcileTimezone(mustTimezone("Europe/Berlin"), observeTimezone(runner)).(timezoneBlocked); !ok || !containsString(runner.events, "regular-prefix:4:"+zoneinfoRoot+"/Europe/Berlin") {
 		t.Fatalf("events=%#v", runner.events)
 	}
 }
@@ -286,12 +286,11 @@ func timezoneRunner(zones ...string) *testRunner {
 		{ExitCode: 0, Stdout: "no\n"},
 	}
 	runner.readlinks = map[string][]linkResult{}
+	runner.regularPrefixes = map[string][]fileResult{}
 	runner.evalSymlinks = map[string][]linkResult{
 		zoneinfoRoot + "/Europe/Berlin": {{target: zoneinfoRoot + "/Europe/Berlin"}, {target: zoneinfoRoot + "/Europe/Berlin"}},
 	}
-	runner.lstats = map[string][]pathResult{
-		zoneinfoRoot + "/Europe/Berlin": {{info: PathInfo{Kind: RegularPath}}, {info: PathInfo{Kind: RegularPath}}},
-	}
+	runner.lstats = map[string][]pathResult{}
 	runner.files[zoneinfoRoot+"/Europe/Berlin"] = []byte("TZif")
 	for _, zone := range zones {
 		runner.lstats[localtimePath] = append(runner.lstats[localtimePath], pathResult{info: PathInfo{Kind: SymlinkPath}})
@@ -299,7 +298,6 @@ func timezoneRunner(zones ...string) *testRunner {
 		zonePath := zoneinfoRoot + "/" + zone
 		runner.evalSymlinks[zonePath] = append(runner.evalSymlinks[zonePath], linkResult{target: zonePath})
 		runner.files[zonePath] = []byte("TZif")
-		runner.lstats[zonePath] = append(runner.lstats[zonePath], pathResult{info: PathInfo{Kind: RegularPath}})
 	}
 	return runner
 }

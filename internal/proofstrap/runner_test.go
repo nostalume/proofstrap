@@ -6,15 +6,28 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"syscall"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
+func requireTimezoneFilesystemContract(runner Runner) {
+	_, _ = runner.Readlink(localtimePath)
+	_, _ = runner.EvalSymlinks(zoneinfoRoot + "/UTC")
+	_, _ = runner.ReadRegularFilePrefixBeneath(zoneinfoRoot, "UTC", 4)
+}
+
+func TestRunnerDeclaresTimezoneFilesystemEvidence(t *testing.T) {
+	requireTimezoneFilesystemContract(&testRunner{})
+}
+
 func TestCreateHomeRefusesExistingTargetBeforeOwnershipMutation(t *testing.T) {
-	filesystem := &fakeHomeFilesystem{mkdirErr: syscall.EEXIST}
+	filesystem := &fakeHomeFilesystem{mkdirErr: unix.EEXIST}
 	err := createHome(filesystem, HomeCreation{Path: "/home/alice", Mode: 0o700, UID: 1000, GID: 1000})
-	if !errors.Is(err, syscall.EEXIST) || filesystem.mkdirName != "alice" || filesystem.openedLeaf || filesystem.chowns != 0 || filesystem.chmods != 0 {
+	if !errors.Is(err, unix.EEXIST) || filesystem.mkdirName != "alice" || filesystem.openedLeaf || filesystem.chowns != 0 || filesystem.chmods != 0 {
 		t.Fatalf("err=%v filesystem=%#v", err, filesystem)
 	}
 }
@@ -83,6 +96,36 @@ func TestOSRunnerKeepsOrdinaryNonzeroExitSeparateFromExecutionError(t *testing.T
 	}
 }
 
+func TestLimitedCaptureRetainsPrefixWhileReportingFullWrite(t *testing.T) {
+	capture := newLimitedCapture(4)
+	written, err := capture.Write([]byte("abcdef"))
+	if err != nil || written != 6 || capture.String() != "abcd" || !capture.overflowed {
+		t.Fatalf("written=%d err=%v capture=%#v", written, err, capture)
+	}
+}
+
+func TestOSRunnerFailsExplicitlyWhenCapturedOutputExceedsLimit(t *testing.T) {
+	result := (OSRunner{}).Run(context.Background(), Command{
+		Name: "sh", Args: []string{"-c", "printf abcdef; printf uvwxyz >&2"},
+		stdoutLimit: 4, stderrLimit: 5,
+	})
+	if result.ExitCode != 0 || result.Stdout != "abcd" || result.Stderr != "uvwxy" || result.Err == nil ||
+		!strings.Contains(result.Err.Error(), "stdout exceeded 4-byte capture limit") ||
+		!strings.Contains(result.Err.Error(), "stderr exceeded 5-byte capture limit") {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestOSRunnerAcceptsOutputAtExactCaptureLimit(t *testing.T) {
+	result := (OSRunner{}).Run(context.Background(), Command{
+		Name: "sh", Args: []string{"-c", "printf abcd; printf uvwxy >&2"},
+		stdoutLimit: 4, stderrLimit: 5,
+	})
+	if result.ExitCode != 0 || result.Stdout != "abcd" || result.Stderr != "uvwxy" || result.Err != nil {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
 func TestOSRunnerMaterializesDigestBoundRunningExecutable(t *testing.T) {
 	digest, err := runningExecutableDigest()
 	if err != nil {
@@ -124,6 +167,63 @@ func TestOSRunnerReadsSymlinkTargetWithoutFollowingIt(t *testing.T) {
 	}
 }
 
+func TestOSRunnerConfinesRegularPrefixReadBeneathRoot(t *testing.T) {
+	directory := t.TempDir()
+	regular := filepath.Join(directory, "regular")
+	if err := os.WriteFile(regular, []byte("TZifpayload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(directory, "symlink")
+	if err := os.Symlink(regular, symlink); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(directory, "fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "zone"), []byte("evil"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(directory, "area")); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		relative string
+		want     string
+		wantErr  bool
+	}{
+		{name: "regular file", relative: "regular", want: "TZif"},
+		{name: "final symlink", relative: "symlink", wantErr: true},
+		{name: "FIFO", relative: "fifo", wantErr: true},
+		{name: "intermediate symlink", relative: "area/zone", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			contents, err := (OSRunner{}).ReadRegularFilePrefixBeneath(directory, test.relative, 4)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("%s was admitted", test.relative)
+				}
+				return
+			}
+			if err != nil || string(contents) != test.want {
+				t.Fatalf("contents=%q err=%v", contents, err)
+			}
+		})
+	}
+}
+
+func TestOSRunnerRejectsNegativeRegularFilePrefixSize(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "zone"), []byte("TZif"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (OSRunner{}).ReadRegularFilePrefixBeneath(directory, "zone", -1); err == nil {
+		t.Fatal("negative prefix size was admitted")
+	}
+}
+
 func TestOSRunnerSuppliesPrivateCommandInput(t *testing.T) {
 	result := (OSRunner{}).Run(context.Background(), Command{Name: "sh", Args: []string{"-c", "read value; printf %s \"$value\""}, stdin: "private\n"})
 	if result.ExitCode != 0 || result.Err != nil || result.Stdout != "private" {
@@ -137,6 +237,7 @@ type testRunner struct {
 	uidErr           error
 	files            map[string][]byte
 	fileResults      map[string][]fileResult
+	regularPrefixes  map[string][]fileResult
 	readlinks        map[string][]linkResult
 	evalSymlinks     map[string][]linkResult
 	lstats           map[string][]pathResult
@@ -217,8 +318,20 @@ func (runner *testRunner) EvalSymlinks(path string) (string, error) {
 	runner.evalSymlinks[path] = queue[1:]
 	return queue[0].target, queue[0].err
 }
-func (runner *testRunner) ReadFilePrefix(path string, size int) ([]byte, error) {
-	runner.events = append(runner.events, fmt.Sprintf("prefix:%d:%s", size, path))
+
+func (runner *testRunner) ReadRegularFilePrefixBeneath(root, relative string, size int) ([]byte, error) {
+	path := filepath.Join(root, relative)
+	runner.events = append(runner.events, fmt.Sprintf("regular-prefix:%d:%s", size, path))
+	if queue := runner.regularPrefixes[path]; len(queue) != 0 {
+		runner.regularPrefixes[path] = queue[1:]
+		if queue[0].err != nil {
+			return nil, queue[0].err
+		}
+		if len(queue[0].contents) < size {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return append([]byte(nil), queue[0].contents[:size]...), nil
+	}
 	contents, ok := runner.files[path]
 	if !ok {
 		return nil, errors.New("missing file")

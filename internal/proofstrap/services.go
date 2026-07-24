@@ -15,9 +15,11 @@ type resolvedServiceNeed struct {
 }
 
 type resolvedServiceConflict struct {
-	conflict serviceConflict
-	wanted   string
-	other    string
+	wantedKey  ServiceKey
+	otherKey   ServiceKey
+	scope      ServiceScope
+	wantedUnit string
+	otherUnit  string
 }
 
 type serviceDemand struct {
@@ -26,7 +28,7 @@ type serviceDemand struct {
 }
 
 //sumtype:decl
-type serviceObservation interface{ serviceObservation() }
+type serviceObservationKind interface{ serviceObservationKind() }
 
 type serviceSatisfied struct {
 	need         serviceNeed
@@ -40,45 +42,56 @@ type serviceIndeterminate struct {
 	need         serviceNeed
 	unit, detail string
 }
+type serviceMissing struct {
+	need serviceNeed
+	unit string
+}
 
-func (serviceSatisfied) serviceObservation()     {}
-func (serviceUnsatisfied) serviceObservation()   {}
-func (serviceIndeterminate) serviceObservation() {}
+func (serviceSatisfied) serviceObservationKind()     {}
+func (serviceUnsatisfied) serviceObservationKind()   {}
+func (serviceIndeterminate) serviceObservationKind() {}
+func (serviceMissing) serviceObservationKind()       {}
 
-type serviceObservations map[serviceNeed]serviceObservation
+type serviceObservations map[serviceNeed]serviceObservationKind
+
+func serviceObservationAt(observations serviceObservations, item resolvedServiceNeed) serviceObservationKind {
+	if observed, ok := observations[item.need]; ok && observed != nil {
+		return observed
+	}
+	return serviceMissing{need: item.need, unit: item.unit}
+}
+
+func serviceObservationDetail(observation serviceObservationKind) string {
+	switch state := observation.(type) {
+	case serviceSatisfied:
+		return state.detail
+	case serviceUnsatisfied:
+		return state.detail
+	case serviceIndeterminate:
+		return state.detail
+	case serviceMissing:
+		return "observation is missing"
+	}
+	panic("unknown service observation kind")
+}
 
 type conflictObservation struct {
 	conflict resolvedServiceConflict
-	state    serviceObservation
+	state    serviceObservationKind
 }
 type serviceInspectionGroup struct {
 	scope  ServiceScope
 	target serviceTarget
 }
 
-type serviceManager uint8
-
-const systemd serviceManager = 1
-
-func (manager serviceManager) String() string {
-	if manager == systemd {
-		return "systemd"
-	}
-	return "unknown"
-}
-
 type services struct {
-	manager serviceManager
-	path    string
+	path string
 }
 
 func (behavior services) bind(selected selection) (serviceDemand, []Blocker) {
 	var demand serviceDemand
 	if len(selected.serviceNeeds()) == 0 && len(selected.conflicts) == 0 {
 		return demand, nil
-	}
-	if behavior.manager != systemd {
-		return demand, []Blocker{{Subject: "binding:service-manager", Detail: "unsupported service manager " + behavior.manager.String()}}
 	}
 	names := map[ServiceKey]string{
 		"networkmanager": "NetworkManager.service",
@@ -100,28 +113,30 @@ func (behavior services) bind(selected selection) (serviceDemand, []Blocker) {
 			blockers = append(blockers, Blocker{Subject: "binding:service-conflict", Detail: fmt.Sprintf("missing unit binding for %s -> %s", conflict.wanted, conflict.other)})
 			continue
 		}
-		demand.conflicts = append(demand.conflicts, resolvedServiceConflict{conflict: conflict, wanted: wanted, other: other})
+		demand.conflicts = append(demand.conflicts, resolvedServiceConflict{
+			wantedKey: conflict.wanted, otherKey: conflict.other, scope: conflict.scope,
+			wantedUnit: wanted, otherUnit: other,
+		})
 	}
 	return demand, blockers
 }
 
-func recognizeServiceManager(host HostFacts) (serviceManager, error) {
-	if host.PID1 != "systemd" {
-		return 0, fmt.Errorf("unsupported service manager %q", host.PID1)
+func requireSystemd(pid1 string) error {
+	if pid1 != "systemd" {
+		return fmt.Errorf("unsupported service manager %q", pid1)
 	}
-	return systemd, nil
+	return nil
 }
 
-func servicesFor(host HostFacts, runner Runner) (services, error) {
-	manager, err := recognizeServiceManager(host)
-	if err != nil {
+func servicesFor(pid1 string, runner Runner) (services, error) {
+	if err := requireSystemd(pid1); err != nil {
 		return services{}, err
 	}
 	path, err := runner.LookPath("systemctl")
 	if err != nil {
 		return services{}, errors.New("required executable systemctl is unavailable")
 	}
-	return services{manager: manager, path: path}, nil
+	return services{path: path}, nil
 }
 
 func (behavior services) observe(ctx context.Context, runner Runner, resolved []resolvedServiceNeed) serviceObservations {
@@ -146,7 +161,7 @@ func (behavior services) observe(ctx context.Context, runner Runner, resolved []
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i].scope == keys[j].scope {
-			return keys[i].target < keys[j].target
+			return serviceTargetPrecedence(keys[i].target) < serviceTargetPrecedence(keys[j].target)
 		}
 		return keys[i].scope < keys[j].scope
 	})
@@ -229,9 +244,10 @@ func nonemptyLines(output string) []string {
 func (behavior services) observeConflicts(ctx context.Context, runner Runner, conflicts []resolvedServiceConflict) []conflictObservation {
 	observed := make([]conflictObservation, 0, len(conflicts))
 	for _, conflict := range conflicts {
-		need := serviceNeed{key: conflict.conflict.other, scope: conflict.conflict.scope, target: serviceActive}
-		states := behavior.observe(ctx, runner, []resolvedServiceNeed{{need: need, unit: conflict.other}})
-		observed = append(observed, conflictObservation{conflict: conflict, state: states[need]})
+		need := serviceNeed{key: conflict.otherKey, scope: conflict.scope, target: serviceActive}
+		item := resolvedServiceNeed{need: need, unit: conflict.otherUnit}
+		states := behavior.observe(ctx, runner, []resolvedServiceNeed{item})
+		observed = append(observed, conflictObservation{conflict: conflict, state: serviceObservationAt(states, item)})
 	}
 	return observed
 }
@@ -240,22 +256,26 @@ func (services) reconcileConflicts(observed []conflictObservation) ([]Fact, []Bl
 	var facts []Fact
 	var blockers []Blocker
 	for _, item := range observed {
-		subject := fmt.Sprintf("service-conflict:%s:%s", item.conflict.conflict.wanted, item.conflict.conflict.other)
-		switch state := item.state.(type) {
+		subject := fmt.Sprintf("service-conflict:%s:%s", item.conflict.wantedKey, item.conflict.otherKey)
+		state := item.state
+		if state == nil {
+			state = serviceMissing{}
+		}
+		switch state := state.(type) {
 		case serviceUnsatisfied:
-			facts = append(facts, Fact{Subject: subject, Detail: item.conflict.other + " inactive (" + state.detail + ")"})
+			facts = append(facts, Fact{Subject: subject, Detail: item.conflict.otherUnit + " inactive (" + state.detail + ")"})
 		case serviceSatisfied:
-			blockers = append(blockers, Blocker{Subject: subject, Detail: fmt.Sprintf("%s is active and conflicts with desired %s", item.conflict.other, item.conflict.wanted)})
+			blockers = append(blockers, Blocker{Subject: subject, Detail: fmt.Sprintf("%s is active and conflicts with desired %s", item.conflict.otherUnit, item.conflict.wantedUnit)})
 		case serviceIndeterminate:
 			blockers = append(blockers, Blocker{Subject: subject, Detail: "conflicting service state is indeterminate: " + state.detail})
-		default:
+		case serviceMissing:
 			blockers = append(blockers, Blocker{Subject: subject, Detail: "conflicting service state is missing"})
 		}
 	}
 	return facts, blockers
 }
 
-func classifyService(need serviceNeed, unit string, result Result) serviceObservation {
+func classifyService(need serviceNeed, unit string, result Result) serviceObservationKind {
 	state := strings.ToLower(strings.TrimSpace(result.Stdout))
 	if result.Err != nil {
 		return serviceIndeterminate{need: need, unit: unit, detail: result.Err.Error()}
@@ -295,7 +315,7 @@ type serviceChange struct {
 func (services) reconcile(needs []resolvedServiceNeed, observed serviceObservations) (facts []Fact, changes []serviceChange, blockers []Blocker) {
 	groups := make(map[serviceInspectionGroup][]resolvedServiceNeed)
 	for _, item := range needs {
-		switch state := observed[item.need].(type) {
+		switch state := serviceObservationAt(observed, item).(type) {
 		case serviceSatisfied:
 			facts = append(facts, Fact{Subject: serviceSubject(item.need), Detail: state.detail})
 		case serviceUnsatisfied:
@@ -303,7 +323,7 @@ func (services) reconcile(needs []resolvedServiceNeed, observed serviceObservati
 			groups[key] = append(groups[key], item)
 		case serviceIndeterminate:
 			blockers = append(blockers, Blocker{Subject: serviceSubject(item.need), Detail: state.detail})
-		default:
+		case serviceMissing:
 			blockers = append(blockers, Blocker{Subject: serviceSubject(item.need), Detail: "missing service observation"})
 		}
 	}
@@ -313,7 +333,7 @@ func (services) reconcile(needs []resolvedServiceNeed, observed serviceObservati
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i].scope == keys[j].scope {
-			return keys[i].target < keys[j].target
+			return serviceTargetPrecedence(keys[i].target) < serviceTargetPrecedence(keys[j].target)
 		}
 		return keys[i].scope < keys[j].scope
 	})
@@ -353,12 +373,12 @@ func (behavior services) step(change serviceChange) (step, error) {
 	before := func(ctx context.Context, runner Runner) error {
 		observed := behavior.observe(ctx, runner, change.needs)
 		for _, item := range change.needs {
-			state := observed[item.need]
+			state := serviceObservationAt(observed, item)
 			switch state.(type) {
 			case serviceUnsatisfied:
 			case serviceSatisfied:
 				return stalePrecondition{detail: serviceSubject(item.need) + " changed"}
-			default:
+			case serviceIndeterminate, serviceMissing:
 				return fmt.Errorf("%s cannot be revalidated: %T", serviceSubject(item.need), state)
 			}
 		}
@@ -374,7 +394,7 @@ func (behavior services) step(change serviceChange) (step, error) {
 		allSatisfied := true
 		details := make([]string, 0, len(change.needs))
 		for _, item := range change.needs {
-			switch state := observed[item.need].(type) {
+			switch state := serviceObservationAt(observed, item).(type) {
 			case serviceSatisfied:
 				details = append(details, item.unit+"=satisfied("+state.detail+")")
 			case serviceUnsatisfied:
@@ -383,7 +403,7 @@ func (behavior services) step(change serviceChange) (step, error) {
 			case serviceIndeterminate:
 				allSatisfied = false
 				details = append(details, item.unit+"=indeterminate("+state.detail+")")
-			default:
+			case serviceMissing:
 				allSatisfied = false
 				details = append(details, item.unit+"=missing")
 			}

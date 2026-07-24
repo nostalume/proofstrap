@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,10 +56,6 @@ type resolvedPackage struct {
 	name string
 }
 
-type packageDemand struct {
-	required []resolvedPackage
-}
-
 type packageEvidence struct {
 	installed packageSet
 	rooted    packageSet
@@ -73,6 +68,49 @@ type packageBehavior struct {
 	inventory      func(context.Context, Runner) (packageEvidence, error)
 	rootCommand    func([]string) Command
 	installCommand func([]string) Command
+}
+
+func newPackageBehavior(
+	manager packageManager,
+	version string,
+	names map[PackageKey]string,
+	inventory func(context.Context, Runner) (packageEvidence, error),
+	install func([]string) Command,
+	root func([]string) Command,
+) (packageBehavior, error) {
+	switch manager {
+	case apt, pacman, zypper, dnf4, dnf5:
+	default:
+		return packageBehavior{}, fmt.Errorf("unknown package manager")
+	}
+	if names == nil {
+		return packageBehavior{}, fmt.Errorf("package names are required")
+	}
+	if inventory == nil {
+		return packageBehavior{}, fmt.Errorf("package inventory is required")
+	}
+	if install == nil {
+		return packageBehavior{}, fmt.Errorf("package installation is required")
+	}
+	return packageBehavior{
+		manager: manager, version: version, names: names,
+		inventory: inventory, installCommand: install, rootCommand: root,
+	}, nil
+}
+
+func mustPackageBehavior(
+	manager packageManager,
+	version string,
+	names map[PackageKey]string,
+	inventory func(context.Context, Runner) (packageEvidence, error),
+	install func([]string) Command,
+	root func([]string) Command,
+) packageBehavior {
+	behavior, err := newPackageBehavior(manager, version, names, inventory, install, root)
+	if err != nil {
+		panic(err)
+	}
+	return behavior
 }
 
 func basePackageNames() map[PackageKey]string {
@@ -133,8 +171,8 @@ func dnf4PackageNames() map[PackageKey]string {
 	return names
 }
 
-func (behavior packageBehavior) bind(selected selection) (packageDemand, []Blocker) {
-	var demand packageDemand
+func (behavior packageBehavior) bind(selected selection) ([]resolvedPackage, []Blocker) {
+	var demand []resolvedPackage
 	var blockers []Blocker
 	nameFor := func(key PackageKey) (string, bool) {
 		name, ok := behavior.names[key]
@@ -146,22 +184,19 @@ func (behavior packageBehavior) bind(selected selection) (packageDemand, []Block
 			blockers = append(blockers, Blocker{Subject: "binding:package:" + string(key), Detail: "no concrete package name"})
 			continue
 		}
-		demand.required = append(demand.required, resolvedPackage{key: key, name: name})
+		demand = append(demand, resolvedPackage{key: key, name: name})
 	}
 	return demand, blockers
 }
 
-func (behavior packageBehavior) inspect(ctx context.Context, runner Runner, demand packageDemand) packageState {
+func (behavior packageBehavior) inspect(ctx context.Context, runner Runner, demand []resolvedPackage) packageState {
 	evidence, err := behavior.inventory(ctx, runner)
 	if err != nil {
 		return packageBlocked{reason: "package evidence: " + err.Error()}
 	}
-	required := requiredSet(demand.required)
+	required := requiredSet(demand)
 	missingPackages := difference(required, evidence.installed)
 	if len(missingPackages) != 0 {
-		if behavior.installCommand == nil {
-			return packageBlocked{reason: "required packages are missing; package installation is not supported"}
-		}
 		return packageInstallChange{
 			behavior: behavior, demand: demand, before: evidence, install: missingPackages,
 			command: behavior.installCommand(sortedPackageSet(missingPackages)),
@@ -195,41 +230,19 @@ func constructRPMBehavior(paths map[string]string, manager packageManager, versi
 			path = nativePath
 		}
 	}
-	behavior := packageBehavior{
-		manager: manager, version: version, names: names,
-		installCommand: func(names []string) Command {
-			return Command{Name: path, Args: append([]string{"install", "-y"}, names...), timeout: 10 * time.Minute}
-		},
-	}
 	installed := Command{Name: paths["rpm"], Args: []string{"-qa", "--qf", `%{NAME}\n`}}
 	rootFormat := `%{name}`
 	if manager == dnf5 {
 		rootFormat = `%{name}\n`
 	}
 	rooted := Command{Name: path, Args: []string{"repoquery", "--userinstalled", "--qf", rootFormat}}
-	behavior.inventory = func(ctx context.Context, runner Runner) (packageEvidence, error) {
-		result := runner.Run(ctx, installed)
-		if result.Err != nil || result.ExitCode != 0 {
-			return packageEvidence{}, fmt.Errorf("installed package inventory failed: %s", resultDetail(result))
-		}
-		installedNames, err := parsePlainPackageSet(result.Stdout)
-		if err != nil {
-			return packageEvidence{}, err
-		}
-		result = runner.Run(ctx, rooted)
-		if result.Err != nil || result.ExitCode != 0 {
-			return packageEvidence{}, fmt.Errorf("native package roots failed: %s", resultDetail(result))
-		}
-		rootedNames, err := parsePlainPackageSet(result.Stdout)
-		if err != nil {
-			return packageEvidence{}, fmt.Errorf("native package roots: %w", err)
-		}
-		if !subset(rootedNames, installedNames) {
-			return packageEvidence{}, fmt.Errorf("native package roots contain names that are not installed")
-		}
-		return packageEvidence{installed: installedNames, rooted: rootedNames}, nil
-	}
-	return behavior
+	return constructRootedCommandBehavior(
+		manager, version, names, installed, rooted, nil,
+		func(names []string) Command {
+			return Command{Name: path, Args: append([]string{"install", "-y"}, names...), timeout: 10 * time.Minute}
+		},
+		parsePlainPackageSet, parsePlainPackageSet,
+	)
 }
 
 func constructAPTBehavior(paths map[string]string, version string) packageBehavior {
@@ -273,8 +286,7 @@ func constructRootedCommandBehavior(
 	parseInstalled func(string) (packageSet, error),
 	parseRooted func(string) (packageSet, error),
 ) packageBehavior {
-	behavior := packageBehavior{manager: manager, version: version, names: names, rootCommand: rootMutation, installCommand: installMutation}
-	behavior.inventory = func(ctx context.Context, runner Runner) (packageEvidence, error) {
+	inventory := func(ctx context.Context, runner Runner) (packageEvidence, error) {
 		result := runner.Run(ctx, installed)
 		if result.Err != nil || result.ExitCode != 0 {
 			return packageEvidence{}, fmt.Errorf("installed package inventory failed: %s", resultDetail(result))
@@ -296,18 +308,12 @@ func constructRootedCommandBehavior(
 		}
 		return packageEvidence{installed: installedNames, rooted: rootedNames}, nil
 	}
-	return behavior
+	return mustPackageBehavior(manager, version, names, inventory, installMutation, rootMutation)
 }
 
 func constructZypperBehavior(paths map[string]string, version string) packageBehavior {
-	behavior := packageBehavior{
-		manager: zypper, version: version, names: zypperPackageNames(),
-		installCommand: func(names []string) Command {
-			return Command{Name: paths["zypper"], Args: append([]string{"--non-interactive", "install", "--no-recommends"}, names...), timeout: 10 * time.Minute}
-		},
-	}
 	installed := Command{Name: paths["rpm"], Args: []string{"-qa", "--qf", `%{NAME}\n`}}
-	behavior.inventory = func(ctx context.Context, runner Runner) (packageEvidence, error) {
+	inventory := func(ctx context.Context, runner Runner) (packageEvidence, error) {
 		result := runner.Run(ctx, installed)
 		if result.Err != nil || result.ExitCode != 0 {
 			return packageEvidence{}, fmt.Errorf("installed package inventory failed: %s", resultDetail(result))
@@ -326,7 +332,10 @@ func constructZypperBehavior(paths map[string]string, version string) packageBeh
 		}
 		return packageEvidence{installed: installedNames, rooted: difference(installedNames, automaticNames)}, nil
 	}
-	return behavior
+	install := func(names []string) Command {
+		return Command{Name: paths["zypper"], Args: append([]string{"--non-interactive", "install", "--no-recommends"}, names...), timeout: 10 * time.Minute}
+	}
+	return mustPackageBehavior(zypper, version, zypperPackageNames(), inventory, install, nil)
 }
 
 func difference(left, right packageSet) packageSet {
@@ -358,14 +367,14 @@ type packageDone struct {
 }
 type packageRootChange struct {
 	behavior packageBehavior
-	demand   packageDemand
+	demand   []resolvedPackage
 	before   packageEvidence
 	root     packageSet
 	command  Command
 }
 type packageInstallChange struct {
 	behavior packageBehavior
-	demand   packageDemand
+	demand   []resolvedPackage
 	before   packageEvidence
 	install  packageSet
 	command  Command
@@ -379,6 +388,42 @@ func (packageRootChange) packageState()    {}
 func (packageInstallChange) packageState() {}
 func (packageBlocked) packageState()       {}
 
+type packageMutationTransport struct {
+	execution  Result
+	after      packageEvidence
+	observeErr error
+	attempted  bool
+}
+
+func runPackageMutation(
+	ctx context.Context,
+	runner Runner,
+	inventory func(context.Context, Runner) (packageEvidence, error),
+	before packageEvidence,
+	command Command,
+	guard packageMutationGuard,
+	staleDetail string,
+) (packageMutationTransport, error) {
+	if guard == nil {
+		return packageMutationTransport{}, errors.New("package mutation guard is required")
+	}
+	current, err := inventory(ctx, runner)
+	if err != nil {
+		return packageMutationTransport{}, err
+	}
+	if !reflect.DeepEqual(current, before) {
+		return packageMutationTransport{}, stalePrecondition{detail: staleDetail}
+	}
+	if err := guard(); err != nil {
+		return packageMutationTransport{}, err
+	}
+	execution := runner.Run(ctx, command)
+	postContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	after, observeErr := inventory(postContext, runner)
+	cancel()
+	return packageMutationTransport{execution: execution, after: after, observeErr: observeErr, attempted: true}, nil
+}
+
 func (change packageInstallChange) projectionFor(prepared Command) Change {
 	command := Command{Name: prepared.Name, Args: append([]string(nil), prepared.Args...)}
 	return Change{
@@ -389,51 +434,37 @@ func (change packageInstallChange) projectionFor(prepared Command) Change {
 }
 
 func (change packageInstallChange) apply(ctx context.Context, runner Runner, prepared Command, guard packageMutationGuard) packageResult {
-	if guard == nil {
-		return packageResult{err: errors.New("package mutation guard is required")}
-	}
-	current, err := change.behavior.inventory(ctx, runner)
+	transport, err := runPackageMutation(
+		ctx, runner, change.behavior.inventory, change.before, prepared, guard,
+		"package evidence changed before installation",
+	)
 	if err != nil {
 		return packageResult{err: err}
 	}
-	if !reflect.DeepEqual(current, change.before) {
-		return packageResult{err: stalePrecondition{detail: "package evidence changed before installation"}}
-	}
-	if err := guard(); err != nil {
-		return packageResult{err: err}
-	}
-	execution := runner.Run(ctx, prepared)
-	postContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	after, observeErr := change.behavior.inventory(postContext, runner)
-	cancel()
-	result := packageResult{attempted: true}
+	result := packageResult{attempted: transport.attempted}
 	var failures []string
-	if execution.Err != nil || execution.ExitCode != 0 {
-		failures = append(failures, "native package installation failed: "+resultDetail(execution))
+	if transport.execution.Err != nil || transport.execution.ExitCode != 0 {
+		failures = append(failures, "native package installation failed: "+resultDetail(transport.execution))
 	}
-	if observeErr != nil {
-		failures = append(failures, "post-attempt package observation failed: "+observeErr.Error())
+	if transport.observeErr != nil {
+		failures = append(failures, "post-attempt package observation failed: "+transport.observeErr.Error())
 		result.err = errors.New(strings.Join(failures, "; "))
 		return result
 	}
-	if !subset(change.before.installed, after.installed) {
+	if !subset(change.before.installed, transport.after.installed) {
 		failures = append(failures, "package installation removed previously installed packages")
 	}
-	if !subset(requiredSet(change.demand.required), after.installed) {
+	if !subset(requiredSet(change.demand), transport.after.installed) {
 		failures = append(failures, "required packages remain missing after installation")
 	}
 	expectedRooted := union(change.before.rooted, change.install)
-	if !equalPackageSet(after.rooted, expectedRooted) {
+	if !equalPackageSet(transport.after.rooted, expectedRooted) {
 		failures = append(failures, "post-attempt package roots differ from direct installation")
 	}
 	if len(failures) != 0 {
 		result.err = errors.New(strings.Join(failures, "; "))
 	}
 	return result
-}
-
-func (change packageRootChange) projection() Change {
-	return change.projectionFor(change.command)
 }
 
 func (change packageRootChange) projectionFor(prepared Command) Change {
@@ -446,41 +477,31 @@ func (change packageRootChange) projectionFor(prepared Command) Change {
 }
 
 func (change packageRootChange) apply(ctx context.Context, runner Runner, prepared Command, guard packageMutationGuard) packageResult {
-	if guard == nil {
-		return packageResult{err: errors.New("package mutation guard is required")}
-	}
 	expectedRooted := union(change.before.rooted, change.root)
-	if !subset(requiredSet(change.demand.required), expectedRooted) {
+	if !subset(requiredSet(change.demand), expectedRooted) {
 		return packageResult{err: errors.New("root-only change does not contain every required package root")}
 	}
-	current, err := change.behavior.inventory(ctx, runner)
+	transport, err := runPackageMutation(
+		ctx, runner, change.behavior.inventory, change.before, prepared, guard,
+		"package evidence changed before root mutation",
+	)
 	if err != nil {
 		return packageResult{err: err}
 	}
-	if !reflect.DeepEqual(current, change.before) {
-		return packageResult{err: stalePrecondition{detail: "package evidence changed before root mutation"}}
-	}
-	if err := guard(); err != nil {
-		return packageResult{err: err}
-	}
-	execution := runner.Run(ctx, prepared)
-	postContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	after, observeErr := change.behavior.inventory(postContext, runner)
-	cancel()
-	result := packageResult{attempted: true}
+	result := packageResult{attempted: transport.attempted}
 	var failures []string
-	if execution.Err != nil || execution.ExitCode != 0 {
-		failures = append(failures, "native package root mutation failed: "+resultDetail(execution))
+	if transport.execution.Err != nil || transport.execution.ExitCode != 0 {
+		failures = append(failures, "native package root mutation failed: "+resultDetail(transport.execution))
 	}
-	if observeErr != nil {
-		failures = append(failures, "post-attempt package observation failed: "+observeErr.Error())
+	if transport.observeErr != nil {
+		failures = append(failures, "post-attempt package observation failed: "+transport.observeErr.Error())
 		result.err = errors.New(strings.Join(failures, "; "))
 		return result
 	}
-	if !reflect.DeepEqual(after.installed, change.before.installed) {
+	if !reflect.DeepEqual(transport.after.installed, change.before.installed) {
 		failures = append(failures, "root-only mutation changed installed packages")
 	}
-	if !equalPackageSet(after.rooted, expectedRooted) {
+	if !equalPackageSet(transport.after.rooted, expectedRooted) {
 		failures = append(failures, "post-attempt package roots differ from accepted root-only change")
 	}
 	if len(failures) != 0 {
@@ -496,6 +517,39 @@ func subset(left, right packageSet) bool {
 		}
 	}
 	return true
+}
+
+func packageVersionEvidence(value string) string {
+	isDigit := func(character byte) bool { return character >= '0' && character <= '9' }
+	isWord := func(character byte) bool {
+		return isDigit(character) || character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character == '_'
+	}
+	for start := 0; start < len(value); start++ {
+		if !isDigit(value[start]) || start > 0 && isWord(value[start-1]) {
+			continue
+		}
+		cursor := start
+		for cursor < len(value) && isDigit(value[cursor]) {
+			cursor++
+		}
+		best := -1
+		for cursor < len(value) && value[cursor] == '.' {
+			cursor++
+			if cursor == len(value) || !isDigit(value[cursor]) {
+				break
+			}
+			for cursor < len(value) && isDigit(value[cursor]) {
+				cursor++
+			}
+			if cursor == len(value) || !isWord(value[cursor]) {
+				best = cursor
+			}
+		}
+		if best >= 0 {
+			return value[start:best]
+		}
+	}
+	return ""
 }
 
 func recognizePackageBehavior(runner Runner) (packageBehavior, error) {
@@ -526,7 +580,7 @@ func recognizePackageBehavior(runner Runner) (packageBehavior, error) {
 			indeterminate = append(indeterminate, fmt.Sprintf("%s version probe failed: %s", name, resultDetail(result)))
 			return
 		}
-		version := regexp.MustCompile(`\b\d+(?:\.\d+)+\b`).FindString(result.Stdout)
+		version := packageVersionEvidence(result.Stdout)
 		if version == "" {
 			indeterminate = append(indeterminate, fmt.Sprintf("%s version probe returned malformed evidence", name))
 			return

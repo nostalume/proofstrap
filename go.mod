@@ -2,7 +2,10 @@ module github.com/nostalume/proofstrap
 
 go 1.26.5
 
-require github.com/pelletier/go-toml/v2 v2.2.3
+require (
+	github.com/pelletier/go-toml/v2 v2.2.3
+	golang.org/x/sys v0.47.0
+)
 
 require (
 	github.com/alecthomas/go-check-sumtype v0.3.1 // indirect

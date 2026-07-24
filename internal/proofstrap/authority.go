@@ -27,7 +27,6 @@ type sudoAuthenticationUnavailable struct{ path, detail string }
 type sudoNoUpdateProbeUnsupported struct{ path, detail string }
 type doasNopassUnavailable struct{ path, detail string }
 type noPrivilege struct{ detail string }
-type unknownAccess struct{ detail string }
 
 func (rootAccess) access()                    {}
 func (sudoAccess) access()                    {}
@@ -36,7 +35,6 @@ func (sudoAuthenticationUnavailable) access() {}
 func (sudoNoUpdateProbeUnsupported) access()  {}
 func (doasNopassUnavailable) access()         {}
 func (noPrivilege) access()                   {}
-func (unknownAccess) access()                 {}
 
 type authority struct {
 	principal principal
