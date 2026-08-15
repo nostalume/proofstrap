@@ -9,6 +9,7 @@
 /coverage.out
 
 # Local development scratch
+/.agents/
 .hermes/
 docs/report/
 /docs/p0-checklist.md
