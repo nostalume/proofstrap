@@ -1,95 +1,89 @@
 # Architecture
 
-## Concept
+## Authority flow
 
-Proofstrap is a declarative bootstrap system built around evidence rather than imperative scripts. A user supplies intent; Proofstrap derives requirements, observes the live host, reconciles intent with evidence, and exposes a reviewable transition. Mutation is allowed only after the user accepts the digest of that review.
-
-The design separates six concepts:
-
-1. **Intent** — selected capabilities, optional exact host settings, and optional explicit account identity.
-2. **Catalogue** — immutable relationships between capabilities and abstract package or service requirements.
-3. **Behavior** — platform-specific ownership of names, observations, reconciliation rules, and effects.
-4. **Evidence** — typed observations of the current host, hostname, timezone, package roots, services, identity, authority, and filesystem state.
-5. **Review** — a canonical public projection of facts, blockers, and proposed changes, bound by a semantic digest.
-6. **Receipt** — the verified outcome of Apply, including partial progress and any required replan.
-
-These concepts preserve a strict direction:
+Proofstrap separates declarative truth, host evidence, and mutation authority:
 
 ```text
-intent -> requirements -> evidence -> reconciliation -> review
-accepted review + fresh evidence -> guarded mutation -> verification -> receipt
+strict config + exact packs
+-> semantic graph + native bindings
+-> fresh typed host observations
+-> canonical digest-bound Plan
+-> explicit digest acceptance
+-> fresh typed reconstruction
+-> guarded effect + independent post-observation
+-> durable journal frame
+-> canonical terminal receipt
 ```
 
-Rendered review data is never executable authority. Apply reconstructs private behavior from the original intent and immutable catalogue, then compares the fresh review digest with the accepted digest.
+Serialized Plan review data is never executable authority. Apply recognizes a
+closed operation kind, decodes its typed review, re-admits the named built-in
+behavior, checks fresh evidence, and only then offers the effect. No JSON field,
+profile, binding, or configuration value supplies an executable path or command.
 
-## Boundaries
+## Ownership
 
-Proofstrap owns supported system package and service establishment plus explicitly modeled exact host settings. The current host-setting boundary is persistent/runtime hostname establishment and `/etc/localtime` timezone establishment. It does not own clocks, RTC policy, NTP policy, dotfiles, user application configuration, package removal, repository policy, boot state, disks, credentials, or broad system repair.
+- `cmd/proofstrap` owns exact CLI grammar, process environment, signals, streams,
+  help, and exit mapping.
+- `internal/config`, `internal/profile`, `internal/pack`, `internal/model`, and
+  `internal/binding` own pure admission and composition.
+- `internal/inventory` owns explicit content-addressed archive acquisition.
+- Package, identity, host, and service domains own their typed evidence,
+  reconciliation, reviewed operations, and guarded effects.
+- `internal/app` composes domains, seals and publishes Plans, reconstructs Apply
+  operations, and coordinates durable execution.
+- `internal/engine` owns the pure dependency schedule, outcome reduction,
+  journal frames, statuses, and receipt projection.
+- Linux process and filesystem mechanisms remain below these semantic owners.
 
-Support is explicit and fail-closed. A package manager, service manager, authority path, identity source, or filesystem transition is admitted only when its evidence and mutation laws are known. Unknown, conflicting, ambiguous, or stale evidence blocks before mutation.
+The production CLI has one path to Plan and Apply through `internal/app`; there
+is no compatibility execution owner or alternate grammar.
 
-Identity establishment is create-only. Existing identities and homes must already be exact; mismatches are blockers rather than repair requests. Supplementary memberships and usable credentials remain outside desired state.
+## Plan
 
-## Planning workflow
+Plan reads one explicitly named absolute configuration file and optional exact
+bundle paths. Configuration pins archive digests and selects roots; it contains
+no store paths or behavior overrides. Acquisition resolves the complete pinned
+closure, profile expansion produces portable resources, activated bindings map
+native identities, and the app lowers the graph into typed reviewed operations.
 
-Plan is read-only and noninteractive:
+A global unsupported or contradictory condition produces a publishable blocked
+Plan with no mutation authority. A progress barrier may follow reviewed
+predecessors when fresh planning is required after foundational progress. Plan
+publication is same-directory, create-exclusive, atomic, and durable.
+
+## Apply
+
+Apply accepts only a Plan path, its exact accepted digest, optional journal and
+receipt paths, cancellation, current principal facts, and output. It never reads
+configuration or packs. Before generation zero it validates the canonical Plan,
+operation payloads, dependency graph, principal, and output parents.
+
+Mutating execution uses one create-exclusive private journal descriptor:
 
 ```text
-read intent
--> compile and validate selected capabilities
--> observe host and demanded behaviors
--> reconcile exact persistent and runtime hostname evidence
--> reconcile exact timezone symlink and zoneinfo evidence
--> reconcile foundational identity state
--> reconcile package evidence
--> reconcile service evidence and conflicts
--> admit noninteractive authority only when a change needs it
--> render facts, blockers, changes, and digest
-```
-
-Foundational transitions are isolated. Hostname or timezone establishment, or creation of a primary group, locked account, home, or required package, completes as one verified step and returns `replan_required`. The next decision is made only from a fresh Plan.
-
-Raw host provenance is limited to `/etc/os-release`: ID, version, and normalized ID-like values. PID 1 is observed only when the selected work actually requires systemd—a service-backed capability or a hostname/timezone mutation. That manager identity is an explicit digest-bound fact and a private Apply guard. Package-only and account-only plans, and exact hostname/timezone no-ops, do not read or depend on `/proc/1/comm`.
-
-Hostname intent is lower-case ASCII DNS-style syntax with Linux's 64-byte host-name limit. Observation reads persistent `/etc/hostname` and runtime `/proc/sys/kernel/hostname` state independently. Exact state needs no mutation authority and remains a guarded precondition before and after later effects in the same desired state: confirmed drift is stale, while inability to revalidate is a failed blocker. A change requires systemd PID 1 and executes noninteractively through `hostnamectl --static --transient`; pretty hostname is outside the owned state.
-
-Timezone intent follows systemd's relative zone-name grammar under `/usr/share/zoneinfo`; `UTC` is always valid even when its zonefile is absent. Observation requires `/etc/localtime` to be an absolute or relative symlink into that tree and independently verifies that the canonical target remains in the tree. Proofstrap then pins every path component from `/` through the canonical target with no-follow directory descriptors; the final descriptor is verified as a regular file and used for the bounded `TZif` header read, including valid in-tree aliases. A missing `/etc/localtime` is the documented UTC default. Exact state needs no mutator, authority, or RTC inspection and is guarded across later effects. A change requires systemd PID 1 and executes `timedatectl --no-ask-password set-timezone ZONE`. Because timedated caches RTC mode and may synchronize a local-time RTC while changing timezone, mutation queries timedated's live `LocalRTC` property during Plan and again immediately before execution; only `LocalRTC=false` is admitted. As with other immediate guards, a concurrent privileged writer in the remaining probe-to-command interval is outside the boundary Proofstrap can make atomic. Proofstrap does not own or repair RTC mode.
-
-Direct Linux descriptor operations use `golang.org/x/sys/unix`. This is the maintained owner for new low-level system-call wrappers and constants, and it keeps `openat`, no-follow, close-on-exec, nonblocking, descriptor metadata, and create-exclusive behavior explicit. The standard-library `syscall` package remains only where standard-library APIs expose its concrete types: `os.FileInfo.Sys()` metadata and `os/exec.Cmd.SysProcAttr`; process-group termination stays beside that `os/exec` boundary. The dependency choice does not weaken descriptor containment or change the supported platform boundary: Proofstrap remains Linux-only.
-
-Package and service behaviors own their native names and evidence. Host distribution identity is provenance, not a switch that silently selects behavior. Service work begins only after delivering packages are installed and rooted.
-
-## Apply workflow
-
-Apply is a guarded execution of an accepted semantic plan:
-
-```text
-rebuild Plan from live evidence
--> reject blockers or digest drift
--> reconstruct private commands and authority
--> revalidate global and immediate preconditions
--> execute one admitted effect
+write + sync generation zero
+-> execute one freshly reconstructed operation
 -> independently observe its post-state
--> stop on failure or verified replan boundary
--> verify aggregate state
--> emit a receipt
+-> append + sync the candidate frame
+-> commit the candidate in the pure engine
+-> offer the next dependency-ready operation
 ```
 
-A successful command is not proof of success. Verification comes from independent post-state observation. A failed or timed-out command is also followed by observation so that partial effects are recorded accurately.
+A durability failure stops globally at the last proven prefix and emits no
+fabricated terminal receipt. Independent operational failures may continue;
+stale evidence and cancellation stop later effects. Terminal status and receipt
+are projected once by the engine. Optional receipt publication is atomic and
+no-replace, and standard output receives the same receipt bytes.
 
-Apply never prompts, refreshes credential caches, or recursively accepts a new plan. Authority expiry fails closed. Verified progress that changes the next decision is represented as `replan_required`, not hidden by an automatic loop.
+## Safety boundary
 
-## Safety model
+Proofstrap is Linux-focused and fail-closed. It does not promise that an admitted
+native manager is benevolent; executable identity proves which local mechanism
+was reviewed, not the mechanism's implementation. It does promise bounded input,
+closed typed dispatch, exact evidence comparison, no shell interpretation,
+noninteractive effects, independent verification, durable ordering, and honest
+partial outcomes.
 
-The safety model is based on freshness, exactness, and bounded ownership:
-
-- Intent and evidence are represented as closed typed states.
-- Unknown or contradictory observations remain blockers.
-- Public plans are canonical and digest-bound.
-- Executable paths and relevant evidence are retained or rebound to stable running identity.
-- Preconditions are checked after digest acceptance and immediately before mutation.
-- Every attempted effect receives independent post-observation.
-- Prior verified outcomes survive later failure in the receipt.
-- No rollback is implied when the native system operation is not atomic.
-
-This makes Proofstrap a review-and-verification workflow rather than a general shell runner or package manager.
+Unsupported managers, ambiguous evidence, unsafe filesystem ancestry, changed
+principals, unknown schemas, and stale reviews do not select a fallback.

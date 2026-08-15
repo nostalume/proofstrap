@@ -1,14 +1,19 @@
 # Proofstrap
 
-Proofstrap is a declarative Linux bootstrap CLI. You choose system capabilities and exact host settings, Proofstrap inspects the host, and it produces a digest-bound plan before changing anything. An accepted plan is rebuilt from fresh evidence at apply time, and every attempted hostname, timezone, package, service, account, group, or home change is observed again afterward.
+Proofstrap is a declarative Linux bootstrap CLI. It turns strict, digest-pinned
+configuration into a canonical Plan, requires explicit acceptance of that Plan,
+then reconstructs built-in behavior from fresh host evidence before mutation.
+Every attempted effect is independently observed and recorded in a durable
+journal before execution advances.
 
-Proofstrap manages supported system packages, services, and exact hostname and timezone establishment. It does not manage dotfiles, desktop application settings, clocks, RTC policy, NTP policy, disks, bootloaders, or general machine configuration.
+Proofstrap manages modeled packages, services, accounts, groups, homes, hostname,
+and timezone state. Profiles and bindings contain data only; commands, probes,
+permissions, fallback, and mutation policy remain compiled behavior.
 
 ## Installation
 
-Proofstrap requires Linux. Prebuilt releases are static executables and do not require Go.
-
-The version-controlled [`install.sh`](install.sh) installs the latest `amd64` or `arm64` release with `curl`, `sha256sum`, and `tar`. Download it so you can inspect the installer before running it:
+Proofstrap requires Linux. The version-controlled [`install.sh`](install.sh)
+installs a verified `amd64` or `arm64` release into `$HOME/.local/bin` by default:
 
 ```sh
 curl --fail --location --show-error --silent \
@@ -17,78 +22,56 @@ curl --fail --location --show-error --silent \
 sh install.sh
 ```
 
-The Linux-only installer defaults to `$HOME/.local/bin`; set `PROOFSTRAP_INSTALL_DIR` to choose another destination. It requires exactly one checksum row for the selected archive, verifies the archive before reading its fixed executable member, and publishes through a same-directory atomic rename only after successful verification. A failed write cannot replace an existing binary. Ensure the chosen directory is on `PATH`. Tagged archives, `checksums.txt`, and `install.sh` are also available on the GitHub Releases page.
+Set `PROOFSTRAP_INSTALL_DIR` to select another destination.
 
-## How to use
+## Workflow
 
-### List capabilities
-
-```sh
-proofstrap modules
-```
-
-### Review a plan
-
-Select one or more capabilities:
+Import exact profile or binding archives into the user store, or add `--system`
+for the system store:
 
 ```sh
-proofstrap plan network
-proofstrap plan audio
+proofstrap import --digest sha256:DIGEST /absolute/profile.pstrap
+proofstrap inspect
+proofstrap inspect sha256:DIGEST
+proofstrap inspect --digest sha256:DIGEST /absolute/profile.pstrap
 ```
 
-For a minimal server baseline, select the package-only `curl` and `git` capabilities:
+Build and review a canonical Plan. Bundle arguments are optional exact inputs for
+digests already pinned by configuration:
 
 ```sh
-proofstrap plan curl git
+proofstrap plan \
+  --config /absolute/proofstrap.toml \
+  --output /absolute/plan.json \
+  --profile-bundle /absolute/profile.pstrap
 ```
 
-Vim is an independent opt-in capability for systems that need it:
+Apply only the reviewed artifact and digest. A mutating Plan requires a new
+journal path; a no-op Plan may omit it. The optional receipt file and standard
+output receive identical canonical receipt bytes.
 
 ```sh
-proofstrap plan curl git vim
+proofstrap apply \
+  --plan /absolute/plan.json \
+  --accept sha256:REVIEWED_DIGEST \
+  --journal /absolute/apply.journal \
+  --receipt /absolute/receipt.json
 ```
 
-The `curl` and `git` capabilities both require the system CA certificate package; Proofstrap deduplicates that shared requirement. Capability IDs and their native package bindings are owned by Proofstrap—the configuration does not accept arbitrary package-manager names.
+Plan and receipt destinations are create-exclusive: Proofstrap never replaces an
+existing artifact. Exit status is `0` for convergence, `3` for verified partial
+progress, `1` for blocked/stale/failed/output results, `2` for grammar or schema
+errors, and `130` for cancellation before a more specific terminal result.
 
-Planning is read-only. The output contains facts, blockers, proposed changes, and a SHA-256 digest.
-
-### Apply an accepted plan
-
-Pass the exact digest from the reviewed plan:
-
-```sh
-proofstrap apply --accept sha256:<reviewed-digest> network
-```
-
-Proofstrap rebuilds the plan from live evidence before applying it. If the host changed, the digest is stale and no mutation starts. Some verified foundational or package changes return `replan_required`; run `plan` again and review the new digest instead of automatically repeating Apply.
-
-Proofstrap never prompts for privilege credentials. If sudo authentication is required, refresh it outside Proofstrap and plan again:
-
-```sh
-sudo -v
-proofstrap plan network
-```
-
-### Use a configuration file
-
-Use `--config` when host settings, account intent, or a reusable module selection is needed:
-
-```toml
-modules = ["curl", "git", "vim"]
-```
-
-```sh
-proofstrap plan --config ./proofstrap.toml
-proofstrap apply --config ./proofstrap.toml --accept sha256:<reviewed-digest>
-```
-
-See the [Configuration guide](docs/config.md) for file discovery, the complete TOML schema, host and account examples, validation rules, receipts, and the plan/apply/replan workflow.
+See the [target configuration specification](spec/config.md),
+[profile and binding specification](spec/profile.md), and
+[architecture](docs/architecture.md).
 
 ## Supported systems
 
-Proofstrap recognizes direct package installation through Apt, Pacman, Zypper, DNF5, and DNF4. Apt and Pacman also support explicit package-root repair. `curl`, `git`, and `vim` are package-only bootstrap capabilities. Service, hostname, and timezone mutation are systemd-only; already exact host settings remain independently reviewable without admitting mutators. `network` and `audio` are the current package-backed service capabilities.
-
-See the [Configuration guide](docs/config.md) for user setup and [Architecture](docs/architecture.md) for the implementation model and workflow. Project goal and stack are summarized in [Agent context](docs/AGENT.md).
+Built-in package behavior covers Apt, Pacman, Zypper, DNF5, and DNF4. Service
+behavior is currently systemd-specific. Distribution names are provenance, not
+behavior selectors; Proofstrap admits the actual available manager evidence.
 
 ## License
 
