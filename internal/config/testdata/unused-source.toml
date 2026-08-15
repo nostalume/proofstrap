@@ -1,0 +1,6 @@
+schema = 1
+bindings = ["linux"]
+
+[sources]
+linux = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+unused = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

@@ -1,0 +1,5 @@
+schema = 1
+kind = "semantic"
+
+[requires]
+core = "sha256:08701179926bd0e433aefc653fd91af9eabb5ce03efd00ff78adf86f7085bed0"

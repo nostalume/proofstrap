@@ -1,0 +1,9 @@
+[profiles.base]
+parameters = { account = "account_ref" }
+homes = [{ account = { parameter = "account" } }]
+[profiles.a]
+parameters = { group = "group_ref" }
+[[profiles.a.include]]
+profile = "base"
+[profiles.a.include.arguments]
+account = { parameter = "group" }

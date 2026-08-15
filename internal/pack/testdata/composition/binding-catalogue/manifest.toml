@@ -1,0 +1,6 @@
+schema = 1
+kind = "binding"
+
+[requires]
+core = "sha256:08701179926bd0e433aefc653fd91af9eabb5ce03efd00ff78adf86f7085bed0"
+workload = "sha256:d88cb50f67c2c1170e7f7e6868265f40e2e99cb054e3d1c82f4ef236aab0c301"

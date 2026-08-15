@@ -1,0 +1,6 @@
+schema = 1
+memberships = [
+  { account = "alice", group = "users", present = true },
+]
+
+[groups.users]

@@ -1,0 +1,2 @@
+[profiles.a]
+memberships = [{ account = "alice", group = "audio" }]

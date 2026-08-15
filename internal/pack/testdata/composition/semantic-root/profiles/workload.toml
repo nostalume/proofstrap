@@ -1,0 +1,7 @@
+[profiles.workload]
+include = [{ profile = "core:base" }]
+
+[profiles.workload.services.agent]
+target = "system"
+packages = ["core:agent"]
+running = true

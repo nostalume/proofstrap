@@ -1,0 +1,4 @@
+schema = 1
+
+[accounts.alice]
+uid = 1000

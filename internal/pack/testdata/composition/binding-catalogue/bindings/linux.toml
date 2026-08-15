@@ -1,0 +1,5 @@
+[package.zypper]
+"core:agent" = ["agent-native"]
+
+[service.systemd]
+"workload:agent" = ["agent.service"]

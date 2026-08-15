@@ -1,0 +1,31 @@
+[profiles.user-audio]
+parameters = { account = "account_ref", group = "group_ref" }
+homes = [{ account = { parameter = "account" } }]
+home_modes = [{ account = { parameter = "account" }, mode = "0700" }]
+account_locks = [{ account = { parameter = "account" } }]
+memberships = [{ account = { parameter = "account" }, group = { parameter = "group" }, present = true }]
+
+[profiles.user-audio.services.pipewire]
+target = { user = { parameter = "account" } }
+packages = ["pipewire"]
+enabled = true
+running = true
+
+[profiles.desktop]
+parameters = { account = "account_ref", group = "group_ref" }
+packages = ["network-manager"]
+hostname = "workstation"
+timezone = "Asia/Shanghai"
+
+[[profiles.desktop.include]]
+profile = "user-audio"
+
+[profiles.desktop.include.arguments]
+account = { parameter = "account" }
+group = { parameter = "group" }
+
+[profiles.desktop.services.network-manager]
+target = "system"
+packages = ["network-manager"]
+enabled = true
+running = true

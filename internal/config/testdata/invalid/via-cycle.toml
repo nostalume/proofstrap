@@ -1,0 +1,6 @@
+schema = 1
+packages = ["flatpak:app"]
+
+[via]
+flatpak = ["snap:provider"]
+snap = ["flatpak:provider"]

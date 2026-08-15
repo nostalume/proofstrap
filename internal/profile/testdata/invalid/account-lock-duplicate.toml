@@ -1,0 +1,2 @@
+[profiles.a]
+account_locks = [{ account = "alice" }, { account = "alice" }]

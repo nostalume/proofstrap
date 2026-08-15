@@ -1,0 +1,7 @@
+[profiles.base]
+packages = ["a"]
+[profiles.a]
+[[profiles.a.include]]
+profile = "base"
+[[profiles.a.include]]
+profile = "base"
