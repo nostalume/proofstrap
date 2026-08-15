@@ -1,0 +1,4 @@
+Inst dep [1.0-1] (1.1-1 Debian:stable [amd64])
+Inst newpkg (2.0-1 Debian:stable [amd64])
+Conf dep (1.1-1 Debian:stable [amd64])
+Conf newpkg (2.0-1 Debian:stable [amd64])

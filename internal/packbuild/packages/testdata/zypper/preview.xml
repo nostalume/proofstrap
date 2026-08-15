@@ -1,0 +1,14 @@
+<?xml version='1.0'?>
+<stream>
+<message type="info">Loading repository data...</message>
+<message type="info">Resolving package dependencies...</message>
+<install-summary download-size="100" space-usage-diff="20" space-usage-installed="30" space-usage-removed="10" packages-to-change="2" need-restart="0" need-reboot="0">
+<to-install>
+<solvable type="package" name="newpkg" edition="1.0-1" arch="x86_64" repository="repo" summary="new"/>
+</to-install>
+<to-upgrade>
+<solvable type="package" name="bash" edition="5.3.9-6.2" arch="x86_64" repository="repo" edition-old="5.3.9-5.1" arch-old="x86_64" summary="shell"/>
+</to-upgrade>
+</install-summary>
+<prompt id="0"><text>Continue?</text><option default="1" value="y" desc="Yes"/></prompt>
+</stream>

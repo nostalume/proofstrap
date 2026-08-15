@@ -1,0 +1,22 @@
+Dependencies resolved.
+===============================================================================
+ Package      Architecture  Version         Repository                    Size
+===============================================================================
+Upgrading:
+ alpha        x86_64        0:2-1           updates                        10 k
+Reinstalling:
+ beta         noarch        0:1-1           base                           11 k
+Removing:
+ gamma        x86_64        0:1-1           @System                        12 k
+Downgrading:
+ delta        x86_64        0:1-1           base                           13 k
+
+Transaction Summary
+===============================================================================
+Upgrade    1 Package
+Remove     1 Package
+Downgrade  1 Package
+
+Total download size: 34 k
+Installed size: 34 k
+Operation aborted.

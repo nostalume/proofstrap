@@ -1,0 +1,4 @@
+bash
+dep
+held:amd64
+newpkg

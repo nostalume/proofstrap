@@ -1,0 +1,717 @@
+package identity
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/nostalume/proofstrap/internal/linuxexec"
+	"github.com/nostalume/proofstrap/internal/model"
+)
+
+const (
+	getentPath   = "/usr/bin/getent"
+	groupaddPath = "/usr/sbin/groupadd"
+	useraddPath  = "/usr/sbin/useradd"
+	usermodPath  = "/usr/sbin/usermod"
+	passwdPath   = "/usr/bin/passwd"
+	gpasswdPath  = "/usr/bin/gpasswd"
+)
+
+var (
+	ErrStale       = errors.New("identity operation is stale")
+	ErrUnsupported = errors.New("identity capability is unsupported")
+)
+
+type Capability uint8
+
+const (
+	ObserveIdentity Capability = iota + 1
+	CreateGroup
+	CreateAccount
+	ObserveLock
+	ModifyAccount
+	ModifyMembership
+)
+
+type shadowEffects struct {
+	identify func(string) (linuxexec.Identity, error)
+	run      func(context.Context, linuxexec.Identity, []string, []byte) (linuxexec.Result, error)
+	home     homeEffects
+}
+
+type toolEvidence struct {
+	name     string
+	identity linuxexec.Identity
+}
+
+type selectionEvidence struct {
+	capabilities []Capability
+	tools        []toolEvidence
+	rootGroup    groupRecord
+	rootAccount  passwdRecord
+}
+
+type Selected struct {
+	evidence selectionEvidence
+	effects  shadowEffects
+}
+
+func Select(ctx context.Context, capabilities []Capability) (*Selected, error) {
+	return selectShadow(ctx, shadowEffects{identify: linuxexec.Identify, run: linuxexec.Run, home: systemHomeEffects()}, capabilities)
+}
+
+func selectShadow(ctx context.Context, effects shadowEffects, capabilities []Capability) (*Selected, error) {
+	if !futureContext(ctx) || effects.identify == nil || effects.run == nil {
+		return nil, fmt.Errorf("bounded context and complete shadow effects are required")
+	}
+	caps := append([]Capability(nil), capabilities...)
+	slices.Sort(caps)
+	caps = slices.Compact(caps)
+	if len(caps) == 0 || caps[0] != ObserveIdentity {
+		return nil, fmt.Errorf("identity observation capability is required")
+	}
+	for _, capability := range caps {
+		if capability < ObserveIdentity || capability > ModifyMembership {
+			return nil, fmt.Errorf("invalid identity capability")
+		}
+	}
+	paths := []struct {
+		capability Capability
+		name, path string
+	}{
+		{ObserveIdentity, "getent", getentPath},
+		{CreateGroup, "groupadd", groupaddPath},
+		{CreateAccount, "useradd", useraddPath},
+		{ObserveLock, "passwd", passwdPath},
+		{ModifyAccount, "usermod", usermodPath},
+		{ModifyMembership, "gpasswd", gpasswdPath},
+	}
+	tools := make([]toolEvidence, 0, len(caps))
+	for _, candidate := range paths {
+		if !slices.Contains(caps, candidate.capability) {
+			continue
+		}
+		identity, err := effects.identify(candidate.path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("%w: %s", ErrUnsupported, candidate.name)
+			}
+			return nil, fmt.Errorf("identify %s: %w", candidate.name, err)
+		}
+		tools = append(tools, toolEvidence{name: candidate.name, identity: identity})
+	}
+	selected := &Selected{evidence: selectionEvidence{capabilities: caps, tools: tools}, effects: effects}
+	globalGroup, err := selected.lookupGroup(ctx, false, "0")
+	if err != nil {
+		return nil, fmt.Errorf("prove global group NSS: %w", err)
+	}
+	localGroup, err := selected.lookupGroup(ctx, true, "0")
+	if err != nil {
+		return nil, fmt.Errorf("prove files group NSS: %w", err)
+	}
+	globalAccount, err := selected.lookupAccount(ctx, false, "0")
+	if err != nil {
+		return nil, fmt.Errorf("prove global passwd NSS: %w", err)
+	}
+	localAccount, err := selected.lookupAccount(ctx, true, "0")
+	if err != nil {
+		return nil, fmt.Errorf("prove files passwd NSS: %w", err)
+	}
+	group, groupOK := groupFound(globalGroup)
+	localGroupValue, localGroupOK := groupFound(localGroup)
+	account, accountOK := accountFound(globalAccount)
+	localAccountValue, localAccountOK := accountFound(localAccount)
+	if !groupOK || !localGroupOK || !sameGroup(group, localGroupValue) || group.gid != 0 ||
+		!accountOK || !localAccountOK || account != localAccountValue || account.uid != 0 {
+		return nil, fmt.Errorf("global and files-only root NSS baselines disagree")
+	}
+	selected.evidence.rootGroup, selected.evidence.rootAccount = group, account
+	return selected, nil
+}
+
+func (selected *Selected) valid() bool {
+	return selected != nil && selected.effects.identify != nil && selected.effects.run != nil &&
+		len(selected.evidence.capabilities) != 0 && len(selected.evidence.tools) != 0
+}
+
+func (selected *Selected) tool(name string) (linuxexec.Identity, bool) {
+	if selected == nil {
+		return linuxexec.Identity{}, false
+	}
+	for _, tool := range selected.evidence.tools {
+		if tool.name == name {
+			return tool.identity, true
+		}
+	}
+	return linuxexec.Identity{}, false
+}
+
+func (selected *Selected) lookupGroup(ctx context.Context, local bool, key string) (groupLookup, error) {
+	getent, ok := selected.tool("getent")
+	if !ok {
+		return groupLookup{}, fmt.Errorf("getent is not admitted")
+	}
+	args := []string{"group", key}
+	if local {
+		args = []string{"-s", "files", "group", key}
+	}
+	result, err := selected.effects.run(ctx, getent, args, nil)
+	if missingResult(result, err) {
+		return missingGroup(), nil
+	}
+	if err != nil || !result.Started || result.ExitCode != 0 || len(result.Stderr) != 0 {
+		return groupLookup{}, nativeFailure("getent group", result, err)
+	}
+	record, err := oneRecord(result.Stdout)
+	if err != nil {
+		return groupLookup{}, err
+	}
+	parsed, err := parseGroupRecord(record)
+	if err != nil {
+		return groupLookup{}, err
+	}
+	return foundGroup(parsed), nil
+}
+
+func (selected *Selected) lookupAccount(ctx context.Context, local bool, key string) (accountLookup, error) {
+	getent, ok := selected.tool("getent")
+	if !ok {
+		return accountLookup{}, fmt.Errorf("getent is not admitted")
+	}
+	args := []string{"passwd", key}
+	if local {
+		args = []string{"-s", "files", "passwd", key}
+	}
+	result, err := selected.effects.run(ctx, getent, args, nil)
+	if missingResult(result, err) {
+		return missingAccount(), nil
+	}
+	if err != nil || !result.Started || result.ExitCode != 0 || len(result.Stderr) != 0 {
+		return accountLookup{}, nativeFailure("getent passwd", result, err)
+	}
+	record, err := oneRecord(result.Stdout)
+	if err != nil {
+		return accountLookup{}, err
+	}
+	parsed, err := parsePasswdRecord(record)
+	if err != nil {
+		return accountLookup{}, err
+	}
+	return foundAccount(parsed), nil
+}
+
+func (selected *Selected) observeGroup(ctx context.Context, desired model.Group) (groupObservation, error) {
+	return selected.observeGroupIntent(ctx, groupIntentOf(desired))
+}
+
+func (selected *Selected) observeGroupIntent(ctx context.Context, desired groupIntent) (groupObservation, error) {
+	globalName, err := selected.lookupGroup(ctx, false, desired.name)
+	if err != nil {
+		return groupObservation{}, err
+	}
+	localName, err := selected.lookupGroup(ctx, true, desired.name)
+	if err != nil {
+		return groupObservation{}, err
+	}
+	gid, haveGID := desired.gid, desired.managed
+	if !haveGID {
+		if found, ok := groupFound(globalName); ok {
+			gid, haveGID = found.gid, true
+		} else if found, ok := groupFound(localName); ok {
+			gid, haveGID = found.gid, true
+		}
+	}
+	if !haveGID {
+		return groupObservation{nameGlobal: globalName, nameLocal: localName, numberGlobal: missingGroup(), numberLocal: missingGroup()}, nil
+	}
+	globalNumber, err := selected.lookupGroup(ctx, false, strconv.FormatUint(uint64(gid), 10))
+	if err != nil {
+		return groupObservation{}, err
+	}
+	localNumber, err := selected.lookupGroup(ctx, true, strconv.FormatUint(uint64(gid), 10))
+	return groupObservation{nameGlobal: globalName, nameLocal: localName, numberGlobal: globalNumber, numberLocal: localNumber}, err
+}
+
+func (selected *Selected) observeAccount(ctx context.Context, desired model.Account) (accountObservation, error) {
+	return selected.observeAccountIntent(ctx, accountIntentOf(desired))
+}
+
+func (selected *Selected) observeAccountIntent(ctx context.Context, desired accountIntent) (accountObservation, error) {
+	globalName, err := selected.lookupAccount(ctx, false, desired.name)
+	if err != nil {
+		return accountObservation{}, err
+	}
+	localName, err := selected.lookupAccount(ctx, true, desired.name)
+	if err != nil {
+		return accountObservation{}, err
+	}
+	uid, haveUID := desired.uid, desired.managed
+	if !haveUID {
+		if found, ok := accountFound(globalName); ok {
+			uid, haveUID = found.uid, true
+		} else if found, ok := accountFound(localName); ok {
+			uid, haveUID = found.uid, true
+		}
+	}
+	if !haveUID {
+		return accountObservation{nameGlobal: globalName, nameLocal: localName, numberGlobal: missingAccount(), numberLocal: missingAccount()}, nil
+	}
+	globalNumber, err := selected.lookupAccount(ctx, false, strconv.FormatUint(uint64(uid), 10))
+	if err != nil {
+		return accountObservation{}, err
+	}
+	localNumber, err := selected.lookupAccount(ctx, true, strconv.FormatUint(uint64(uid), 10))
+	return accountObservation{nameGlobal: globalName, nameLocal: localName, numberGlobal: globalNumber, numberLocal: localNumber}, err
+}
+
+type operationKind uint8
+
+const (
+	createGroupOperation operationKind = iota + 1
+	createAccountOperation
+	lockAccountOperation
+	setShellOperation
+	setMembershipOperation
+	createHomeOperation
+	setHomeModeOperation
+)
+
+type Planned struct {
+	decision    Decision
+	operation   *Operation
+	accountFact *AccountFact
+}
+
+type AccountFact struct {
+	name, home string
+	uid, gid   uint32
+}
+
+func (fact AccountFact) Name() string { return fact.name }
+func (fact AccountFact) UID() uint32  { return fact.uid }
+func (fact AccountFact) GID() uint32  { return fact.gid }
+func (fact AccountFact) Home() string { return fact.home }
+
+func (planned Planned) Decision() Decision { return planned.decision }
+func (planned Planned) Operation() (Operation, bool) {
+	if planned.operation == nil {
+		return Operation{}, false
+	}
+	return *planned.operation, true
+}
+func (planned Planned) AccountFact() (AccountFact, bool) {
+	if planned.accountFact == nil {
+		return AccountFact{}, false
+	}
+	return *planned.accountFact, true
+}
+
+type Operation struct {
+	kind              operationKind
+	evidence          selectionEvidence
+	group             groupIntent
+	account           accountIntent
+	primary           groupIntent
+	groupBefore       groupObservation
+	accountBefore     accountObservation
+	lockAccount       string
+	lockBefore        bool
+	shellAccount      string
+	shellValue        string
+	shellBefore       passwdRecord
+	membershipAccount string
+	membershipGroup   string
+	membershipPresent bool
+	membershipBefore  groupRecord
+	homeMode          uint16
+	homeIntent        homeIntent
+	homeBefore        homeState
+}
+
+func (selected *Selected) PlanGroup(ctx context.Context, desired model.Group) (Planned, error) {
+	if !selected.valid() || !desired.Valid() || !futureContext(ctx) {
+		return Planned{}, fmt.Errorf("valid selection, group, and bounded context are required")
+	}
+	observed, err := selected.observeGroup(ctx, desired)
+	if err != nil {
+		return Planned{decision: blocked(err.Error())}, nil
+	}
+	decision := reconcileGroup(desired, observed)
+	planned := Planned{decision: decision}
+	if decision.kind == Change {
+		if _, ok := selected.tool("groupadd"); !ok {
+			return Planned{decision: blocked("groupadd is not admitted")}, nil
+		}
+		planned.operation = &Operation{kind: createGroupOperation, evidence: selected.evidence, group: groupIntentOf(desired), groupBefore: observed}
+	}
+	return planned, nil
+}
+
+func (selected *Selected) PlanAccount(ctx context.Context, desired model.Account, primary model.Group) (Planned, error) {
+	if !selected.valid() || !desired.Valid() || desired.Managed() && !primary.Valid() || !futureContext(ctx) {
+		return Planned{}, fmt.Errorf("valid selection, account, managed primary group when owned, and bounded context are required")
+	}
+	observed, err := selected.observeAccount(ctx, desired)
+	if err != nil {
+		return Planned{decision: blocked(err.Error())}, nil
+	}
+	decision := reconcileAccount(desired, primary, observed)
+	planned := Planned{decision: decision}
+	if decision.kind == Exact {
+		if record, ok := accountFound(observed.nameGlobal); ok {
+			planned.accountFact = &AccountFact{name: record.name, uid: record.uid, gid: record.gid, home: record.home}
+		}
+	}
+	if decision.kind == Change {
+		if _, ok := selected.tool("useradd"); !ok {
+			return Planned{decision: blocked("useradd is not admitted")}, nil
+		}
+		if _, ok := selected.tool("passwd"); !ok {
+			return Planned{decision: blocked("passwd status is not admitted")}, nil
+		}
+		planned.operation = &Operation{kind: createAccountOperation, evidence: selected.evidence, account: accountIntentOf(desired), primary: groupIntentOf(primary), accountBefore: observed}
+	}
+	return planned, nil
+}
+
+func (selected *Selected) PlanLock(ctx context.Context, desired model.AccountLock) (Planned, error) {
+	if !selected.valid() || !desired.Valid() || !futureContext(ctx) {
+		return Planned{}, fmt.Errorf("valid selection, lock, and bounded context are required")
+	}
+	locked, err := selected.observeLock(ctx, desired.Account())
+	if err != nil {
+		return Planned{decision: blocked(err.Error())}, nil
+	}
+	if locked {
+		return Planned{decision: Decision{kind: Exact, detail: "account is locked"}}, nil
+	}
+	if _, ok := selected.tool("passwd"); !ok {
+		return Planned{decision: blocked("passwd is not admitted")}, nil
+	}
+	return Planned{decision: Decision{kind: Change, detail: "account requires lock"}, operation: &Operation{kind: lockAccountOperation, evidence: selected.evidence, lockAccount: desired.Account(), lockBefore: false}}, nil
+}
+
+func (selected *Selected) PlanShell(ctx context.Context, desired model.AccountShell) (Planned, error) {
+	if !selected.valid() || !desired.Valid() || !futureContext(ctx) {
+		return Planned{}, fmt.Errorf("valid selection, shell, and bounded context are required")
+	}
+	before, err := selected.observeNamedAccount(ctx, desired.Account())
+	if err != nil {
+		return Planned{decision: blocked(err.Error())}, nil
+	}
+	if before.shell == desired.Shell() {
+		return Planned{decision: Decision{kind: Exact, detail: "account shell is exact"}}, nil
+	}
+	if _, ok := selected.tool("usermod"); !ok {
+		return Planned{decision: blocked("usermod is not admitted")}, nil
+	}
+	return Planned{decision: Decision{kind: Change, detail: "account shell differs"}, operation: &Operation{kind: setShellOperation, evidence: selected.evidence, shellAccount: desired.Account(), shellValue: desired.Shell(), shellBefore: before}}, nil
+}
+
+func (selected *Selected) PlanMembership(ctx context.Context, desired model.Membership) (Planned, error) {
+	if !selected.valid() || !desired.Valid() || !futureContext(ctx) {
+		return Planned{}, fmt.Errorf("valid selection, membership, and bounded context are required")
+	}
+	if _, err := selected.observeNamedAccount(ctx, desired.Account()); err != nil {
+		return Planned{decision: blocked(err.Error())}, nil
+	}
+	before, err := selected.observeNamedGroup(ctx, desired.Group())
+	if err != nil {
+		return Planned{decision: blocked(err.Error())}, nil
+	}
+	present := slices.Contains(before.members, desired.Account())
+	if present == desired.Present() {
+		return Planned{decision: Decision{kind: Exact, detail: "membership is exact"}}, nil
+	}
+	if _, ok := selected.tool("gpasswd"); !ok {
+		return Planned{decision: blocked("gpasswd is not admitted")}, nil
+	}
+	return Planned{decision: Decision{kind: Change, detail: "membership differs"}, operation: &Operation{kind: setMembershipOperation, evidence: selected.evidence, membershipAccount: desired.Account(), membershipGroup: desired.Group(), membershipPresent: desired.Present(), membershipBefore: before}}, nil
+}
+
+type ApplyResult struct {
+	started  bool
+	decision Decision
+}
+
+func (result ApplyResult) Started() bool      { return result.started }
+func (result ApplyResult) Decision() Decision { return result.decision }
+
+func (operation Operation) Apply(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
+	if !futureContext(effectCtx) || freshPost == nil || !fresh.valid() {
+		return ApplyResult{}, fmt.Errorf("fresh selection, bounded effect context, and fresh post-observation context are required")
+	}
+	if !sameSelectionEvidence(operation.evidence, fresh.evidence) {
+		return ApplyResult{}, fmt.Errorf("%w: shadow evidence changed", ErrStale)
+	}
+	switch operation.kind {
+	case createGroupOperation:
+		return operation.applyGroup(effectCtx, freshPost, fresh)
+	case createAccountOperation:
+		return operation.applyAccount(effectCtx, freshPost, fresh)
+	case lockAccountOperation:
+		return operation.applyLock(effectCtx, freshPost, fresh)
+	case setShellOperation:
+		return operation.applyShell(effectCtx, freshPost, fresh)
+	case setMembershipOperation:
+		return operation.applyMembership(effectCtx, freshPost, fresh)
+	case createHomeOperation:
+		return operation.applyHome(effectCtx, freshPost, fresh)
+	case setHomeModeOperation:
+		return operation.applyHomeMode(effectCtx, freshPost, fresh)
+	default:
+		return ApplyResult{}, fmt.Errorf("invalid identity operation")
+	}
+}
+
+func (operation Operation) applyLock(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
+	before, err := fresh.observeLock(effectCtx, operation.lockAccount)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if before != operation.lockBefore {
+		return ApplyResult{}, fmt.Errorf("%w: lock observation changed", ErrStale)
+	}
+	tool, _ := fresh.tool("passwd")
+	result, runErr := fresh.effects.run(effectCtx, tool, []string{"-l", operation.lockAccount}, nil)
+	runErr = commandFailure("lock account", result, runErr)
+	postCtx, cancelPost, postErr := beginPost(freshPost)
+	if postErr != nil {
+		return ApplyResult{started: result.Started}, errors.Join(runErr, postErr)
+	}
+	defer cancelPost()
+	after, observeErr := fresh.observeLock(postCtx, operation.lockAccount)
+	apply := ApplyResult{started: result.Started}
+	if observeErr == nil && after {
+		apply.decision = Decision{kind: Exact, detail: "account is locked"}
+		return apply, nil
+	}
+	return apply, errors.Join(runErr, observeErr, fmt.Errorf("lock postcondition is not exact"))
+}
+
+func (operation Operation) applyShell(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
+	before, err := fresh.observeNamedAccount(effectCtx, operation.shellAccount)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if before != operation.shellBefore {
+		return ApplyResult{}, fmt.Errorf("%w: shell account observation changed", ErrStale)
+	}
+	tool, _ := fresh.tool("usermod")
+	result, runErr := fresh.effects.run(effectCtx, tool, []string{"--shell", operation.shellValue, "--", operation.shellAccount}, nil)
+	runErr = commandFailure("set account shell", result, runErr)
+	postCtx, cancelPost, postErr := beginPost(freshPost)
+	if postErr != nil {
+		return ApplyResult{started: result.Started}, errors.Join(runErr, postErr)
+	}
+	defer cancelPost()
+	after, observeErr := fresh.observeNamedAccount(postCtx, operation.shellAccount)
+	apply := ApplyResult{started: result.Started}
+	if observeErr == nil && after.shell == operation.shellValue {
+		apply.decision = Decision{kind: Exact, detail: "account shell is exact"}
+		return apply, nil
+	}
+	return apply, errors.Join(runErr, observeErr, fmt.Errorf("shell postcondition is not exact"))
+}
+
+func (operation Operation) applyMembership(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
+	before, err := fresh.observeNamedGroup(effectCtx, operation.membershipGroup)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if !sameGroup(before, operation.membershipBefore) {
+		return ApplyResult{}, fmt.Errorf("%w: membership group observation changed", ErrStale)
+	}
+	verb := "--add"
+	if !operation.membershipPresent {
+		verb = "--delete"
+	}
+	tool, _ := fresh.tool("gpasswd")
+	result, runErr := fresh.effects.run(effectCtx, tool, []string{verb, operation.membershipAccount, operation.membershipGroup}, nil)
+	runErr = commandFailure("set group membership", result, runErr)
+	postCtx, cancelPost, postErr := beginPost(freshPost)
+	if postErr != nil {
+		return ApplyResult{started: result.Started}, errors.Join(runErr, postErr)
+	}
+	defer cancelPost()
+	after, observeErr := fresh.observeNamedGroup(postCtx, operation.membershipGroup)
+	apply := ApplyResult{started: result.Started}
+	wantPresent := operation.membershipPresent == slices.Contains(after.members, operation.membershipAccount)
+	if observeErr == nil && wantPresent && slices.Equal(withoutMember(before.members, operation.membershipAccount), withoutMember(after.members, operation.membershipAccount)) {
+		apply.decision = Decision{kind: Exact, detail: "membership is exact"}
+		return apply, nil
+	}
+	return apply, errors.Join(runErr, observeErr, fmt.Errorf("membership postcondition is not exact"))
+}
+
+func (selected *Selected) observeNamedAccount(ctx context.Context, name string) (passwdRecord, error) {
+	global, err := selected.lookupAccount(ctx, false, name)
+	if err != nil {
+		return passwdRecord{}, err
+	}
+	local, err := selected.lookupAccount(ctx, true, name)
+	if err != nil {
+		return passwdRecord{}, err
+	}
+	globalValue, globalOK := accountFound(global)
+	localValue, localOK := accountFound(local)
+	if !globalOK || !localOK || globalValue != localValue || globalValue.name != name {
+		return passwdRecord{}, fmt.Errorf("global and files-only account records are not exact")
+	}
+	return globalValue, nil
+}
+
+func (selected *Selected) observeNamedGroup(ctx context.Context, name string) (groupRecord, error) {
+	global, err := selected.lookupGroup(ctx, false, name)
+	if err != nil {
+		return groupRecord{}, err
+	}
+	local, err := selected.lookupGroup(ctx, true, name)
+	if err != nil {
+		return groupRecord{}, err
+	}
+	globalValue, globalOK := groupFound(global)
+	localValue, localOK := groupFound(local)
+	if !globalOK || !localOK || !sameGroup(globalValue, localValue) || globalValue.name != name {
+		return groupRecord{}, fmt.Errorf("global and files-only group records are not exact")
+	}
+	return globalValue, nil
+}
+
+func withoutMember(values []string, account string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != account {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func (operation Operation) applyGroup(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
+	before, err := fresh.observeGroupIntent(effectCtx, operation.group)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if !reflect.DeepEqual(before, operation.groupBefore) {
+		return ApplyResult{}, fmt.Errorf("%w: group observation changed", ErrStale)
+	}
+	tool, _ := fresh.tool("groupadd")
+	result, runErr := fresh.effects.run(effectCtx, tool, []string{"--gid", strconv.FormatUint(uint64(operation.group.gid), 10), "--", operation.group.name}, nil)
+	runErr = commandFailure("create group", result, runErr)
+	apply := ApplyResult{started: result.Started}
+	postCtx, cancelPost, postErr := beginPost(freshPost)
+	if postErr != nil {
+		return apply, errors.Join(runErr, postErr)
+	}
+	defer cancelPost()
+	after, observeErr := fresh.observeGroupIntent(postCtx, operation.group)
+	if observeErr == nil {
+		apply.decision = reconcileGroupIntent(operation.group, after)
+	}
+	if apply.decision.kind == Exact {
+		return apply, nil
+	}
+	return apply, errors.Join(runErr, observeErr, fmt.Errorf("group postcondition is not exact"))
+}
+
+func (operation Operation) applyAccount(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
+	before, err := fresh.observeAccountIntent(effectCtx, operation.account)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if !reflect.DeepEqual(before, operation.accountBefore) {
+		return ApplyResult{}, fmt.Errorf("%w: account observation changed", ErrStale)
+	}
+	tool, _ := fresh.tool("useradd")
+	args := []string{"--uid", strconv.FormatUint(uint64(operation.account.uid), 10), "--gid", strconv.FormatUint(uint64(operation.primary.gid), 10), "--home-dir", operation.account.home, "--no-create-home", "--no-user-group", "--", operation.account.name}
+	result, runErr := fresh.effects.run(effectCtx, tool, args, nil)
+	runErr = commandFailure("create account", result, runErr)
+	apply := ApplyResult{started: result.Started}
+	postCtx, cancelPost, postErr := beginPost(freshPost)
+	if postErr != nil {
+		return apply, errors.Join(runErr, postErr)
+	}
+	defer cancelPost()
+	after, observeErr := fresh.observeAccountIntent(postCtx, operation.account)
+	if observeErr == nil {
+		apply.decision = reconcileAccountIntent(operation.account, operation.primary, after)
+	}
+	locked, lockErr := fresh.observeLock(postCtx, operation.account.name)
+	if apply.decision.kind == Exact && lockErr == nil && locked {
+		return apply, nil
+	}
+	return apply, errors.Join(runErr, observeErr, lockErr, fmt.Errorf("account or lock postcondition is not exact"))
+}
+
+func beginPost(freshPost func() (context.Context, context.CancelFunc)) (context.Context, context.CancelFunc, error) {
+	if freshPost == nil {
+		return nil, nil, fmt.Errorf("fresh bounded post-observation context is required")
+	}
+	ctx, cancel := freshPost()
+	if cancel == nil || !futureContext(ctx) {
+		if cancel != nil {
+			cancel()
+		}
+		return nil, nil, fmt.Errorf("fresh bounded post-observation context is required")
+	}
+	return ctx, cancel, nil
+}
+
+func (selected *Selected) observeLock(ctx context.Context, account string) (bool, error) {
+	passwd, ok := selected.tool("passwd")
+	if !ok {
+		return false, fmt.Errorf("passwd status is not admitted")
+	}
+	result, err := selected.effects.run(ctx, passwd, []string{"-S", account}, nil)
+	if err != nil || !result.Started || result.ExitCode != 0 || len(result.Stderr) != 0 {
+		return false, nativeFailure("passwd status", result, err)
+	}
+	fields := strings.Fields(strings.TrimSuffix(string(result.Stdout), "\n"))
+	if len(fields) < 2 || fields[0] != account || !strings.HasSuffix(string(result.Stdout), "\n") {
+		return false, fmt.Errorf("malformed passwd status")
+	}
+	return fields[1] == "L", nil
+}
+
+func sameSelectionEvidence(left, right selectionEvidence) bool {
+	return reflect.DeepEqual(left, right)
+}
+
+func missingResult(result linuxexec.Result, err error) bool {
+	return err == nil && result.Started && result.ExitCode == 2 && len(result.Stdout) == 0 && len(result.Stderr) == 0
+}
+
+func oneRecord(data []byte) (string, error) {
+	if len(data) == 0 || data[len(data)-1] != '\n' || strings.Count(string(data), "\n") != 1 {
+		return "", fmt.Errorf("NSS lookup did not return one newline-terminated record")
+	}
+	return string(data[:len(data)-1]), nil
+}
+
+func nativeFailure(action string, result linuxexec.Result, err error) error {
+	detail := fmt.Errorf("%s failed: started=%t exit=%d stderr=%q", action, result.Started, result.ExitCode, result.Stderr)
+	return errors.Join(detail, err)
+}
+
+func commandFailure(action string, result linuxexec.Result, err error) error {
+	if err == nil && result.Started && result.ExitCode == 0 && len(result.Stderr) == 0 {
+		return nil
+	}
+	return nativeFailure(action, result, err)
+}
+
+func futureContext(ctx context.Context) bool {
+	if ctx == nil || ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && time.Until(deadline) > 0
+}

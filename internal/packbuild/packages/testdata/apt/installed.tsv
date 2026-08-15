@@ -1,0 +1,4 @@
+bash	amd64	ii 	5.2.15-2
+dep	amd64	ii 	1.0-1
+held	amd64	hi 	3.0-1
+old-config	amd64	rc 	0.9-1

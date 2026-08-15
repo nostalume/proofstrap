@@ -1,0 +1,1 @@
+{"version":"1.0","rpms":[{"nevra":"curl-0:8.0-1.fc42.x86_64","action":"Replaced","reason":"Dependency","repo_id":"@System"},{"nevra":"curl-0:8.1-1.fc42.x86_64","action":"Upgrade","reason":"User","repo_id":"fedora","package_path":"./packages/curl.rpm"}]}

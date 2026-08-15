@@ -1,0 +1,18 @@
+Last metadata expiration check: 1:03:29 ago on Wed 04 Apr 2018 08:16:45 PM CDT.
+Dependencies resolved.
+======================================================================================================================
+ Package                     Architecture        Version                             Repository                  Size
+======================================================================================================================
+Installing:
+ kernel                      x86_64              0:4.18.0-348.23.1.el8_5             gsi-alma-base              7.0 M
+Installing dependencies:
+ kernel-core                 x86_64              0:4.18.0-348.23.1.el8_5             gsi-alma-base               38 M
+ kernel-modules              x86_64              0:4.18.0-348.23.1.el8_5             gsi-alma-base               30 M
+
+Transaction Summary
+======================================================================================================================
+Install  3 Packages
+
+Total download size: 74 M
+Installed size: 90 M
+Operation aborted.
