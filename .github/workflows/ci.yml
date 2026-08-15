@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
   workflow_call:
 
@@ -17,27 +15,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache-dependency-path: go.sum
 
       - name: Download modules
         run: go mod download
 
-      - name: Check formatting
+      - name: Check source shape
         run: |
-          unformatted="$(gofmt -l cmd internal)"
-          test -z "$unformatted" || {
-            printf 'Unformatted files:\n%s\n' "$unformatted"
+          set -eu
+          test -z "$(gofmt -l cmd internal)"
+          test ! -d internal/proofstrap
+          if rg -n 'internal/proofstrap|_create-home|proofstrap modules|replan_required' \
+            cmd internal README.md docs/architecture.md docs/AGENTS.md spec \
+            --glob '!**/*_test.go'; then
+            echo "retired architecture name found" >&2
             exit 1
-          }
+          fi
 
       - name: Vet
         run: go vet ./...
@@ -48,8 +50,8 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
-      - name: Test race detector
+      - name: Test with race detector
         run: go test -race -count=1 ./...
 
-      - name: Build
-        run: go build -o "$RUNNER_TEMP/proofstrap" ./cmd/proofstrap
+      - name: Build commands
+        run: go build ./cmd/...
