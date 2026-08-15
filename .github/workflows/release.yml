@@ -2,11 +2,10 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -21,44 +20,87 @@ jobs:
   publish:
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache-dependency-path: go.sum
 
-      - name: Download modules
-        run: go mod download
-
-      - name: Build release archives
+      - name: Build reproducible Linux archives
         run: |
+          set -eu
           mkdir -p dist
+          epoch=$(git show -s --format=%ct HEAD)
           for arch in amd64 arm64; do
             name="proofstrap_linux_${arch}"
-            staging="$RUNNER_TEMP/$name"
-            mkdir -p "$staging"
+            stage="$RUNNER_TEMP/$name"
+            mkdir -p "$stage/spec"
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" \
-              -o "$staging/proofstrap" ./cmd/proofstrap
-            cp README.md LICENSE "$staging/"
-            tar -C "$RUNNER_TEMP" -czf "dist/$name.tar.gz" "$name"
+              go build -trimpath -buildvcs=true -ldflags='-s -w' \
+              -o "$stage/proofstrap" ./cmd/proofstrap
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -buildvcs=true -ldflags='-s -w' \
+              -o "$stage/proofstrap-pack" ./cmd/proofstrap-pack
+            cp README.md LICENSE "$stage/"
+            cp spec/config.md spec/profile.md "$stage/spec/"
+            tar --format=gnu --sort=name --mtime="@$epoch" \
+              --owner=0 --group=0 --numeric-owner \
+              -C "$RUNNER_TEMP" -cf - "$name" | gzip -n > "dist/$name.tar.gz"
           done
-          cd dist
-          sha256sum ./*.tar.gz > checksums.txt
-          cp ../install.sh install.sh
+          (
+            cd dist
+            sha256sum ./*.tar.gz > checksums.txt
+          )
+          cp install.sh dist/install.sh
 
-      - name: Publish GitHub release
+      - name: Inspect release contents
+        run: |
+          set -eu
+          for arch in amd64 arm64; do
+            name="proofstrap_linux_${arch}"
+            tar -tzf "dist/$name.tar.gz" > "$RUNNER_TEMP/$name.files"
+            test "$(wc -l < "$RUNNER_TEMP/$name.files")" -eq 8
+            for member in \
+              "$name/proofstrap" \
+              "$name/proofstrap-pack" \
+              "$name/README.md" \
+              "$name/LICENSE" \
+              "$name/spec/config.md" \
+              "$name/spec/profile.md"; do
+              grep -Fx "$member" "$RUNNER_TEMP/$name.files"
+            done
+          done
+          "$RUNNER_TEMP/proofstrap_linux_amd64/proofstrap" --help
+          "$RUNNER_TEMP/proofstrap_linux_amd64/proofstrap-pack" --help
+          (
+            cd dist
+            sha256sum --check checksums.txt
+          )
+
+      - name: Attest release artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*
+
+      - name: Publish immutable GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -eu
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" dist/* \
-              --verify-tag \
-              --generate-notes \
-              --title "$GITHUB_REF_NAME"
+            printf 'release already exists: %s\n' "$GITHUB_REF_NAME" >&2
+            exit 1
           fi
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME"
