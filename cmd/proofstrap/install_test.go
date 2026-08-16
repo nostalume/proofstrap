@@ -180,6 +180,9 @@ exec /usr/bin/mv "$@"
 				if err != nil || len(packs) != 2 {
 					t.Fatalf("installed packs = %v, %v", packs, err)
 				}
+				if _, err := os.Stat(filepath.Join(filepath.Dir(packs[0]), "..", "..", "proofstrap-pack")); !os.IsNotExist(err) {
+					t.Fatalf("runtime generation contains author tool: %v", err)
+				}
 			}
 			if test.wantLegacy {
 				legacy, err := filepath.Glob(filepath.Join(filepath.Dir(installed), ".proofstrap-releases", "legacy-*", "proofstrap"))
@@ -249,7 +252,6 @@ func releaseArchive(t *testing.T, arch string, executable []byte, options ...str
 		data []byte
 	}{
 		{root + "/proofstrap", 0o755, executable},
-		{root + "/proofstrap-pack", 0o755, []byte("pack-builder")},
 		{root + "/README.md", 0o644, []byte("readme")},
 		{root + "/LICENSE", 0o644, []byte("license")},
 		{root + "/spec/config.md", 0o644, []byte("config")},
@@ -259,7 +261,7 @@ func releaseArchive(t *testing.T, arch string, executable []byte, options ...str
 	}
 	for _, option := range options {
 		if option == "missing-profile" {
-			members = append(members[:5], members[6:]...)
+			members = append(members[:4], members[5:]...)
 		}
 	}
 	for _, option := range options {

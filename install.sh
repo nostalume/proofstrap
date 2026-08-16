@@ -64,7 +64,7 @@ LC_ALL=C tar -tvzf "$tmp/$archive" > "$tmp/member-details"
   printf 'archive contains links or special members\n' >&2
   exit 1
 }
-[ "$(wc -l < "$tmp/members")" -eq 12 ] || {
+[ "$(wc -l < "$tmp/members")" -eq 11 ] || {
   printf 'archive has unexpected member count\n' >&2
   exit 1
 }
@@ -74,7 +74,6 @@ for member in \
   "$root/packs/" \
   "$root/packs/sha256/" \
   "$root/proofstrap" \
-  "$root/proofstrap-pack" \
   "$root/README.md" \
   "$root/LICENSE" \
   "$root/spec/config.md" \
@@ -102,7 +101,7 @@ for directory in spec packs packs/sha256; do
     exit 1
   }
 done
-for file in proofstrap proofstrap-pack README.md LICENSE spec/config.md spec/profile.md; do
+for file in proofstrap README.md LICENSE spec/config.md spec/profile.md; do
   [ -f "$extracted/$file" ] && [ ! -L "$extracted/$file" ] || {
     printf 'archive file is missing or unsafe: %s\n' "$file" >&2
     exit 1
@@ -112,7 +111,7 @@ done
   printf 'archive has unexpected directories\n' >&2
   exit 1
 }
-[ "$(find "$extracted" -type f | wc -l)" -eq 8 ] || {
+[ "$(find "$extracted" -type f | wc -l)" -eq 7 ] || {
   printf 'archive has unexpected files\n' >&2
   exit 1
 }
@@ -169,7 +168,6 @@ mkdir -p "$install_dir" "$releases"
 stage=$(mktemp -d "$releases/.stage.XXXXXX")
 mkdir -p "$stage/spec" "$stage/packs/sha256"
 install -m 0755 "$extracted/proofstrap" "$stage/proofstrap"
-install -m 0755 "$extracted/proofstrap-pack" "$stage/proofstrap-pack"
 install -m 0644 "$extracted/README.md" "$stage/README.md"
 install -m 0644 "$extracted/LICENSE" "$stage/LICENSE"
 install -m 0644 "$extracted/spec/config.md" "$stage/spec/config.md"

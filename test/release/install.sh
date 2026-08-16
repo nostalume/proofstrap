@@ -5,7 +5,8 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
 mkdir -p "$temporary/bin" "$temporary/home" "$temporary/tmp"
-"$root/test/release/build.sh" "$temporary/dist"
+"$root/test/official/stage-assets.sh" "$temporary/assets"
+"$root/test/release/build.sh" "$temporary/dist" "$temporary/assets"
 
 cat > "$temporary/bin/uname" <<'EOF'
 #!/bin/sh
@@ -47,5 +48,9 @@ case "$target" in
   *) printf 'unexpected launcher target: %s\n' "$target" >&2; exit 1 ;;
 esac
 [ "$(find "$temporary/home/.local/bin/.proofstrap-releases" -path '*/packs/sha256/*.pstrap' -type f | wc -l)" -eq 2 ]
+if find "$temporary/home/.local/bin/.proofstrap-releases" -name proofstrap-pack -print -quit | grep -q .; then
+  printf 'author tool escaped into runtime generation\n' >&2
+  exit 1
+fi
 "$launcher" inspect > "$temporary/inspect.json"
 [ "$(grep -c '"adjacent"' "$temporary/inspect.json")" -eq 2 ]

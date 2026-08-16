@@ -102,3 +102,6 @@ jobs:
 
       - name: Build commands
         run: go build ./cmd/...
+
+      - name: Reject invalid release pack inputs
+        run: test/release/input_test.sh

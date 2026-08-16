@@ -31,10 +31,16 @@ complete content-addressed release beneath
 recovery. Reinstalling an already-present generation fails instead of replacing
 it.
 
-Official releases bundle one semantic pack with profiles `curl`, `git`, `vim`,
-and `ssh-server`, plus one Linux binding pack. `ssh-server` requests its package
-and the enabled/running system SSH service. Run `proofstrap inspect` to obtain
-the exact bundled digests for configuration; releases never expose a mutable
+The user archive contains only the `proofstrap` runtime. Profile authors and
+distributors use the separately checksummed `proofstrap-pack` archive for their
+architecture; the runtime does not require that authoring tool.
+
+Official releases bundle one semantic pack with package profiles `ca-certificates`,
+`curl`, `git`, `gzip`, `tar`, and `vim`; `bootstrap-cli` composes those six
+without adding behavior. The separately selected `ssh-server` profile requests
+its package and the enabled/running system SSH service. One Linux binding pack
+realizes these IDs for admitted backends. Run `proofstrap inspect` to obtain the
+exact bundled digests for configuration; releases never expose a mutable
 "latest profile" identity.
 
 ## Workflow

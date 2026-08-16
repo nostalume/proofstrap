@@ -36,7 +36,9 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Build reproducible Linux archives
-        run: test/release/build.sh dist
+        run: |
+          test/official/stage-assets.sh "$RUNNER_TEMP/packs"
+          test/release/build.sh dist "$RUNNER_TEMP/packs"
       - name: Add installer
         run: cp install.sh dist/install.sh
 
@@ -46,10 +48,9 @@ jobs:
           for arch in amd64 arm64; do
             name="proofstrap_linux_${arch}"
             tar -tzf "dist/$name.tar.gz" > "$RUNNER_TEMP/$name.files"
-            test "$(wc -l < "$RUNNER_TEMP/$name.files")" -eq 12
+            test "$(wc -l < "$RUNNER_TEMP/$name.files")" -eq 11
             for member in \
               "$name/proofstrap" \
-              "$name/proofstrap-pack" \
               "$name/README.md" \
               "$name/LICENSE" \
               "$name/spec/config.md" \
@@ -59,6 +60,19 @@ jobs:
               grep -Fx "$member" "$RUNNER_TEMP/$name.files"
             done
             test "$(grep -Ec "^$name/packs/sha256/[0-9a-f]{64}\.pstrap$" "$RUNNER_TEMP/$name.files")" -eq 2
+
+            author="proofstrap-pack_linux_${arch}"
+            tar -tzf "dist/$author.tar.gz" > "$RUNNER_TEMP/$author.files"
+            test "$(wc -l < "$RUNNER_TEMP/$author.files")" -eq 6
+            for member in \
+              "$author/" \
+              "$author/proofstrap-pack" \
+              "$author/README.md" \
+              "$author/LICENSE" \
+              "$author/spec/" \
+              "$author/spec/profile.md"; do
+              grep -Fx "$member" "$RUNNER_TEMP/$author.files"
+            done
           done
           (
             cd dist
