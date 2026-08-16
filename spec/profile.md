@@ -5,8 +5,9 @@
 This document specifies Proofstrap's profile and native-binding contract.
 Archive and manifest admission, semantic resolution and expansion, binding
 projection, deterministic pack building, local stores, explicit import,
-structural inspection, target configuration, and Plan/Apply pack integration are
-implemented. An official release pack and bundled installation remain deferred.
+structural inspection, target configuration, Plan/Apply pack integration,
+official core/Linux packs, and executable-adjacent bundled acquisition are
+implemented.
 
 The authority, identity, digest, and failure laws below are the durable format
 contract and do not depend on delivery-plan terminology.
@@ -15,8 +16,8 @@ contract and do not depend on delivery-plan terminology.
 
 Profiles move reusable desired-state composition out of Go without turning
 Proofstrap into a privileged script runner. A profile names closed typed
-resources and composes profiles. A binding pack translates portable package and
-service identities for an observed backend. Observation, reconciliation,
+resources and composes profiles. A binding pack translates backend-neutral
+package and service identities for an observed backend. Observation, reconciliation,
 commands, verification, permissions, and lifecycle policy remain engine-owned.
 
 The goals are plural resources and instances, distribution-independent profiles,
@@ -71,7 +72,7 @@ The language is closed. Unknown fields and constructs are admission errors.
 | Profile | Semantic pack | Defines reusable typed composition. |
 | Parameter | Profile | Accepts a machine-owned account or group reference. |
 | Include | Profile | Instantiates another profile with typed arguments. |
-| Semantic resource | Profile | Declares portable package or service intent. |
+| Semantic resource | Profile | Declares backend-neutral package or service intent. |
 | Service package prerequisite | Service | Declares package presence and package-to-service delivery edges. |
 | Dependency edge | Model/domain | Adds closed ordering and failure coupling; it is not a generic authored construct. |
 | Native binding | Binding pack | Maps semantic identity to native identities. |
@@ -112,7 +113,7 @@ Importing a binding pack never activates it; only explicit config selection does
 
 Every pack has exactly one authority kind:
 
-- A `semantic` pack contains profiles and portable semantic intent.
+- A `semantic` pack contains profiles and backend-neutral semantic intent.
 - A `binding` pack contains native package/service name mappings.
 
 Mixed packs are rejected. A manifest declares only its schema, kind, and
@@ -627,7 +628,7 @@ per-profile resource budget; collection counts are charged before allocation.
 
 ## Resource authority
 
-Profiles own portable package and service intent. Config may declare native,
+Profiles own backend-neutral package and service intent. Config may declare native,
 machine-specific resources directly. Both enter one canonical graph.
 
 | Resource | Config | Semantic profile |

@@ -20,6 +20,17 @@ import (
 
 const commandEmptyPlanJSON = `{"schema":1,"digest":"sha256:6e798e7de28e940a0eecede9ff1e10d4b479db250a983744d5311354a80ffb64","plan":{"operations":[],"blockers":[]}}`
 
+func TestAdjacentReleaseRootUsesKernelResolvedPath(t *testing.T) {
+	if got := adjacentReleaseRoot("/opt/proofstrap/releases/generation/proofstrap"); got != "/opt/proofstrap/releases/generation/packs" {
+		t.Fatalf("adjacent release root = %q", got)
+	}
+	for _, path := range []string{"", "relative", "/opt/proofstrap/releases/generation/proofstrap (deleted)"} {
+		if got := adjacentReleaseRoot(path); got != "" {
+			t.Fatalf("invalid executable %q produced release root %q", path, got)
+		}
+	}
+}
+
 func TestCutoverGrammarRejectsLegacyAndForbiddenInputs(t *testing.T) {
 	called := false
 	applications := applicationCommands{

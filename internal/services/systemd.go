@@ -9,12 +9,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
-	"time"
 	"unicode/utf8"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/linuxexec"
+	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/model"
 )
 
@@ -70,20 +68,16 @@ type homeEvidence struct {
 	directory bool
 }
 
-type systemEffects struct {
-	identify func(string) (linuxexec.Identity, error)
-	run      func(context.Context, linuxexec.Identity, []string, []byte) (linuxexec.Result, error)
-	euid     func() (uint32, error)
-	pid1     func() (string, error)
-	home     func(string) (homeEvidence, error)
-}
-
 type selectionEvidence struct {
 	scope     scope
-	tool      linuxexec.Identity
+	backend   string
+	tool      linux.Identity
+	status    linux.Identity
+	update    linux.Identity
 	version   string
 	euid      uint32
 	pid1      string
+	control   string
 	principal Principal
 	home      homeEvidence
 }
@@ -91,6 +85,7 @@ type selectionEvidence struct {
 type Selected struct {
 	evidence selectionEvidence
 	effects  systemEffects
+	openrc   openRCEffects
 }
 
 func SelectSystem(ctx context.Context) (*Selected, error) {
@@ -99,6 +94,55 @@ func SelectSystem(ctx context.Context) (*Selected, error) {
 
 func SelectUser(ctx context.Context, principal Principal) (*Selected, error) {
 	return selectUser(ctx, productionEffects(), principal)
+}
+
+func SelectSystemBackend(ctx context.Context, backend string) (*Selected, error) {
+	switch backend {
+	case "systemd":
+		return SelectSystem(ctx)
+	case "openrc":
+		return SelectOpenRCSystem(ctx)
+	default:
+		return nil, fmt.Errorf("%w: service backend %q", ErrUnsupported, backend)
+	}
+}
+
+func SelectUserBackend(ctx context.Context, backend string, principal Principal) (*Selected, error) {
+	if backend != "systemd" {
+		return nil, fmt.Errorf("%w: service backend %q has no user control plane", ErrUnsupported, backend)
+	}
+	return SelectUser(ctx, principal)
+}
+
+func SelectHostSystem(ctx context.Context) (*Selected, error) {
+	return selectHostSystem(ctx, SelectOpenRCSystem, SelectSystem)
+}
+
+func selectHostSystem(ctx context.Context, selectors ...func(context.Context) (*Selected, error)) (*Selected, error) {
+	var selected []*Selected
+	var failures []error
+	for _, selectBackend := range selectors {
+		candidate, err := selectBackend(ctx)
+		if err == nil {
+			selected = append(selected, candidate)
+		} else {
+			failures = append(failures, err)
+		}
+	}
+	if len(selected) == 1 {
+		return selected[0], nil
+	}
+	if len(selected) > 1 {
+		return nil, fmt.Errorf("%w: multiple service control planes are usable", ErrAmbiguous)
+	}
+	return nil, errors.Join(append([]error{ErrUnsupported}, failures...)...)
+}
+
+func (selected *Selected) Backend() string {
+	if !selected.valid() {
+		return ""
+	}
+	return selected.evidence.backend
 }
 
 func selectSystem(ctx context.Context, effects systemEffects) (*Selected, error) {
@@ -144,15 +188,12 @@ func selectUser(ctx context.Context, effects systemEffects, principal Principal)
 }
 
 func selectBase(ctx context.Context, effects systemEffects) (*Selected, error) {
-	if !futureContext(ctx) || effects.identify == nil || effects.run == nil || effects.euid == nil || effects.pid1 == nil || effects.home == nil {
+	if !linux.FutureContext(ctx) || effects.identify == nil || effects.run == nil || effects.euid == nil || effects.pid1 == nil || effects.home == nil {
 		return nil, fmt.Errorf("bounded context and complete system effects are required")
 	}
-	euid, err := effects.euid()
+	euid, err := admitRoot(effects.euid)
 	if err != nil {
-		return nil, fmt.Errorf("%w: inspect effective UID: %v", ErrIndeterminate, err)
-	}
-	if euid != 0 {
-		return nil, fmt.Errorf("%w: effective UID %d is not root", ErrUnauthorized, euid)
+		return nil, err
 	}
 	pid1, err := effects.pid1()
 	if err != nil {
@@ -161,32 +202,14 @@ func selectBase(ctx context.Context, effects systemEffects) (*Selected, error) {
 	if pid1 != "systemd" {
 		return nil, fmt.Errorf("%w: PID 1 is %q", ErrUnsupported, pid1)
 	}
-	var identities []linuxexec.Identity
-	for _, candidate := range []string{"/usr/bin/systemctl", "/bin/systemctl"} {
-		identity, identifyErr := effects.identify(candidate)
-		if identifyErr != nil {
-			if errors.Is(identifyErr, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("%w: identify systemctl: %v", ErrIndeterminate, identifyErr)
-		}
-		if !filepath.IsAbs(identity.Path) || filepath.Clean(identity.Path) != identity.Path {
-			return nil, fmt.Errorf("%w: systemctl identity path is invalid", ErrIndeterminate)
-		}
-		if !slices.Contains(identities, identity) {
-			identities = append(identities, identity)
-		}
+	tool, err := identifyUnique(effects, "systemctl", []string{"/usr/bin/systemctl", "/bin/systemctl"})
+	if err != nil {
+		return nil, err
 	}
-	if len(identities) == 0 {
-		return nil, fmt.Errorf("%w: systemctl is absent", ErrUnsupported)
-	}
-	if len(identities) != 1 {
-		return nil, fmt.Errorf("%w: fixed systemctl candidates disagree", ErrAmbiguous)
-	}
-	return &Selected{evidence: selectionEvidence{tool: identities[0], euid: euid, pid1: pid1}, effects: effects}, nil
+	return &Selected{evidence: selectionEvidence{backend: "systemd", tool: tool, euid: euid, pid1: pid1}, effects: effects}, nil
 }
 
-func probeManager(ctx context.Context, effects systemEffects, tool linuxexec.Identity, prefix []string) (string, error) {
+func probeManager(ctx context.Context, effects systemEffects, tool linux.Identity, prefix []string) (string, error) {
 	args := append(append([]string(nil), prefix...), "show", "--property=Version", "--value")
 	result, err := effects.run(ctx, tool, args, nil)
 	if err != nil || !result.Started {
@@ -203,25 +226,40 @@ func probeManager(ctx context.Context, effects systemEffects, tool linuxexec.Ide
 }
 
 func (selected *Selected) valid() bool {
-	return selected != nil && selected.effects.identify != nil && selected.effects.run != nil && selected.effects.euid != nil && selected.effects.pid1 != nil && selected.effects.home != nil && validSelectionEvidence(selected.evidence)
+	if selected == nil || selected.effects.identify == nil || selected.effects.run == nil || selected.effects.euid == nil || !validSelectionEvidence(selected.evidence) {
+		return false
+	}
+	if selected.evidence.backend == "openrc" {
+		return selected.openrc.inspect != nil && selected.openrc.control != nil
+	}
+	return selected.effects.pid1 != nil && selected.effects.home != nil
 }
 
-type Demand struct{ value demand }
+type Demand struct {
+	backend string
+	value   demand
+}
 
-func (value Demand) valid() bool { return validDemand(value.value) }
+func (value Demand) valid() bool {
+	return (value.backend == "systemd" || value.backend == "openrc") && validDemand(value.value) && (value.backend == "systemd" || value.value.user == "")
+}
 
 func NewDemand(id binding.ServiceID, target model.ServiceTarget, enable model.EnableIntent, run model.RunIntent) (Demand, error) {
-	if id.Backend().String() != "systemd" || !validUnit(id.Name()) || target == nil {
-		return Demand{}, fmt.Errorf("exact systemd identity and typed target are required")
+	backend := id.Backend().String()
+	if (backend != "systemd" && backend != "openrc") || !validUnit(id.Name()) || target == nil {
+		return Demand{}, fmt.Errorf("supported exact service identity and typed target are required")
 	}
 	value := demand{unit: id.Name(), persistence: enableIntent(enable), runtime: runIntent(run)}
 	if user, ok := model.ServiceTargetUser(target); ok {
+		if backend == "openrc" {
+			return Demand{}, fmt.Errorf("OpenRC user services are unsupported")
+		}
 		value.user = user
 	}
 	if !validDemand(value) {
 		return Demand{}, fmt.Errorf("service demand is invalid")
 	}
-	return Demand{value: value}, nil
+	return Demand{backend: backend, value: value}, nil
 }
 
 func DemandOf(node binding.Node) (Demand, error) {
@@ -230,17 +268,21 @@ func DemandOf(node binding.Node) (Demand, error) {
 	}
 	id, ok := binding.ServiceIDOf(node)
 	service, serviceOK := model.ServiceOf(node.Semantic())
-	if !ok || !serviceOK || id.Backend().String() != "systemd" || !validUnit(id.Name()) {
-		return Demand{}, fmt.Errorf("exact systemd service binding is required")
+	backend := id.Backend().String()
+	if !ok || !serviceOK || (backend != "systemd" && backend != "openrc") || !validUnit(id.Name()) {
+		return Demand{}, fmt.Errorf("supported exact service binding is required")
 	}
 	desired := demand{unit: id.Name(), persistence: enableIntent(service.Enable()), runtime: runIntent(service.Run())}
 	if user, ok := service.User(); ok {
+		if backend == "openrc" {
+			return Demand{}, fmt.Errorf("OpenRC user services are unsupported")
+		}
 		desired.user = user
 	}
 	if !validDemand(desired) {
 		return Demand{}, fmt.Errorf("service demand is invalid")
 	}
-	return Demand{value: desired}, nil
+	return Demand{backend: backend, value: desired}, nil
 }
 
 func enableIntent(value model.EnableIntent) intent {
@@ -281,7 +323,7 @@ func (observation Observation) record(desired Demand) (unitRecord, bool) {
 }
 
 func (selected *Selected) Observe(ctx context.Context, desired []Demand) (Observation, error) {
-	if !selected.valid() || !futureContext(ctx) {
+	if !selected.valid() || !linux.FutureContext(ctx) {
 		return Observation{}, fmt.Errorf("valid selection and bounded context are required")
 	}
 	if len(desired) > maxObservationDemands {
@@ -289,7 +331,7 @@ func (selected *Selected) Observe(ctx context.Context, desired []Demand) (Observ
 	}
 	values := append([]Demand(nil), desired...)
 	for _, value := range values {
-		if !value.valid() || !selected.matches(value.value) {
+		if !value.valid() || !selected.matches(value) {
 			return Observation{}, fmt.Errorf("demand does not match selected service scope")
 		}
 	}
@@ -314,6 +356,9 @@ func (selected *Selected) Observe(ctx context.Context, desired []Demand) (Observ
 }
 
 func (selected *Selected) observeChunk(ctx context.Context, desired []Demand) (map[string]unitRecord, error) {
+	if selected.evidence.backend == "openrc" {
+		return selected.observeOpenRC(ctx, desired)
+	}
 	args := selected.prefix()
 	args = append(args, "show", "--property=Id,LoadState,UnitFileState,ActiveState,SubState", "--")
 	requested := make(map[string]struct{}, len(desired))
@@ -400,7 +445,7 @@ func (selected *Selected) Plan(ctx context.Context, desired Demand) (Plan, error
 }
 
 func (selected *Selected) Reconcile(desired Demand, observed Observation) (Plan, error) {
-	if !selected.valid() || !desired.valid() || !selected.matches(desired.value) {
+	if !selected.valid() || !desired.valid() || !selected.matches(desired) {
 		return Plan{}, fmt.Errorf("valid matching selection and demand are required")
 	}
 	record, ok := observed.record(desired)
@@ -414,7 +459,11 @@ func (selected *Selected) Reconcile(desired Demand, observed Observation) (Plan,
 	return plan, nil
 }
 
-func (selected *Selected) matches(value demand) bool {
+func (selected *Selected) matches(desired Demand) bool {
+	if desired.backend != selected.evidence.backend {
+		return false
+	}
+	value := desired.value
 	if selected.evidence.scope == systemScope {
 		return value.user == ""
 	}
@@ -426,30 +475,6 @@ func (selected *Selected) prefix() []string {
 		return nil
 	}
 	return []string{"--user", "--machine=" + strconv.FormatUint(uint64(selected.evidence.principal.uid), 10) + "@.host"}
-}
-
-func productionEffects() systemEffects {
-	return systemEffects{
-		identify: linuxexec.Identify, run: linuxexec.Run,
-		euid: func() (uint32, error) { return uint32(os.Geteuid()), nil },
-		pid1: func() (string, error) {
-			data, err := os.ReadFile("/proc/1/comm")
-			return strings.TrimSuffix(string(data), "\n"), err
-		},
-		home: inspectHome,
-	}
-}
-
-func inspectHome(path string) (homeEvidence, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return homeEvidence{}, err
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return homeEvidence{}, fmt.Errorf("home ownership metadata unavailable")
-	}
-	return homeEvidence{path: path, uid: stat.Uid, gid: stat.Gid, mode: uint16(info.Mode().Perm()), device: uint64(stat.Dev), inode: stat.Ino, directory: info.IsDir() && info.Mode()&os.ModeSymlink == 0}, nil
 }
 
 func validUnit(value string) bool {
@@ -468,18 +493,4 @@ func validText(value string, limit int) bool {
 		}
 	}
 	return true
-}
-func futureContext(ctx context.Context) bool {
-	if ctx == nil || ctx.Err() != nil {
-		return false
-	}
-	deadline, ok := ctx.Deadline()
-	return ok && time.Until(deadline) > 0
-}
-
-func commandFailure(action string, result linuxexec.Result, err error) error {
-	if err == nil && result.Started && result.ExitCode == 0 && len(result.Stderr) == 0 {
-		return nil
-	}
-	return errors.Join(fmt.Errorf("%s failed: started=%t exit=%d stderr=%q", action, result.Started, result.ExitCode, result.Stderr), err)
 }

@@ -1,0 +1,13 @@
+schema = 1
+
+bindings = ["linux"]
+profiles = [
+  { profile = "core:curl" },
+  { profile = "core:git" },
+  { profile = "core:ssh-server" },
+  { profile = "core:vim" },
+]
+
+[sources]
+core = "sha256:43a222e0cbe33ca5c903b648c9c8ab83b6442f351d0fe6aa54aa0aae04af5853"
+linux = "sha256:94c6f7dcdf439a3f8e030f0afe5cbb113d751ed710caa46e22792756ccb1504b"

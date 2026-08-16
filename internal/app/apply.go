@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -21,6 +20,7 @@ const (
 	commandTimeout     = 60 * time.Second
 	packageTimeout     = 30 * time.Minute
 	packagePostTimeout = 2 * time.Minute
+	maxOutcomeDetail   = 1024
 )
 
 var ErrInvalidRequest = errors.New("invalid Apply request")
@@ -267,9 +267,8 @@ func classifyOutcome(started bool, err error) (engine.Outcome, string) {
 }
 
 func boundedDetail(err error) string {
-	runes := slices.DeleteFunc([]rune(err.Error()), func(r rune) bool { return r == '\r' || r == '\n' || r == 0 })
-	text := strings.TrimSpace(string(runes))
-	for len(text) > 4096 {
+	text := strings.Join(strings.Fields(strings.ToValidUTF8(err.Error(), "�")), " ")
+	for len(text) > maxOutcomeDetail {
 		_, width := utf8.DecodeLastRuneInString(text)
 		text = text[:len(text)-width]
 	}

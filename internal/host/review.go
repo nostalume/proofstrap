@@ -3,8 +3,10 @@ package host
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
+
+	reviewjson "github.com/nostalume/proofstrap/internal/review"
 )
 
 const maxReviewBytes = 1 << 20
@@ -50,17 +52,16 @@ func DecodeReview(data []byte) (Review, error) {
 		return Review{}, fmt.Errorf("host review must contain 1..%d bytes", maxReviewBytes)
 	}
 	var wire reviewWire
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
-		return Review{}, fmt.Errorf("decode host review: %w", err)
+	err := reviewjson.DecodeStrict(data, &wire)
+	if errors.Is(err, reviewjson.ErrMultiple) {
+		return Review{}, fmt.Errorf("host review contains multiple JSON values")
 	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return Review{}, fmt.Errorf("host review contains multiple JSON values")
-		}
-		return Review{}, fmt.Errorf("decode host review trailing data: %w", err)
+	var trailing reviewjson.TrailingError
+	if errors.As(err, &trailing) {
+		return Review{}, fmt.Errorf("decode host review trailing data: %w", trailing.Err)
+	}
+	if err != nil {
+		return Review{}, fmt.Errorf("decode host review: %w", err)
 	}
 	operation, err := operationFromWire(wire)
 	if err != nil {

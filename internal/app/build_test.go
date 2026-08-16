@@ -46,7 +46,7 @@ func TestBuildPlanReturnsCancellationBeforeDecode(t *testing.T) {
 	}
 }
 
-func TestBuildPlanBlocksUnsupportedExactServiceWithoutSystemdProbe(t *testing.T) {
+func TestBuildPlanServiceSelectsExactOpenRCBackendWithoutSystemdFallback(t *testing.T) {
 	plan, err := BuildPlan(buildContext(t), Request{Origin: "test", Config: []byte(`schema = 1
 [services."openrc:sshd"]
 target = "system"
@@ -56,7 +56,7 @@ running = true
 		t.Fatal(err)
 	}
 	rendered, err := RenderPlan(plan)
-	if err != nil || !strings.Contains(rendered, "status: blocked") || !strings.Contains(rendered, "service:openrc") {
+	if err != nil || !strings.Contains(rendered, "status: blocked") || !strings.Contains(rendered, "service-principal:openrc:") {
 		t.Fatalf("render = %q, %v", rendered, err)
 	}
 }

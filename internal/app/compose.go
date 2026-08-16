@@ -13,16 +13,24 @@ import (
 )
 
 func compose(ctx context.Context, target config.Target, sources []pack.Source, backends binding.Backends) (binding.Graph, error) {
+	graph, catalogues, err := resolveComposition(ctx, target, sources)
+	if err != nil {
+		return binding.Graph{}, err
+	}
+	return binding.Project(ctx, graph, backends, catalogues)
+}
+
+func resolveComposition(ctx context.Context, target config.Target, sources []pack.Source) (model.Graph, []binding.Catalogue, error) {
 	if ctx == nil || ctx.Err() != nil {
-		return binding.Graph{}, context.Canceled
+		return model.Graph{}, nil, context.Canceled
 	}
 	byDigest := make(map[pack.Digest]pack.Source, len(sources))
 	for _, source := range sources {
 		if source.Digest() == (pack.Digest{}) {
-			return binding.Graph{}, fmt.Errorf("invalid acquired source")
+			return model.Graph{}, nil, fmt.Errorf("invalid acquired source")
 		}
 		if _, exists := byDigest[source.Digest()]; exists {
-			return binding.Graph{}, fmt.Errorf("duplicate acquired source %s", source.Digest())
+			return model.Graph{}, nil, fmt.Errorf("duplicate acquired source %s", source.Digest())
 		}
 		byDigest[source.Digest()] = source
 	}
@@ -30,7 +38,7 @@ func compose(ctx context.Context, target config.Target, sources []pack.Source, b
 	for _, declared := range target.Sources() {
 		source, exists := byDigest[declared.Digest]
 		if !exists {
-			return binding.Graph{}, fmt.Errorf("declared source %q is unavailable", declared.Alias)
+			return model.Graph{}, nil, fmt.Errorf("declared source %q is unavailable", declared.Alias)
 		}
 		aliases[declared.Alias] = source
 	}
@@ -43,7 +51,7 @@ func compose(ctx context.Context, target config.Target, sources []pack.Source, b
 	for _, selected := range target.Profiles() {
 		source, exists := aliases[selected.Source]
 		if !exists || source.Kind() != pack.Semantic {
-			return binding.Graph{}, fmt.Errorf("profile source %q is unavailable or not semantic", selected.Source)
+			return model.Graph{}, nil, fmt.Errorf("profile source %q is unavailable or not semantic", selected.Source)
 		}
 		group := semanticRoots[source.Digest()]
 		group.source = source
@@ -63,11 +71,11 @@ func compose(ctx context.Context, target config.Target, sources []pack.Source, b
 		group := semanticRoots[digest]
 		resolved, err := pack.Resolve(ctx, group.source, sources)
 		if err != nil {
-			return binding.Graph{}, err
+			return model.Graph{}, nil, err
 		}
 		graph, err = profile.Expand(graph, resolved.Library(), group.values)
 		if err != nil {
-			return binding.Graph{}, err
+			return model.Graph{}, nil, err
 		}
 	}
 
@@ -75,13 +83,13 @@ func compose(ctx context.Context, target config.Target, sources []pack.Source, b
 	for _, selected := range target.Bindings() {
 		source, exists := aliases[selected.Source]
 		if !exists || source.Kind() != pack.Binding {
-			return binding.Graph{}, fmt.Errorf("binding source %q is unavailable or not binding", selected.Source)
+			return model.Graph{}, nil, fmt.Errorf("binding source %q is unavailable or not binding", selected.Source)
 		}
 		catalogue, err := pack.ResolveCatalogue(ctx, source, sources)
 		if err != nil {
-			return binding.Graph{}, err
+			return model.Graph{}, nil, err
 		}
 		catalogues = append(catalogues, catalogue)
 	}
-	return binding.Project(ctx, graph, backends, catalogues)
+	return graph, catalogues, nil
 }

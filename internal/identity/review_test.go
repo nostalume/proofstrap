@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nostalume/proofstrap/internal/linuxexec"
+	"github.com/nostalume/proofstrap/internal/linux"
 )
 
 func TestReviewRoundTripsEveryIdentityOperationWithoutAuthority(t *testing.T) {
@@ -39,8 +39,8 @@ func TestReviewRoundTripsEveryIdentityOperationWithoutAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reconstructed, err := Reconstruct(review, &Selected{evidence: evidence, effects: shadowEffects{identify: func(string) (linuxexec.Identity, error) { return linuxexec.Identity{}, nil }, run: func(context.Context, linuxexec.Identity, []string, []byte) (linuxexec.Result, error) {
-				return linuxexec.Result{}, nil
+			reconstructed, err := Reconstruct(review, &Selected{evidence: evidence, effects: shadowEffects{identify: func(string) (linux.Identity, error) { return linux.Identity{}, nil }, run: func(context.Context, linux.Identity, []string, []byte) (linux.Result, error) {
+				return linux.Result{}, nil
 			}}})
 			if err != nil {
 				t.Fatal(err)
@@ -97,7 +97,7 @@ func reviewEvidence() selectionEvidence {
 	paths := []string{getentPath, groupaddPath, useraddPath, passwdPath, usermodPath, gpasswdPath}
 	tools := make([]toolEvidence, len(names))
 	for index := range names {
-		identity := linuxexec.Identity{Path: paths[index]}
+		identity := linux.Identity{Path: paths[index]}
 		identity.Digest[0] = byte(index + 1)
 		tools[index] = toolEvidence{name: names[index], identity: identity}
 	}
@@ -105,7 +105,7 @@ func reviewEvidence() selectionEvidence {
 }
 
 func reviewSelected(evidence selectionEvidence) *Selected {
-	return &Selected{evidence: evidence, effects: shadowEffects{identify: func(string) (linuxexec.Identity, error) { return linuxexec.Identity{}, nil }, run: func(_ context.Context, _ linuxexec.Identity, _ []string, _ []byte) (linuxexec.Result, error) {
-		return linuxexec.Result{}, nil
+	return &Selected{evidence: evidence, effects: shadowEffects{identify: func(string) (linux.Identity, error) { return linux.Identity{}, nil }, run: func(_ context.Context, _ linux.Identity, _ []string, _ []byte) (linux.Result, error) {
+		return linux.Result{}, nil
 	}}}
 }

@@ -1,0 +1,5 @@
+[
+  {"name":"alpine-baselayout","version":"3.7.2-r1","arch":"x86_64","status":["installed"]},
+  {"name":"busybox","version":"1.37.0-r31","arch":"x86_64","status":["installed"]},
+  {"name":"musl","version":"1.2.6-r2","arch":"x86_64","status":["installed"]}
+]

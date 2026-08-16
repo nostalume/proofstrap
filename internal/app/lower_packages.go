@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 
-	"github.com/nostalume/proofstrap/internal/packbuild/packages"
+	"github.com/nostalume/proofstrap/internal/packages"
 )
 
 type packageResult struct {

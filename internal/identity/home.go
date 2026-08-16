@@ -2,10 +2,10 @@ package identity
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 
+	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/model"
 )
 
@@ -31,7 +31,7 @@ type homeIntent struct {
 }
 
 func (selected *Selected) PlanHome(ctx context.Context, desired model.Home, account model.Account) (Planned, error) {
-	if !selected.valid() || !desired.Valid() || !account.Valid() || desired.Account() != account.Name() || !futureContext(ctx) {
+	if !selected.valid() || !desired.Valid() || !account.Valid() || desired.Account() != account.Name() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, home/account pair, and bounded context are required")
 	}
 	if !selected.effects.home.valid() {
@@ -58,7 +58,7 @@ func (selected *Selected) PlanHome(ctx context.Context, desired model.Home, acco
 }
 
 func (selected *Selected) PlanHomeMode(ctx context.Context, desired model.HomeMode, account model.Account) (Planned, error) {
-	if !selected.valid() || !desired.Valid() || !account.Valid() || desired.Account() != account.Name() || !futureContext(ctx) {
+	if !selected.valid() || !desired.Valid() || !account.Valid() || desired.Account() != account.Name() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, home mode/account pair, and bounded context are required")
 	}
 	if !selected.effects.home.valid() {
@@ -114,20 +114,11 @@ func (operation Operation) applyHome(effectCtx context.Context, freshPost func()
 		return ApplyResult{}, fmt.Errorf("%w: home observation changed", ErrStale)
 	}
 	started, effectErr := fresh.effects.home.create(operation.homeIntent.path, operation.homeIntent.uid, operation.homeIntent.gid)
-	postCtx, cancelPost, postErr := beginPost(freshPost)
-	if postErr != nil {
-		return ApplyResult{started: started}, errors.Join(effectErr, postErr)
-	}
-	defer cancelPost()
-	if err := postCtx.Err(); err != nil {
-		return ApplyResult{started: started}, errors.Join(effectErr, err)
-	}
-	after, observeErr := fresh.effects.home.observe(operation.homeIntent.path)
-	apply := ApplyResult{started: started, decision: reconcileHome(operation.homeIntent, after)}
-	if observeErr == nil && apply.decision.kind == Exact {
-		return apply, nil
-	}
-	return apply, errors.Join(effectErr, observeErr, fmt.Errorf("home postcondition is not exact"))
+	return finishIdentity(started, effectErr, freshPost, "home postcondition is not exact", func(context.Context) (Decision, bool, error) {
+		after, err := fresh.effects.home.observe(operation.homeIntent.path)
+		decision := reconcileHome(operation.homeIntent, after)
+		return decision, decision.kind == Exact, err
+	})
 }
 
 func (operation Operation) applyHomeMode(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
@@ -146,19 +137,9 @@ func (operation Operation) applyHomeMode(effectCtx context.Context, freshPost fu
 		return ApplyResult{}, fmt.Errorf("%w: home mode observation changed", ErrStale)
 	}
 	started, effectErr := fresh.effects.home.chmod(operation.homeIntent.path, operation.homeMode)
-	postCtx, cancelPost, postErr := beginPost(freshPost)
-	if postErr != nil {
-		return ApplyResult{started: started}, errors.Join(effectErr, postErr)
-	}
-	defer cancelPost()
-	if err := postCtx.Err(); err != nil {
-		return ApplyResult{started: started}, errors.Join(effectErr, err)
-	}
-	after, observeErr := fresh.effects.home.observe(operation.homeIntent.path)
-	apply := ApplyResult{started: started}
-	if observeErr == nil && reconcileHome(operation.homeIntent, after).kind == Exact && after.mode == operation.homeMode {
-		apply.decision = Decision{kind: Exact, detail: "home mode is exact"}
-		return apply, nil
-	}
-	return apply, errors.Join(effectErr, observeErr, fmt.Errorf("home mode postcondition is not exact"))
+	return finishIdentity(started, effectErr, freshPost, "home mode postcondition is not exact", func(context.Context) (Decision, bool, error) {
+		after, err := fresh.effects.home.observe(operation.homeIntent.path)
+		exact := reconcileHome(operation.homeIntent, after).kind == Exact && after.mode == operation.homeMode
+		return exactIdentity(exact, "home mode is exact"), exact, err
+	})
 }

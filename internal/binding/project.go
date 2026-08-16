@@ -210,39 +210,33 @@ func sortedMappingKeys[V any](values map[mappingKey]V) []mappingKey {
 }
 
 func emitPackage(node model.Node, id model.PackageID, backend PackageBackendID, mappings map[mappingKey]mapping, disputed map[mappingKey]struct{}, blockers []Blocker) ([]emission, []Blocker) {
-	key := mappingKey{domain: Package, backend: backend.value, semantic: id.String()}
-	value, exists := mappings[key]
-	if _, exists := disputed[key]; exists {
-		return nil, blockers
-	}
-	if backend.value == "" || !exists {
-		return nil, append(blockers, Blocker{Kind: Unsupported, Domain: Package, Backend: backend.value,
-			Semantic: node.Key().Canonical(), Detail: "no active package mapping"})
-	}
-	result := make([]emission, 0, len(value.outputs))
-	for _, output := range value.outputs {
-		result = append(result, emission{key: packageKey{id: PackageID{backend: backend, name: output}}, semantic: node,
-			provenance: unionStrings(node.Provenance(), value.sources), bindingProvenance: value.sources,
-			domain: Package, backend: backend.value, native: output, semanticID: id.String()})
-	}
-	return result, blockers
+	return emitMapped(node, Package, backend.value, id.String(), mappings, disputed, blockers,
+		func(native string) Key { return packageKey{id: PackageID{backend: backend, name: native}} })
 }
 
 func emitService(node model.Node, id model.ServiceID, backend ServiceBackendID, mappings map[mappingKey]mapping, disputed map[mappingKey]struct{}, blockers []Blocker) ([]emission, []Blocker) {
-	key := mappingKey{domain: Service, backend: backend.value, semantic: id.String()}
+	semantic := node.Key().Canonical()
+	return emitMapped(node, Service, backend.value, id.String(), mappings, disputed, blockers,
+		func(native string) Key {
+			return serviceKey{id: ServiceID{backend: backend, name: native}, semantic: semantic}
+		})
+}
+
+func emitMapped(node model.Node, domain Domain, backend, semanticID string, mappings map[mappingKey]mapping, disputed map[mappingKey]struct{}, blockers []Blocker, makeKey func(string) Key) ([]emission, []Blocker) {
+	key := mappingKey{domain: domain, backend: backend, semantic: semanticID}
 	value, exists := mappings[key]
 	if _, exists := disputed[key]; exists {
 		return nil, blockers
 	}
-	if backend.value == "" || !exists {
-		return nil, append(blockers, Blocker{Kind: Unsupported, Domain: Service, Backend: backend.value,
-			Semantic: node.Key().Canonical(), Detail: "no active service mapping"})
+	if backend == "" || !exists {
+		return nil, append(blockers, Blocker{Kind: Unsupported, Domain: domain, Backend: backend,
+			Semantic: node.Key().Canonical(), Detail: "no active " + domain.String() + " mapping"})
 	}
 	result := make([]emission, 0, len(value.outputs))
+	provenance := unionStrings(node.Provenance(), value.sources)
 	for _, output := range value.outputs {
-		result = append(result, emission{key: serviceKey{id: ServiceID{backend: backend, name: output}, semantic: node.Key().Canonical()}, semantic: node,
-			provenance: unionStrings(node.Provenance(), value.sources), bindingProvenance: value.sources,
-			domain: Service, backend: backend.value, native: output, semanticID: id.String()})
+		result = append(result, emission{key: makeKey(output), semantic: node, provenance: provenance,
+			bindingProvenance: value.sources, domain: domain, backend: backend, native: output, semanticID: semanticID})
 	}
 	return result, blockers
 }

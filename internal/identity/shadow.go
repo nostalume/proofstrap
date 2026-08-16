@@ -9,9 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/nostalume/proofstrap/internal/linuxexec"
+	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/model"
 )
 
@@ -41,14 +40,14 @@ const (
 )
 
 type shadowEffects struct {
-	identify func(string) (linuxexec.Identity, error)
-	run      func(context.Context, linuxexec.Identity, []string, []byte) (linuxexec.Result, error)
+	identify func(string) (linux.Identity, error)
+	run      func(context.Context, linux.Identity, []string, []byte) (linux.Result, error)
 	home     homeEffects
 }
 
 type toolEvidence struct {
 	name     string
-	identity linuxexec.Identity
+	identity linux.Identity
 }
 
 type selectionEvidence struct {
@@ -64,11 +63,11 @@ type Selected struct {
 }
 
 func Select(ctx context.Context, capabilities []Capability) (*Selected, error) {
-	return selectShadow(ctx, shadowEffects{identify: linuxexec.Identify, run: linuxexec.Run, home: systemHomeEffects()}, capabilities)
+	return selectShadow(ctx, shadowEffects{identify: linux.Identify, run: linux.Run, home: systemHomeEffects()}, capabilities)
 }
 
 func selectShadow(ctx context.Context, effects shadowEffects, capabilities []Capability) (*Selected, error) {
-	if !futureContext(ctx) || effects.identify == nil || effects.run == nil {
+	if !linux.FutureContext(ctx) || effects.identify == nil || effects.run == nil {
 		return nil, fmt.Errorf("bounded context and complete shadow effects are required")
 	}
 	caps := append([]Capability(nil), capabilities...)
@@ -141,16 +140,16 @@ func (selected *Selected) valid() bool {
 		len(selected.evidence.capabilities) != 0 && len(selected.evidence.tools) != 0
 }
 
-func (selected *Selected) tool(name string) (linuxexec.Identity, bool) {
+func (selected *Selected) tool(name string) (linux.Identity, bool) {
 	if selected == nil {
-		return linuxexec.Identity{}, false
+		return linux.Identity{}, false
 	}
 	for _, tool := range selected.evidence.tools {
 		if tool.name == name {
 			return tool.identity, true
 		}
 	}
-	return linuxexec.Identity{}, false
+	return linux.Identity{}, false
 }
 
 func (selected *Selected) lookupGroup(ctx context.Context, local bool, key string) (groupLookup, error) {
@@ -336,7 +335,7 @@ type Operation struct {
 }
 
 func (selected *Selected) PlanGroup(ctx context.Context, desired model.Group) (Planned, error) {
-	if !selected.valid() || !desired.Valid() || !futureContext(ctx) {
+	if !selected.valid() || !desired.Valid() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, group, and bounded context are required")
 	}
 	observed, err := selected.observeGroup(ctx, desired)
@@ -355,7 +354,7 @@ func (selected *Selected) PlanGroup(ctx context.Context, desired model.Group) (P
 }
 
 func (selected *Selected) PlanAccount(ctx context.Context, desired model.Account, primary model.Group) (Planned, error) {
-	if !selected.valid() || !desired.Valid() || desired.Managed() && !primary.Valid() || !futureContext(ctx) {
+	if !selected.valid() || !desired.Valid() || desired.Managed() && !primary.Valid() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, account, managed primary group when owned, and bounded context are required")
 	}
 	observed, err := selected.observeAccount(ctx, desired)
@@ -382,7 +381,7 @@ func (selected *Selected) PlanAccount(ctx context.Context, desired model.Account
 }
 
 func (selected *Selected) PlanLock(ctx context.Context, desired model.AccountLock) (Planned, error) {
-	if !selected.valid() || !desired.Valid() || !futureContext(ctx) {
+	if !selected.valid() || !desired.Valid() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, lock, and bounded context are required")
 	}
 	locked, err := selected.observeLock(ctx, desired.Account())
@@ -399,7 +398,7 @@ func (selected *Selected) PlanLock(ctx context.Context, desired model.AccountLoc
 }
 
 func (selected *Selected) PlanShell(ctx context.Context, desired model.AccountShell) (Planned, error) {
-	if !selected.valid() || !desired.Valid() || !futureContext(ctx) {
+	if !selected.valid() || !desired.Valid() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, shell, and bounded context are required")
 	}
 	before, err := selected.observeNamedAccount(ctx, desired.Account())
@@ -416,7 +415,7 @@ func (selected *Selected) PlanShell(ctx context.Context, desired model.AccountSh
 }
 
 func (selected *Selected) PlanMembership(ctx context.Context, desired model.Membership) (Planned, error) {
-	if !selected.valid() || !desired.Valid() || !futureContext(ctx) {
+	if !selected.valid() || !desired.Valid() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, membership, and bounded context are required")
 	}
 	if _, err := selected.observeNamedAccount(ctx, desired.Account()); err != nil {
@@ -445,7 +444,7 @@ func (result ApplyResult) Started() bool      { return result.started }
 func (result ApplyResult) Decision() Decision { return result.decision }
 
 func (operation Operation) Apply(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
-	if !futureContext(effectCtx) || freshPost == nil || !fresh.valid() {
+	if !linux.FutureContext(effectCtx) || freshPost == nil || !fresh.valid() {
 		return ApplyResult{}, fmt.Errorf("fresh selection, bounded effect context, and fresh post-observation context are required")
 	}
 	if !sameSelectionEvidence(operation.evidence, fresh.evidence) {
@@ -482,18 +481,10 @@ func (operation Operation) applyLock(effectCtx context.Context, freshPost func()
 	tool, _ := fresh.tool("passwd")
 	result, runErr := fresh.effects.run(effectCtx, tool, []string{"-l", operation.lockAccount}, nil)
 	runErr = commandFailure("lock account", result, runErr)
-	postCtx, cancelPost, postErr := beginPost(freshPost)
-	if postErr != nil {
-		return ApplyResult{started: result.Started}, errors.Join(runErr, postErr)
-	}
-	defer cancelPost()
-	after, observeErr := fresh.observeLock(postCtx, operation.lockAccount)
-	apply := ApplyResult{started: result.Started}
-	if observeErr == nil && after {
-		apply.decision = Decision{kind: Exact, detail: "account is locked"}
-		return apply, nil
-	}
-	return apply, errors.Join(runErr, observeErr, fmt.Errorf("lock postcondition is not exact"))
+	return finishIdentity(result.Started, runErr, freshPost, "lock postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
+		after, err := fresh.observeLock(ctx, operation.lockAccount)
+		return exactIdentity(after, "account is locked"), after, err
+	})
 }
 
 func (operation Operation) applyShell(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
@@ -507,18 +498,11 @@ func (operation Operation) applyShell(effectCtx context.Context, freshPost func(
 	tool, _ := fresh.tool("usermod")
 	result, runErr := fresh.effects.run(effectCtx, tool, []string{"--shell", operation.shellValue, "--", operation.shellAccount}, nil)
 	runErr = commandFailure("set account shell", result, runErr)
-	postCtx, cancelPost, postErr := beginPost(freshPost)
-	if postErr != nil {
-		return ApplyResult{started: result.Started}, errors.Join(runErr, postErr)
-	}
-	defer cancelPost()
-	after, observeErr := fresh.observeNamedAccount(postCtx, operation.shellAccount)
-	apply := ApplyResult{started: result.Started}
-	if observeErr == nil && after.shell == operation.shellValue {
-		apply.decision = Decision{kind: Exact, detail: "account shell is exact"}
-		return apply, nil
-	}
-	return apply, errors.Join(runErr, observeErr, fmt.Errorf("shell postcondition is not exact"))
+	return finishIdentity(result.Started, runErr, freshPost, "shell postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
+		after, err := fresh.observeNamedAccount(ctx, operation.shellAccount)
+		exact := after.shell == operation.shellValue
+		return exactIdentity(exact, "account shell is exact"), exact, err
+	})
 }
 
 func (operation Operation) applyMembership(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
@@ -536,19 +520,11 @@ func (operation Operation) applyMembership(effectCtx context.Context, freshPost 
 	tool, _ := fresh.tool("gpasswd")
 	result, runErr := fresh.effects.run(effectCtx, tool, []string{verb, operation.membershipAccount, operation.membershipGroup}, nil)
 	runErr = commandFailure("set group membership", result, runErr)
-	postCtx, cancelPost, postErr := beginPost(freshPost)
-	if postErr != nil {
-		return ApplyResult{started: result.Started}, errors.Join(runErr, postErr)
-	}
-	defer cancelPost()
-	after, observeErr := fresh.observeNamedGroup(postCtx, operation.membershipGroup)
-	apply := ApplyResult{started: result.Started}
-	wantPresent := operation.membershipPresent == slices.Contains(after.members, operation.membershipAccount)
-	if observeErr == nil && wantPresent && slices.Equal(withoutMember(before.members, operation.membershipAccount), withoutMember(after.members, operation.membershipAccount)) {
-		apply.decision = Decision{kind: Exact, detail: "membership is exact"}
-		return apply, nil
-	}
-	return apply, errors.Join(runErr, observeErr, fmt.Errorf("membership postcondition is not exact"))
+	return finishIdentity(result.Started, runErr, freshPost, "membership postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
+		after, err := fresh.observeNamedGroup(ctx, operation.membershipGroup)
+		exact := operation.membershipPresent == slices.Contains(after.members, operation.membershipAccount) && slices.Equal(withoutMember(before.members, operation.membershipAccount), withoutMember(after.members, operation.membershipAccount))
+		return exactIdentity(exact, "membership is exact"), exact, err
+	})
 }
 
 func (selected *Selected) observeNamedAccount(ctx context.Context, name string) (passwdRecord, error) {
@@ -606,20 +582,14 @@ func (operation Operation) applyGroup(effectCtx context.Context, freshPost func(
 	tool, _ := fresh.tool("groupadd")
 	result, runErr := fresh.effects.run(effectCtx, tool, []string{"--gid", strconv.FormatUint(uint64(operation.group.gid), 10), "--", operation.group.name}, nil)
 	runErr = commandFailure("create group", result, runErr)
-	apply := ApplyResult{started: result.Started}
-	postCtx, cancelPost, postErr := beginPost(freshPost)
-	if postErr != nil {
-		return apply, errors.Join(runErr, postErr)
-	}
-	defer cancelPost()
-	after, observeErr := fresh.observeGroupIntent(postCtx, operation.group)
-	if observeErr == nil {
-		apply.decision = reconcileGroupIntent(operation.group, after)
-	}
-	if apply.decision.kind == Exact {
-		return apply, nil
-	}
-	return apply, errors.Join(runErr, observeErr, fmt.Errorf("group postcondition is not exact"))
+	return finishIdentity(result.Started, runErr, freshPost, "group postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
+		after, err := fresh.observeGroupIntent(ctx, operation.group)
+		decision := Decision{}
+		if err == nil {
+			decision = reconcileGroupIntent(operation.group, after)
+		}
+		return decision, decision.kind == Exact, err
+	})
 }
 
 func (operation Operation) applyAccount(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
@@ -634,21 +604,40 @@ func (operation Operation) applyAccount(effectCtx context.Context, freshPost fun
 	args := []string{"--uid", strconv.FormatUint(uint64(operation.account.uid), 10), "--gid", strconv.FormatUint(uint64(operation.primary.gid), 10), "--home-dir", operation.account.home, "--no-create-home", "--no-user-group", "--", operation.account.name}
 	result, runErr := fresh.effects.run(effectCtx, tool, args, nil)
 	runErr = commandFailure("create account", result, runErr)
-	apply := ApplyResult{started: result.Started}
-	postCtx, cancelPost, postErr := beginPost(freshPost)
-	if postErr != nil {
-		return apply, errors.Join(runErr, postErr)
+	return finishIdentity(result.Started, runErr, freshPost, "account or lock postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
+		after, observeErr := fresh.observeAccountIntent(ctx, operation.account)
+		decision := Decision{}
+		if observeErr == nil {
+			decision = reconcileAccountIntent(operation.account, operation.primary, after)
+		}
+		locked, lockErr := fresh.observeLock(ctx, operation.account.name)
+		return decision, decision.kind == Exact && locked, errors.Join(observeErr, lockErr)
+	})
+}
+
+func exactIdentity(exact bool, detail string) Decision {
+	if exact {
+		return Decision{kind: Exact, detail: detail}
 	}
-	defer cancelPost()
-	after, observeErr := fresh.observeAccountIntent(postCtx, operation.account)
-	if observeErr == nil {
-		apply.decision = reconcileAccountIntent(operation.account, operation.primary, after)
+	return Decision{}
+}
+
+func finishIdentity(started bool, effectErr error, freshPost func() (context.Context, context.CancelFunc), failure string, observe func(context.Context) (Decision, bool, error)) (ApplyResult, error) {
+	result := ApplyResult{started: started}
+	ctx, cancel, err := beginPost(freshPost)
+	if err != nil {
+		return result, errors.Join(effectErr, err)
 	}
-	locked, lockErr := fresh.observeLock(postCtx, operation.account.name)
-	if apply.decision.kind == Exact && lockErr == nil && locked {
-		return apply, nil
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return result, errors.Join(effectErr, err)
 	}
-	return apply, errors.Join(runErr, observeErr, lockErr, fmt.Errorf("account or lock postcondition is not exact"))
+	decision, exact, observeErr := observe(ctx)
+	result.decision = decision
+	if observeErr == nil && exact {
+		return result, nil
+	}
+	return result, errors.Join(effectErr, observeErr, fmt.Errorf("%s", failure))
 }
 
 func beginPost(freshPost func() (context.Context, context.CancelFunc)) (context.Context, context.CancelFunc, error) {
@@ -656,7 +645,7 @@ func beginPost(freshPost func() (context.Context, context.CancelFunc)) (context.
 		return nil, nil, fmt.Errorf("fresh bounded post-observation context is required")
 	}
 	ctx, cancel := freshPost()
-	if cancel == nil || !futureContext(ctx) {
+	if cancel == nil || !linux.FutureContext(ctx) {
 		if cancel != nil {
 			cancel()
 		}
@@ -685,7 +674,7 @@ func sameSelectionEvidence(left, right selectionEvidence) bool {
 	return reflect.DeepEqual(left, right)
 }
 
-func missingResult(result linuxexec.Result, err error) bool {
+func missingResult(result linux.Result, err error) bool {
 	return err == nil && result.Started && result.ExitCode == 2 && len(result.Stdout) == 0 && len(result.Stderr) == 0
 }
 
@@ -696,22 +685,14 @@ func oneRecord(data []byte) (string, error) {
 	return string(data[:len(data)-1]), nil
 }
 
-func nativeFailure(action string, result linuxexec.Result, err error) error {
+func nativeFailure(action string, result linux.Result, err error) error {
 	detail := fmt.Errorf("%s failed: started=%t exit=%d stderr=%q", action, result.Started, result.ExitCode, result.Stderr)
 	return errors.Join(detail, err)
 }
 
-func commandFailure(action string, result linuxexec.Result, err error) error {
+func commandFailure(action string, result linux.Result, err error) error {
 	if err == nil && result.Started && result.ExitCode == 0 && len(result.Stderr) == 0 {
 		return nil
 	}
 	return nativeFailure(action, result, err)
-}
-
-func futureContext(ctx context.Context) bool {
-	if ctx == nil || ctx.Err() != nil {
-		return false
-	}
-	deadline, ok := ctx.Deadline()
-	return ok && time.Until(deadline) > 0
 }

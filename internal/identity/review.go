@@ -5,13 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"path/filepath"
 	"slices"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/nostalume/proofstrap/internal/linuxexec"
+	"github.com/nostalume/proofstrap/internal/linux"
+	reviewjson "github.com/nostalume/proofstrap/internal/review"
 )
 
 const maxReviewBytes = 1 << 20
@@ -52,7 +52,7 @@ func DecodeReview(data []byte) (Review, error) {
 		return Review{}, fmt.Errorf("identity review must contain 1..%d bytes", maxReviewBytes)
 	}
 	var wire reviewWire
-	if err := decodeStrict(data, &wire); err != nil {
+	if err := reviewjson.DecodeStrict(data, &wire); err != nil {
 		return Review{}, fmt.Errorf("decode identity review: %w", err)
 	}
 	operation, err := operationFromWire(wire)
@@ -239,43 +239,43 @@ func operationFromWire(wire reviewWire) (Operation, error) {
 	switch kind {
 	case createGroupOperation:
 		var value groupPayload
-		if err := decodeStrict(wire.Payload, &value); err != nil {
+		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
 			return Operation{}, err
 		}
 		operation.group, operation.groupBefore = groupIntentFromWire(value.Desired), groupObservationFromWire(value.Before)
 	case createAccountOperation:
 		var value accountPayload
-		if err := decodeStrict(wire.Payload, &value); err != nil {
+		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
 			return Operation{}, err
 		}
 		operation.account, operation.primary, operation.accountBefore = accountIntentFromWire(value.Desired), groupIntentFromWire(value.Primary), accountObservationFromWire(value.Before)
 	case lockAccountOperation:
 		var value lockPayload
-		if err := decodeStrict(wire.Payload, &value); err != nil {
+		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
 			return Operation{}, err
 		}
 		operation.lockAccount, operation.lockBefore = value.Account, value.Before
 	case setShellOperation:
 		var value shellPayload
-		if err := decodeStrict(wire.Payload, &value); err != nil {
+		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
 			return Operation{}, err
 		}
 		operation.shellAccount, operation.shellValue, operation.shellBefore = value.Account, value.Shell, passwdFromWire(value.Before)
 	case setMembershipOperation:
 		var value membershipPayload
-		if err := decodeStrict(wire.Payload, &value); err != nil {
+		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
 			return Operation{}, err
 		}
 		operation.membershipAccount, operation.membershipGroup, operation.membershipPresent, operation.membershipBefore = value.Account, value.Group, value.Present, groupRecordFromWire(value.Before)
 	case createHomeOperation:
 		var value homePayload
-		if err := decodeStrict(wire.Payload, &value); err != nil {
+		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
 			return Operation{}, err
 		}
 		operation.account, operation.homeIntent, operation.homeBefore = accountIntent{name: value.Account}, homeIntentFromWire(value.Intent), homeStateFromWire(value.Before)
 	case setHomeModeOperation:
 		var value homeModePayload
-		if err := decodeStrict(wire.Payload, &value); err != nil {
+		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
 			return Operation{}, err
 		}
 		operation.account, operation.homeIntent, operation.homeMode, operation.homeBefore = accountIntent{name: value.Account}, homeIntentFromWire(value.Intent), value.Mode, homeStateFromWire(value.Before)
@@ -303,7 +303,7 @@ func evidenceFromWire(wire reviewWire) (selectionEvidence, error) {
 		if err != nil || len(digest) != 32 || hex.EncodeToString(digest) != value.SHA256 {
 			return result, fmt.Errorf("invalid identity review tool digest")
 		}
-		identity := linuxexec.Identity{Path: value.Path}
+		identity := linux.Identity{Path: value.Path}
 		copy(identity.Digest[:], digest)
 		result.tools = append(result.tools, toolEvidence{name: value.Name, identity: identity})
 	}
@@ -379,22 +379,6 @@ func validHome(value homeIntent) bool {
 }
 func validText(value string) bool {
 	return value != "" && len(value) <= 4095 && utf8.ValidString(value) && !strings.ContainsAny(value, "\x00\r\n")
-}
-
-func decodeStrict(data []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("multiple JSON values")
-		}
-		return err
-	}
-	return nil
 }
 
 func kindName(value operationKind) string {

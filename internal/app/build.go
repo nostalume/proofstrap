@@ -9,8 +9,10 @@ import (
 	"github.com/nostalume/proofstrap/internal/binding"
 	"github.com/nostalume/proofstrap/internal/config"
 	"github.com/nostalume/proofstrap/internal/inventory"
+	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/pack"
-	"github.com/nostalume/proofstrap/internal/packbuild/packages"
+	"github.com/nostalume/proofstrap/internal/packages"
+	"github.com/nostalume/proofstrap/internal/services"
 )
 
 type Request struct {
@@ -63,8 +65,19 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 	}
 	projected := binding.Graph{}
 	if len(target.Profiles()) != 0 || len(target.Bindings()) != 0 || len(target.Direct().Nodes()) != 0 {
-		serviceBackend, _ := binding.NewServiceBackendID("systemd")
-		projected, err = compose(ctx, target, sources, binding.Backends{Package: hostBackend, Service: serviceBackend})
+		semantic, catalogues, resolveErr := resolveComposition(ctx, target, sources)
+		if resolveErr != nil {
+			return Plan{}, resolveErr
+		}
+		var serviceBackend binding.ServiceBackendID
+		if graphNeedsServiceBackend(semantic) {
+			selected, selectErr := services.SelectHostSystem(ctx)
+			if selectErr != nil {
+				return seal(body{blockers: []blocker{{kind: "unsupported", resource: "service:host", detail: selectErr.Error()}}})
+			}
+			serviceBackend, _ = binding.NewServiceBackendID(selected.Backend())
+		}
+		projected, err = binding.Project(ctx, semantic, binding.Backends{Package: hostBackend, Service: serviceBackend}, catalogues)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -108,6 +121,15 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 		return seal(body{blockers: blockers})
 	}
 	return seal(body{operations: operations})
+}
+
+func graphNeedsServiceBackend(graph model.Graph) bool {
+	for _, node := range graph.Nodes() {
+		if _, ok := model.ServiceIDOf(node); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func needsHostPackageBackend(target config.Target) bool {

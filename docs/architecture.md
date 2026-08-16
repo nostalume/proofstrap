@@ -44,8 +44,9 @@ is no compatibility execution owner or alternate grammar.
 Plan reads one explicitly named absolute configuration file and optional exact
 bundle paths. Configuration pins archive digests and selects roots; it contains
 no store paths or behavior overrides. Acquisition resolves the complete pinned
-closure, profile expansion produces portable resources, activated bindings map
-native identities, and the app lowers the graph into typed reviewed operations.
+closure, profile expansion produces backend-neutral resources, activated
+bindings map native identities, and the app lowers the graph into typed reviewed
+operations.
 
 A global unsupported or contradictory condition produces a publishable blocked
 Plan with no mutation authority. A progress barrier may follow reviewed

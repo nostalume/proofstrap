@@ -12,13 +12,13 @@ import (
 	"time"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/linuxexec"
+	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/profile"
 )
 
 type systemdFixture struct {
-	identities      map[string]linuxexec.Identity
+	identities      map[string]linux.Identity
 	euid            uint32
 	pid1            string
 	home            homeEvidence
@@ -34,7 +34,7 @@ type systemdFixture struct {
 func newSystemdFixture() *systemdFixture {
 	identity := serviceIdentity("/usr/bin/systemctl", 1)
 	return &systemdFixture{
-		identities: map[string]linuxexec.Identity{"/usr/bin/systemctl": identity, "/bin/systemctl": identity},
+		identities: map[string]linux.Identity{"/usr/bin/systemctl": identity, "/bin/systemctl": identity},
 		euid:       0, pid1: "systemd",
 		home:            homeEvidence{path: "/home/alice", uid: 1000, gid: 1000, mode: 0o750, device: 1, inode: 2, directory: true},
 		records:         make(map[string]unitRecord),
@@ -44,10 +44,10 @@ func newSystemdFixture() *systemdFixture {
 
 func (fixture *systemdFixture) effects() systemEffects {
 	return systemEffects{
-		identify: func(path string) (linuxexec.Identity, error) {
+		identify: func(path string) (linux.Identity, error) {
 			value, ok := fixture.identities[path]
 			if !ok {
-				return linuxexec.Identity{}, os.ErrNotExist
+				return linux.Identity{}, os.ErrNotExist
 			}
 			return value, nil
 		},
@@ -58,16 +58,16 @@ func (fixture *systemdFixture) effects() systemEffects {
 	}
 }
 
-func (fixture *systemdFixture) run(_ context.Context, _ linuxexec.Identity, args []string, _ []byte) (linuxexec.Result, error) {
+func (fixture *systemdFixture) run(_ context.Context, _ linux.Identity, args []string, _ []byte) (linux.Result, error) {
 	fixture.calls = append(fixture.calls, append([]string(nil), args...))
 	if slices.Contains(args, "--property=Version") {
 		if fixture.probeFailure {
-			return linuxexec.Result{Started: true, ExitCode: 1}, nil
+			return linux.Result{Started: true, ExitCode: 1}, nil
 		}
 		if fixture.probeMalformed != "" {
-			return linuxexec.Result{Started: true, Stdout: []byte(fixture.probeMalformed)}, nil
+			return linux.Result{Started: true, Stdout: []byte(fixture.probeMalformed)}, nil
 		}
-		return linuxexec.Result{Started: true, Stdout: []byte("256.7\n")}, nil
+		return linux.Result{Started: true, Stdout: []byte("256.7\n")}, nil
 	}
 	for _, verb := range []string{"enable", "disable", "start", "stop"} {
 		if slices.Contains(args, verb) {
@@ -87,13 +87,13 @@ func (fixture *systemdFixture) run(_ context.Context, _ linuxexec.Identity, args
 				fixture.records[unit] = record
 			}
 			if fixture.mutationFailure {
-				return linuxexec.Result{Started: true, ExitCode: 7, Stderr: []byte("native failure")}, nil
+				return linux.Result{Started: true, ExitCode: 7, Stderr: []byte("native failure")}, nil
 			}
-			return linuxexec.Result{Started: true}, nil
+			return linux.Result{Started: true}, nil
 		}
 	}
 	if fixture.malformed != "" {
-		return linuxexec.Result{Started: true, Stdout: []byte(fixture.malformed)}, nil
+		return linux.Result{Started: true, Stdout: []byte(fixture.malformed)}, nil
 	}
 	separator := slices.Index(args, "--")
 	var output strings.Builder
@@ -104,7 +104,7 @@ func (fixture *systemdFixture) run(_ context.Context, _ linuxexec.Identity, args
 		}
 		fmt.Fprintf(&output, "SubState=%s\nId=%s\nActiveState=%s\nLoadState=%s\nUnitFileState=%s\n\n", record.sub, record.id, record.active, record.load, record.unitFile)
 	}
-	return linuxexec.Result{Started: true, Stdout: []byte(output.String())}, nil
+	return linux.Result{Started: true, Stdout: []byte(output.String())}, nil
 }
 
 func TestSystemAndExactUserAdmissionAreIndependent(t *testing.T) {
@@ -170,7 +170,7 @@ func TestPropertyObservationIsKeyedStrictAndChunked(t *testing.T) {
 	for index := range demands {
 		unit := fmt.Sprintf("unit-%03d.service", index)
 		fixture.records[unit] = unitRecord{id: unit, load: "loaded", unitFile: "disabled", active: "inactive", sub: "dead"}
-		demands[index] = Demand{value: demand{unit: unit, persistence: wantOn, runtime: wantOn}}
+		demands[index] = Demand{backend: "systemd", value: demand{unit: unit, persistence: wantOn, runtime: wantOn}}
 	}
 	observed, err := selected.Observe(testContext(t), demands)
 	if err != nil || len(observed.state.records) != 129 {
@@ -187,19 +187,19 @@ func TestPropertyObservationIsKeyedStrictAndChunked(t *testing.T) {
 	}
 
 	fixture.malformed = "Id=a.service\nLoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\nSubState=dead\n\nId=a.service\nLoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\nSubState=dead\n\n"
-	if _, err := selected.Observe(testContext(t), []Demand{{value: demand{unit: "a.service", runtime: wantOn}}}); err == nil {
+	if _, err := selected.Observe(testContext(t), []Demand{{backend: "systemd", value: demand{unit: "a.service", runtime: wantOn}}}); err == nil {
 		t.Fatal("accepted duplicate record")
 	}
 	fixture.malformed = "Id=a.service\nLoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\n\n"
-	if _, err := selected.Observe(testContext(t), []Demand{{value: demand{unit: "a.service", runtime: wantOn}}}); err == nil {
+	if _, err := selected.Observe(testContext(t), []Demand{{backend: "systemd", value: demand{unit: "a.service", runtime: wantOn}}}); err == nil {
 		t.Fatal("accepted incomplete record")
 	}
 	fixture.malformed = "Id=a.service\nLoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\nSubState=dead\nDescription=unexpected\n\n"
-	if _, err := selected.Observe(testContext(t), []Demand{{value: demand{unit: "a.service", runtime: wantOn}}}); err == nil {
+	if _, err := selected.Observe(testContext(t), []Demand{{backend: "systemd", value: demand{unit: "a.service", runtime: wantOn}}}); err == nil {
 		t.Fatal("accepted unrequested property")
 	}
 	fixture.malformed = strings.Repeat("x", maxObservationBytes+1)
-	if _, err := selected.Observe(testContext(t), []Demand{{value: demand{unit: "a.service", runtime: wantOn}}}); err == nil {
+	if _, err := selected.Observe(testContext(t), []Demand{{backend: "systemd", value: demand{unit: "a.service", runtime: wantOn}}}); err == nil {
 		t.Fatal("accepted oversized property output")
 	}
 	if _, err := selected.Observe(testContext(t), make([]Demand, maxObservationDemands+1)); err == nil {
@@ -214,7 +214,7 @@ func TestPlanUsesBindingDemandAndAttachesSelectionEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	desired := Demand{value: demand{unit: "demo.service", persistence: wantOn, runtime: wantOn}}
+	desired := Demand{backend: "systemd", value: demand{unit: "demo.service", persistence: wantOn, runtime: wantOn}}
 	planned, err := selected.Plan(testContext(t), desired)
 	if err != nil {
 		t.Fatal(err)
@@ -324,7 +324,7 @@ func TestOperationsMutateOneAxisInOrderAndGuardOnlyTheirAxis(t *testing.T) {
 				t.Fatal(err)
 			}
 			fixture.calls = nil
-			planned, err := selected.Plan(testContext(t), Demand{value: test.desired})
+			planned, err := selected.Plan(testContext(t), Demand{backend: "systemd", value: test.desired})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -355,7 +355,7 @@ func TestOperationStaleAndCommandFailurePostStateLaw(t *testing.T) {
 			fixture := newSystemdFixture()
 			fixture.records["demo.service"] = unitRecord{id: "demo.service", load: "loaded", unitFile: "disabled", active: "inactive", sub: "dead"}
 			selected, _ := selectSystem(testContext(t), fixture.effects())
-			planned, _ := selected.Plan(testContext(t), Demand{value: demand{unit: "demo.service", persistence: wantOn}})
+			planned, _ := selected.Plan(testContext(t), Demand{backend: "systemd", value: demand{unit: "demo.service", persistence: wantOn}})
 			operation := planned.Operations()[0]
 			fixture.mutationFailure = true
 			fixture.mutationChanges = changes
@@ -371,7 +371,7 @@ func TestOperationStaleAndCommandFailurePostStateLaw(t *testing.T) {
 	fixture := newSystemdFixture()
 	fixture.records["demo.service"] = unitRecord{id: "demo.service", load: "loaded", unitFile: "disabled", active: "inactive", sub: "dead"}
 	selected, _ := selectSystem(testContext(t), fixture.effects())
-	planned, _ := selected.Plan(testContext(t), Demand{value: demand{unit: "demo.service", runtime: wantOn}})
+	planned, _ := selected.Plan(testContext(t), Demand{backend: "systemd", value: demand{unit: "demo.service", runtime: wantOn}})
 	operation := planned.Operations()[0]
 	fixture.records["demo.service"] = unitRecord{id: "demo.service", load: "loaded", unitFile: "disabled", active: "active", sub: "running"}
 	fixture.calls = nil
@@ -394,7 +394,7 @@ func TestExactUserOperationKeepsMachineEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture.calls = nil
-	planned, err := selected.Plan(testContext(t), Demand{value: demand{unit: "pipewire.service", runtime: wantOn, user: "alice"}})
+	planned, err := selected.Plan(testContext(t), Demand{backend: "systemd", value: demand{unit: "pipewire.service", runtime: wantOn, user: "alice"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,8 +429,8 @@ func postContext(t *testing.T) func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), time.Minute)
 	}
 }
-func serviceIdentity(path string, marker byte) linuxexec.Identity {
-	value := linuxexec.Identity{Path: path}
+func serviceIdentity(path string, marker byte) linux.Identity {
+	value := linux.Identity{Path: path}
 	value.Digest[0] = marker
 	return value
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nostalume/proofstrap/internal/linux"
 	"golang.org/x/sys/unix"
 )
 
@@ -72,7 +73,7 @@ func createHomeAt(parentFD int, leaf string, uid, gid uint32) (started bool, err
 			err = errors.Join(err, fmt.Errorf("cleanup home stage: %w", cleanupErr))
 		}
 	}()
-	stageFD, err := unix.Openat(parentFD, stage, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	stageFD, err := linux.OpenDirAt(parentFD, stage)
 	if err != nil {
 		return started, fmt.Errorf("open home stage: %w", err)
 	}
@@ -118,7 +119,7 @@ func chmodHomePath(path string, mode uint16) (bool, error) {
 }
 
 func chmodHomeAt(parentFD int, leaf string, mode uint16) (bool, error) {
-	homeFD, err := unix.Openat(parentFD, leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	homeFD, err := linux.OpenDirAt(parentFD, leaf)
 	if err != nil {
 		return false, fmt.Errorf("open exact home: %w", err)
 	}
@@ -143,7 +144,7 @@ func openTrustedDirectory(path string) (int, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return -1, fmt.Errorf("trusted directory path is invalid")
 	}
-	current, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	current, err := linux.OpenDir("/")
 	if err != nil {
 		return -1, fmt.Errorf("open filesystem root: %w", err)
 	}
@@ -155,7 +156,7 @@ func openTrustedDirectory(path string) (int, error) {
 		return current, nil
 	}
 	for _, component := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
-		next, openErr := unix.Openat(current, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		next, openErr := linux.OpenDirAt(current, component)
 		unix.Close(current)
 		if openErr != nil {
 			return -1, fmt.Errorf("open trusted directory component %q: %w", component, openErr)

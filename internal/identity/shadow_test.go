@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nostalume/proofstrap/internal/linuxexec"
+	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/model"
 )
 
 type shadowFixture struct {
-	identities map[string]linuxexec.Identity
+	identities map[string]linux.Identity
 	groups     map[string]groupRecord
 	accounts   map[string]passwdRecord
 	locked     map[string]bool
@@ -25,7 +25,7 @@ type shadowFixture struct {
 
 func newShadowFixture() *shadowFixture {
 	paths := []string{getentPath, groupaddPath, useraddPath, usermodPath, passwdPath, gpasswdPath}
-	fixture := &shadowFixture{identities: make(map[string]linuxexec.Identity), groups: make(map[string]groupRecord), accounts: make(map[string]passwdRecord), locked: make(map[string]bool)}
+	fixture := &shadowFixture{identities: make(map[string]linux.Identity), groups: make(map[string]groupRecord), accounts: make(map[string]passwdRecord), locked: make(map[string]bool)}
 	for index, path := range paths {
 		fixture.identities[path] = shadowIdentity(path, byte(index+1))
 	}
@@ -36,10 +36,10 @@ func newShadowFixture() *shadowFixture {
 
 func (fixture *shadowFixture) effects() shadowEffects {
 	return shadowEffects{
-		identify: func(path string) (linuxexec.Identity, error) {
+		identify: func(path string) (linux.Identity, error) {
 			identity, ok := fixture.identities[path]
 			if !ok {
-				return linuxexec.Identity{}, os.ErrNotExist
+				return linux.Identity{}, os.ErrNotExist
 			}
 			return identity, nil
 		},
@@ -47,7 +47,7 @@ func (fixture *shadowFixture) effects() shadowEffects {
 	}
 }
 
-func (fixture *shadowFixture) run(_ context.Context, executable linuxexec.Identity, args []string, _ []byte) (linuxexec.Result, error) {
+func (fixture *shadowFixture) run(_ context.Context, executable linux.Identity, args []string, _ []byte) (linux.Result, error) {
 	call := executable.Path + " " + strings.Join(args, " ")
 	fixture.calls = append(fixture.calls, call)
 	switch executable.Path {
@@ -57,7 +57,7 @@ func (fixture *shadowFixture) run(_ context.Context, executable linuxexec.Identi
 		gid := uint32(0)
 		fmt.Sscan(args[1], &gid)
 		fixture.groups[args[3]] = groupRecord{name: args[3], gid: gid}
-		return linuxexec.Result{Started: true, ExitCode: 0}, nil
+		return linux.Result{Started: true, ExitCode: 0}, nil
 	case useraddPath:
 		uid, gid := uint32(0), uint32(0)
 		fmt.Sscan(args[1], &uid)
@@ -65,26 +65,26 @@ func (fixture *shadowFixture) run(_ context.Context, executable linuxexec.Identi
 		name := args[len(args)-1]
 		fixture.accounts[name] = passwdRecord{name: name, uid: uid, gid: gid, home: args[5], shell: "/bin/sh"}
 		fixture.locked[name] = true
-		return linuxexec.Result{Started: true, ExitCode: 0}, nil
+		return linux.Result{Started: true, ExitCode: 0}, nil
 	case passwdPath:
 		if args[0] == "-l" {
 			fixture.locked[args[1]] = true
-			return linuxexec.Result{Started: true, ExitCode: 0}, nil
+			return linux.Result{Started: true, ExitCode: 0}, nil
 		}
 		name := args[1]
 		status := "P"
 		if fixture.locked[name] {
 			status = "L"
 		}
-		return linuxexec.Result{Started: true, ExitCode: 0, Stdout: []byte(name + " " + status + " 08/15/2026 0 99999 7 -1\n")}, nil
+		return linux.Result{Started: true, ExitCode: 0, Stdout: []byte(name + " " + status + " 08/15/2026 0 99999 7 -1\n")}, nil
 	case usermodPath:
 		if args[0] != "--shell" {
-			return linuxexec.Result{}, fmt.Errorf("unexpected usermod args %v", args)
+			return linux.Result{}, fmt.Errorf("unexpected usermod args %v", args)
 		}
 		record := fixture.accounts[args[3]]
 		record.shell = args[1]
 		fixture.accounts[args[3]] = record
-		return linuxexec.Result{Started: true, ExitCode: 0}, nil
+		return linux.Result{Started: true, ExitCode: 0}, nil
 	case gpasswdPath:
 		account, group := args[1], args[2]
 		record := fixture.groups[group]
@@ -96,30 +96,30 @@ func (fixture *shadowFixture) run(_ context.Context, executable linuxexec.Identi
 			record.members = slices.DeleteFunc(record.members, func(value string) bool { return value == account })
 		}
 		fixture.groups[group] = record
-		return linuxexec.Result{Started: true, ExitCode: 0}, nil
+		return linux.Result{Started: true, ExitCode: 0}, nil
 	default:
-		return linuxexec.Result{}, fmt.Errorf("unexpected call %s", call)
+		return linux.Result{}, fmt.Errorf("unexpected call %s", call)
 	}
 }
 
-func (fixture *shadowFixture) getent(args []string) linuxexec.Result {
+func (fixture *shadowFixture) getent(args []string) linux.Result {
 	local := len(args) == 4
 	database, key := args[len(args)-2], args[len(args)-1]
 	_ = local
 	if database == "group" {
 		for _, record := range fixture.groups {
 			if key == record.name || key == fmt.Sprint(record.gid) {
-				return linuxexec.Result{Started: true, Stdout: []byte(fmt.Sprintf("%s:x:%d:%s\n", record.name, record.gid, strings.Join(record.members, ",")))}
+				return linux.Result{Started: true, Stdout: []byte(fmt.Sprintf("%s:x:%d:%s\n", record.name, record.gid, strings.Join(record.members, ",")))}
 			}
 		}
 	} else {
 		for _, record := range fixture.accounts {
 			if key == record.name || key == fmt.Sprint(record.uid) {
-				return linuxexec.Result{Started: true, Stdout: []byte(fmt.Sprintf("%s:x:%d:%d:%s:%s:%s\n", record.name, record.uid, record.gid, record.gecos, record.home, record.shell))}
+				return linux.Result{Started: true, Stdout: []byte(fmt.Sprintf("%s:x:%d:%d:%s:%s:%s\n", record.name, record.uid, record.gid, record.gecos, record.home, record.shell))}
 			}
 		}
 	}
-	return linuxexec.Result{Started: true, ExitCode: 2}
+	return linux.Result{Started: true, ExitCode: 2}
 }
 
 func TestSelectShadowProvesNSSAndOnlyRequiredTools(t *testing.T) {
@@ -199,12 +199,12 @@ func TestCommandFailureUsesIndependentPostState(t *testing.T) {
 			planned, _ := selected.PlanGroup(testContext(t), projectedGroup(t, "wheel", true, 1000))
 			operation, _ := planned.Operation()
 			original := selected.effects.run
-			selected.effects.run = func(ctx context.Context, executable linuxexec.Identity, args []string, stdin []byte) (linuxexec.Result, error) {
+			selected.effects.run = func(ctx context.Context, executable linux.Identity, args []string, stdin []byte) (linux.Result, error) {
 				if executable.Path == groupaddPath {
 					if desiredReached {
 						fixture.groups["wheel"] = groupRecord{name: "wheel", gid: 1000}
 					}
-					return linuxexec.Result{Started: true, ExitCode: 7, Stderr: []byte("native failure")}, nil
+					return linux.Result{Started: true, ExitCode: 7, Stderr: []byte("native failure")}, nil
 				}
 				return original(ctx, executable, args, stdin)
 			}
@@ -443,8 +443,8 @@ func containsCall(calls []string, want string) bool {
 	return slices.Contains(calls, want)
 }
 
-func shadowIdentity(path string, marker byte) linuxexec.Identity {
-	identity := linuxexec.Identity{Path: path}
+func shadowIdentity(path string, marker byte) linux.Identity {
+	identity := linux.Identity{Path: path}
 	identity.Digest[0] = marker
 	return identity
 }

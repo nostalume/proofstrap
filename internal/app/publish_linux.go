@@ -8,8 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/pack"
 	"golang.org/x/sys/unix"
 )
@@ -38,7 +38,7 @@ func publishReceipt(path string, data []byte) error {
 }
 
 func publishOutput(path, kind string, data []byte) (err error) {
-	if path == "" || path == "/" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
+	if !linux.CleanAbsoluteNonRoot(path) {
 		return fmt.Errorf("%s output must be a clean absolute non-root path", kind)
 	}
 	parent, err := openOutputParent(filepath.Dir(path))
@@ -95,19 +95,9 @@ func writeAll(writer io.Writer, data []byte) error {
 }
 
 func openOutputParent(path string) (int, error) {
-	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := linux.OpenDir(path)
 	if err != nil {
 		return -1, err
-	}
-	if path != "/" {
-		for _, component := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
-			next, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-			_ = unix.Close(fd)
-			if openErr != nil {
-				return -1, openErr
-			}
-			fd = next
-		}
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nostalume/proofstrap/internal/engine"
 	"github.com/nostalume/proofstrap/internal/host"
@@ -447,8 +448,8 @@ func TestApplyOutcomeReductionControlsContinuation(t *testing.T) {
 }
 
 func TestOutcomeDetailIsCanonicalAndBounded(t *testing.T) {
-	detail := boundedDetail(errors.New("  bad\n" + strings.Repeat("界", 2000) + "  "))
-	if strings.TrimSpace(detail) != detail || strings.ContainsAny(detail, "\r\n\x00") || len(detail) > 4096 || !strings.HasPrefix(detail, "bad") {
+	detail := boundedDetail(errors.New("  bad\n  spacing\t" + strings.Repeat("界", 2000) + "\xff  "))
+	if strings.TrimSpace(detail) != detail || strings.ContainsAny(detail, "\r\n\x00\t") || len(detail) > 1024 || !utf8.ValidString(detail) || !strings.HasPrefix(detail, "bad spacing") {
 		t.Fatalf("bounded detail = %q (%d bytes)", detail, len(detail))
 	}
 	if outcome, _ := classifyOutcome(false, host.ErrStale); outcome != engine.Stale {

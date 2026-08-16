@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
+	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/model"
 )
 
@@ -86,7 +86,7 @@ func validDirectory(value directoryEvidence, path string) bool {
 }
 
 func (selected *Selected) PlanHostname(ctx context.Context, desired model.Hostname) (Plan, error) {
-	if !selected.valid() || selected.evidence.kind != hostnameMechanism || !desired.Valid() || !futureContext(ctx) {
+	if !selected.valid() || selected.evidence.kind != hostnameMechanism || !desired.Valid() || !linux.FutureContext(ctx) {
 		return Plan{}, fmt.Errorf("valid hostname selection, desired value, and bounded context are required")
 	}
 	before, err := selected.effects.observeHostname()
@@ -99,7 +99,7 @@ func (selected *Selected) PlanHostname(ctx context.Context, desired model.Hostna
 }
 
 func (selected *Selected) PlanTimezone(ctx context.Context, desired model.Timezone) (Plan, error) {
-	if !selected.valid() || selected.evidence.kind != timezoneMechanism || !desired.Valid() || !futureContext(ctx) {
+	if !selected.valid() || selected.evidence.kind != timezoneMechanism || !desired.Valid() || !linux.FutureContext(ctx) {
 		return Plan{}, fmt.Errorf("valid timezone selection, desired value, and bounded context are required")
 	}
 	zone, err := selected.effects.zone(desired.Value())
@@ -179,7 +179,7 @@ func validTimezoneBefore(value timezoneObservation) bool {
 }
 
 func (operation Operation) Apply(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
-	if !operation.valid() || !fresh.valid() || !futureContext(effectCtx) || freshPost == nil {
+	if !operation.valid() || !fresh.valid() || !linux.FutureContext(effectCtx) || freshPost == nil {
 		return ApplyResult{}, fmt.Errorf("valid host operation, fresh selection, bounded effect context, and fresh post-observation context are required")
 	}
 	if operation.evidence != fresh.evidence {
@@ -226,7 +226,7 @@ func (operation Operation) finishHostname(freshPost func() (context.Context, con
 		return ApplyResult{}, fmt.Errorf("host effect reported success without starting mutation")
 	}
 	postCtx, cancelPost := freshPost()
-	if cancelPost == nil || !futureContext(postCtx) {
+	if cancelPost == nil || !linux.FutureContext(postCtx) {
 		if cancelPost != nil {
 			cancelPost()
 		}
@@ -258,7 +258,7 @@ func (operation Operation) applyTimezone(freshPost func() (context.Context, cont
 		return ApplyResult{}, fmt.Errorf("timezone effect reported success without starting mutation")
 	}
 	postCtx, cancelPost := freshPost()
-	if cancelPost == nil || !futureContext(postCtx) {
+	if cancelPost == nil || !linux.FutureContext(postCtx) {
 		if cancelPost != nil {
 			cancelPost()
 		}
@@ -275,14 +275,6 @@ func (operation Operation) applyTimezone(freshPost func() (context.Context, cont
 		return result, nil
 	}
 	return result, errors.Join(effectErr, postErr, fmt.Errorf("timezone postcondition is not exact"))
-}
-
-func futureContext(ctx context.Context) bool {
-	if ctx == nil || ctx.Err() != nil {
-		return false
-	}
-	deadline, ok := ctx.Deadline()
-	return ok && time.Until(deadline) > 0
 }
 
 func validHostname(value string) bool {

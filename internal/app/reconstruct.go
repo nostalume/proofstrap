@@ -7,7 +7,7 @@ import (
 
 	"github.com/nostalume/proofstrap/internal/host"
 	"github.com/nostalume/proofstrap/internal/identity"
-	"github.com/nostalume/proofstrap/internal/packbuild/packages"
+	"github.com/nostalume/proofstrap/internal/packages"
 	"github.com/nostalume/proofstrap/internal/services"
 )
 
@@ -122,15 +122,16 @@ func prepareService(data []byte) (preparedOperation, error) {
 		return preparedOperation{}, err
 	}
 	principal, user := review.Principal()
+	backend := review.Backend()
 	return preparedOperation{
 		effectLimit: commandTimeout, postLimit: ordinaryTimeout,
 		admit: func(ctx context.Context) (operationEffect, error) {
 			var selected *services.Selected
 			var err error
 			if user {
-				selected, err = services.SelectUser(ctx, principal)
+				selected, err = services.SelectUserBackend(ctx, backend, principal)
 			} else {
-				selected, err = services.SelectSystem(ctx)
+				selected, err = services.SelectSystemBackend(ctx, backend)
 			}
 			if err != nil {
 				if errors.Is(err, services.ErrUnsupported) || errors.Is(err, services.ErrAmbiguous) || errors.Is(err, services.ErrUnauthorized) {

@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"github.com/nostalume/proofstrap/internal/linux"
 	"golang.org/x/sys/unix"
 )
 
@@ -31,7 +31,7 @@ func preflightOutputs(journal, receipt string) error {
 		if path == "" {
 			continue
 		}
-		if path == "/" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
+		if !linux.CleanAbsoluteNonRoot(path) {
 			return fmt.Errorf("output path must be clean, absolute, and non-root")
 		}
 		parent, err := openOutputParent(filepath.Dir(path))
@@ -46,7 +46,7 @@ func preflightOutputs(journal, receipt string) error {
 }
 
 func openJournal(path string) (journalWriter, error) {
-	if path == "" || path == "/" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
+	if !linux.CleanAbsoluteNonRoot(path) {
 		return nil, fmt.Errorf("journal path must be clean, absolute, and non-root")
 	}
 	parent, err := openOutputParent(filepath.Dir(path))
@@ -129,11 +129,14 @@ func (journal *fileJournal) Close() error {
 }
 
 func readPlanFile(path string) ([]byte, error) {
-	if path == "" || path == "/" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
+	if !linux.CleanAbsoluteNonRoot(path) {
 		return nil, fmt.Errorf("Plan path must be clean, absolute, and non-root")
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	fd, err := linux.OpenRegular(path)
 	if err != nil {
+		if errors.Is(err, linux.ErrNotRegular) {
+			return nil, fmt.Errorf("%w: Plan is not a regular file", ErrInvalidPlan)
+		}
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), path)
@@ -142,13 +145,6 @@ func readPlanFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("open Plan")
 	}
 	defer file.Close()
-	var status unix.Stat_t
-	if err := unix.Fstat(fd, &status); err != nil {
-		return nil, err
-	}
-	if status.Mode&unix.S_IFMT != unix.S_IFREG {
-		return nil, fmt.Errorf("%w: Plan is not a regular file", ErrInvalidPlan)
-	}
 	data, err := io.ReadAll(io.LimitReader(file, maxPlanBytes+1))
 	if err != nil {
 		return nil, err

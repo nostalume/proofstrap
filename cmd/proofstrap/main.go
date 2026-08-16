@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/nostalume/proofstrap/internal/config"
 	"github.com/nostalume/proofstrap/internal/engine"
 	"github.com/nostalume/proofstrap/internal/inventory"
+	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/pack"
 )
 
@@ -40,11 +43,19 @@ var productionApplication = applicationCommands{buildPlan: app.BuildPlan, apply:
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	executable, _ := os.Readlink("/proc/self/exe")
 	environment := processEnvironment{
-		inventory:    inventory.Environment{XDGDataHome: os.Getenv("XDG_DATA_HOME"), Home: os.Getenv("HOME")},
+		inventory:    inventory.Environment{ReleaseRoot: adjacentReleaseRoot(executable), XDGDataHome: os.Getenv("XDG_DATA_HOME"), Home: os.Getenv("HOME")},
 		effectiveUID: uint32(os.Geteuid()),
 	}
 	os.Exit(runCommand(ctx, environment, productionInventory, productionApplication, os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func adjacentReleaseRoot(executable string) string {
+	if strings.HasSuffix(executable, " (deleted)") || !linux.CleanAbsoluteNonRoot(executable) {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(executable), "packs")
 }
 
 func runCommand(ctx context.Context, environment processEnvironment, inventoryCommands inventoryCommands, application applicationCommands, arguments []string, stdout, stderr io.Writer) int {

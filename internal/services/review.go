@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"path/filepath"
+
+	"github.com/nostalume/proofstrap/internal/linux"
+	reviewjson "github.com/nostalume/proofstrap/internal/review"
 )
 
 const maxReviewBytes = 1 << 20
@@ -20,6 +22,13 @@ func (review Review) Principal() (Principal, bool) {
 		return Principal{}, false
 	}
 	return review.operation.evidence.principal, true
+}
+
+func (review Review) Backend() string {
+	if !review.valid() {
+		return ""
+	}
+	return review.operation.evidence.backend
 }
 
 func EncodeReview(operation Operation) ([]byte, error) {
@@ -42,7 +51,7 @@ func DecodeReview(data []byte) (Review, error) {
 		return Review{}, fmt.Errorf("service review must contain 1..%d bytes", maxReviewBytes)
 	}
 	var wire reviewWire
-	if err := decodeStrict(data, &wire); err != nil {
+	if err := reviewjson.DecodeStrict(data, &wire); err != nil {
 		return Review{}, fmt.Errorf("decode service review: %w", err)
 	}
 	operation, err := operationFromWire(wire)
@@ -74,11 +83,15 @@ type reviewWire struct {
 	Before   axisStateWire `json:"before"`
 }
 type evidenceWire struct {
+	Backend string            `json:"backend"`
 	Scope   string            `json:"scope"`
 	Tool    toolWire          `json:"tool"`
+	Status  *toolWire         `json:"status_tool,omitempty"`
+	Update  *toolWire         `json:"update_tool,omitempty"`
 	Version string            `json:"version"`
 	EUID    uint32            `json:"euid"`
-	PID1    string            `json:"pid1"`
+	PID1    string            `json:"pid1,omitempty"`
+	Control string            `json:"control,omitempty"`
 	User    *userEvidenceWire `json:"user,omitempty"`
 }
 type toolWire struct {
@@ -107,12 +120,20 @@ type axisStateWire struct {
 }
 
 func operationToWire(operation Operation) reviewWire {
-	evidence := evidenceWire{Scope: scopeName(operation.evidence.scope), Tool: toolWire{Path: operation.evidence.tool.Path, SHA256: hex.EncodeToString(operation.evidence.tool.Digest[:])}, Version: operation.evidence.version, EUID: operation.evidence.euid, PID1: operation.evidence.pid1}
+	evidence := evidenceWire{Backend: operation.evidence.backend, Scope: scopeName(operation.evidence.scope), Tool: encodeTool(operation.evidence.tool), Version: operation.evidence.version, EUID: operation.evidence.euid, PID1: operation.evidence.pid1, Control: operation.evidence.control}
+	if operation.evidence.backend == "openrc" {
+		status, update := encodeTool(operation.evidence.status), encodeTool(operation.evidence.update)
+		evidence.Status, evidence.Update = &status, &update
+	}
 	if operation.evidence.scope == userScope {
 		principal, home := operation.evidence.principal, operation.evidence.home
 		evidence.User = &userEvidenceWire{Name: principal.name, UID: principal.uid, Home: homeWire{Path: home.path, UID: home.uid, GID: home.gid, Mode: home.mode, Device: home.device, Inode: home.inode, Directory: home.directory}}
 	}
 	return reviewWire{Kind: operationName(operation.kind), Evidence: evidence, Unit: operation.demand.unit, User: operation.demand.user, Before: axisStateWire{operation.before.id, operation.before.load, operation.before.value, operation.before.sub}}
+}
+
+func encodeTool(tool linux.Identity) toolWire {
+	return toolWire{Path: tool.Path, SHA256: hex.EncodeToString(tool.Digest[:])}
 }
 
 func operationFromWire(wire reviewWire) (Operation, error) {
@@ -151,15 +172,26 @@ func evidenceFromWire(wire evidenceWire) (selectionEvidence, error) {
 	if err != nil {
 		return result, err
 	}
-	if !filepath.IsAbs(wire.Tool.Path) || filepath.Clean(wire.Tool.Path) != wire.Tool.Path {
-		return result, fmt.Errorf("invalid reviewed systemctl path")
+	result.scope, result.backend, result.version, result.euid, result.pid1, result.control = scope, wire.Backend, wire.Version, wire.EUID, wire.PID1, wire.Control
+	result.tool, err = decodeTool(wire.Tool)
+	if err != nil {
+		return result, err
 	}
-	digest, err := hex.DecodeString(wire.Tool.SHA256)
-	if err != nil || len(digest) != len(result.tool.Digest) || hex.EncodeToString(digest) != wire.Tool.SHA256 {
-		return result, fmt.Errorf("invalid reviewed systemctl digest")
+	if wire.Backend == "openrc" {
+		if wire.Status == nil || wire.Update == nil {
+			return result, fmt.Errorf("OpenRC review lacks control tools")
+		}
+		result.status, err = decodeTool(*wire.Status)
+		if err != nil {
+			return result, err
+		}
+		result.update, err = decodeTool(*wire.Update)
+		if err != nil {
+			return result, err
+		}
+	} else if wire.Status != nil || wire.Update != nil {
+		return result, fmt.Errorf("systemd review contains OpenRC tools")
 	}
-	result.scope, result.tool.Path, result.version, result.euid, result.pid1 = scope, wire.Tool.Path, wire.Version, wire.EUID, wire.PID1
-	copy(result.tool.Digest[:], digest)
 	if scope == systemScope {
 		if wire.User != nil {
 			return result, fmt.Errorf("system service review contains user evidence")
@@ -180,6 +212,20 @@ func evidenceFromWire(wire evidenceWire) (selectionEvidence, error) {
 	if !validSelectionEvidence(result) {
 		return result, fmt.Errorf("service review selection evidence is invalid")
 	}
+	return result, nil
+}
+
+func decodeTool(wire toolWire) (linux.Identity, error) {
+	var result linux.Identity
+	if !filepath.IsAbs(wire.Path) || filepath.Clean(wire.Path) != wire.Path {
+		return result, fmt.Errorf("invalid reviewed service tool path")
+	}
+	digest, err := hex.DecodeString(wire.SHA256)
+	if err != nil || len(digest) != len(result.Digest) || hex.EncodeToString(digest) != wire.SHA256 {
+		return result, fmt.Errorf("invalid reviewed service tool digest")
+	}
+	result.Path = wire.Path
+	copy(result.Digest[:], digest)
 	return result, nil
 }
 
@@ -223,19 +269,4 @@ func parseOperation(value string) (operationKind, error) {
 		}
 	}
 	return 0, fmt.Errorf("invalid service operation %q", value)
-}
-func decodeStrict(data []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("multiple JSON values")
-		}
-		return err
-	}
-	return nil
 }
