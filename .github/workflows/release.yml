@@ -37,7 +37,7 @@ jobs:
 
       - name: Build reproducible Linux archives
         run: |
-          test/official/stage-assets.sh "$RUNNER_TEMP/packs"
+          test/release/fetch-assets.sh "$RUNNER_TEMP/packs"
           test/release/build.sh dist "$RUNNER_TEMP/packs"
       - name: Add installer
         run: cp install.sh dist/install.sh

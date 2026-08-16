@@ -4,7 +4,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
-"$root/test/official/stage-assets.sh" "$temporary/valid"
+"$root/test/release/fetch-assets.sh" "$temporary/valid"
 
 expect_failure() {
   name=$1

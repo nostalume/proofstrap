@@ -102,7 +102,7 @@ printf 'proofstrap-family-acceptance-v1\n' > "$work/sentinel"
 root_command install -d -m 0700 -o root -g root "$store" "$target"
 root_command install -m 0600 -o root -g root "$work/sentinel" "$sentinel"
 
-"$project/test/official/stage-assets.sh" "$work/assets"
+"$project/test/release/fetch-assets.sh" "$work/assets"
 "$project/test/release/build.sh" "$work/dist" "$work/assets"
 release=$work/dist/proofstrap_linux_amd64.tar.gz
 release_hash=$(sha256sum "$release" | awk '{print $1}')

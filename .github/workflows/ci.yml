@@ -40,18 +40,14 @@ jobs:
           test -f internal/linux/process.go
           test ! -e internal/inventory/filesystem_linux.go
           test ! -e internal/host/filesystem_linux.go
-          test -f profiles/core/manifest.toml
-          test -f profiles/core/profiles/core.toml
-          test -f profiles/linux/manifest.toml
-          test -f profiles/linux/bindings/linux.toml
-          test -f test/official/catalogue_test.go
+          test ! -d profiles
+          test ! -d test/official
+          test -x test/release/fetch-assets.sh
+          test -f release/catalogue-version
+          test -f release/packs.sha256
           test ! -e internal/pack/official_test.go
           test ! -e cmd/proofstrap/executable_linux.go
           test ! -e cmd/proofstrap/executable_linux_test.go
-          if find profiles -type f ! -name '*.toml' -print -quit | grep -q .; then
-            echo "generated or unsupported official profile source found" >&2
-            exit 1
-          fi
           if find internal/linux -maxdepth 1 -name '*_linux.go' -print -quit | grep -q .; then
             echo "internal/linux repeats its platform name in file suffixes" >&2
             exit 1

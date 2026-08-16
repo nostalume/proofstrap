@@ -41,7 +41,9 @@ without adding behavior. The separately selected `ssh-server` profile requests
 its package and the enabled/running system SSH service. One Linux binding pack
 realizes these IDs for admitted backends. Run `proofstrap inspect` to obtain the
 exact bundled digests for configuration; releases never expose a mutable
-"latest profile" identity.
+"latest profile" identity. Their data source and independent releases live in
+the [official core-profile catalogue](https://github.com/nostalume/proofstrap-core-profiles);
+Proofstrap release automation admits only its reviewed version and SHA-256 pins.
 
 ## Workflow
 

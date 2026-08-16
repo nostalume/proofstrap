@@ -5,7 +5,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
 mkdir -p "$temporary/bin" "$temporary/home" "$temporary/tmp"
-"$root/test/official/stage-assets.sh" "$temporary/assets"
+"$root/test/release/fetch-assets.sh" "$temporary/assets"
 "$root/test/release/build.sh" "$temporary/dist" "$temporary/assets"
 
 cat > "$temporary/bin/uname" <<'EOF'
