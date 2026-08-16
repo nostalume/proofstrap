@@ -3,6 +3,7 @@ package packages
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/nostalume/proofstrap/internal/binding"
@@ -61,6 +62,89 @@ func verifyRPMTransition(manager string, before Observation, offer Offer, after 
 type record struct {
 	Key   string
 	State string
+}
+
+type dnfInventoryDialect struct {
+	name                       string
+	canonicalEpoch, vendorAtom bool
+	rootReason                 func(string) (bool, bool)
+}
+
+func parseDNFObservation(data []byte, desired []string, dialect dnfInventoryDialect) (Observation, error) {
+	if len(data) != 0 && data[len(data)-1] != '\n' {
+		return Observation{}, fmt.Errorf("truncated %s installed package query", dialect.name)
+	}
+	installed := make([]record, 0)
+	roots := make([]string, 0)
+	seenNames := make(map[string]bool)
+	rootNames := make(map[string]bool)
+	if len(data) != 0 {
+		for _, line := range strings.Split(string(data[:len(data)-1]), "\n") {
+			fields := strings.Split(line, "\t")
+			if len(fields) != 7 {
+				return Observation{}, fmt.Errorf("malformed %s installed package row", dialect.name)
+			}
+			name, epoch, version, release, arch, vendor, reason := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]
+			epochNumber, epochErr := strconv.ParseUint(epoch, 10, 32)
+			if binding.ValidatePackageName(name) != nil || epochErr != nil || !rpmAtom(version) || !rpmAtom(release) || !rpmAtom(arch) ||
+				(dialect.vendorAtom && !rpmAtom(vendor)) || !dialect.vendorAtom && vendor == "" {
+				return Observation{}, fmt.Errorf("malformed %s installed package row", dialect.name)
+			}
+			root, known := dialect.rootReason(reason)
+			if !known {
+				return Observation{}, fmt.Errorf("unknown %s installed package reason %q", dialect.name, reason)
+			}
+			if dialect.canonicalEpoch {
+				epoch = strconv.FormatUint(epochNumber, 10)
+			}
+			key := name + "\t" + epoch + ":" + version + "-" + release + "\t" + arch
+			installed = append(installed, record{Key: key, State: vendor})
+			if root {
+				roots = append(roots, key)
+				rootNames[name] = true
+			}
+			seenNames[name] = true
+		}
+	}
+	state, err := newInventory(installed, roots)
+	if err != nil {
+		return Observation{}, fmt.Errorf("%s installed package inventory: %w", dialect.name, err)
+	}
+	demands := make([]demand, len(desired))
+	for index, name := range desired {
+		status := demandMissing
+		if seenNames[name] {
+			status = demandDependency
+		}
+		if rootNames[name] {
+			status = demandDirect
+		}
+		demands[index] = demand{Name: name, State: status}
+	}
+	return newObservation(desired, state, demands)
+}
+
+func validateRPMDesired(desired []string, manager string) error {
+	for _, name := range desired {
+		for index := range len(name) {
+			character := name[index]
+			if !rpmNameCharacter(character) && (index == 0 || !strings.ContainsRune("._+-", rune(character))) {
+				return fmt.Errorf("%s desired package must be a concrete RPM name: %q", manager, name)
+			}
+		}
+		if name == "" {
+			return fmt.Errorf("%s desired package must be a concrete RPM name: %q", manager, name)
+		}
+	}
+	return nil
+}
+
+func rpmNameCharacter(character byte) bool {
+	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
+}
+
+func rpmAtom(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\t\n\r")
 }
 
 type inventoryState struct {

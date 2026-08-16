@@ -173,78 +173,11 @@ func (behavior dnf5Behavior) Observe(ctx context.Context, evidence proof, desire
 }
 
 func parseDNF5Observation(data []byte, desired []string) (Observation, error) {
-	if len(data) != 0 && data[len(data)-1] != '\n' {
-		return Observation{}, fmt.Errorf("truncated dnf5 installed package query")
-	}
-	installed := make([]record, 0)
-	roots := make([]string, 0)
-	seenNames := make(map[string]bool)
-	rootNames := make(map[string]bool)
-	if len(data) != 0 {
-		for _, line := range strings.Split(string(data[:len(data)-1]), "\n") {
-			fields := strings.Split(line, "\t")
-			if len(fields) != 7 {
-				return Observation{}, fmt.Errorf("malformed dnf5 installed package row")
-			}
-			name, epoch, version, release, architecture, vendor, reason := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]
-			if err := binding.ValidatePackageName(name); err != nil || epoch == "" || version == "" || release == "" || architecture == "" || vendor == "" {
-				return Observation{}, fmt.Errorf("malformed dnf5 installed package row")
-			}
-			if _, err := strconv.ParseUint(epoch, 10, 32); err != nil || !dnf5Atom(version) || !dnf5Atom(release) || !dnf5Atom(architecture) {
-				return Observation{}, fmt.Errorf("malformed dnf5 installed package row")
-			}
-			root, ok := dnf5RootReason(reason)
-			if !ok {
-				return Observation{}, fmt.Errorf("unknown dnf5 installed package reason %q", reason)
-			}
-			key := name + "\t" + epoch + ":" + version + "-" + release + "\t" + architecture
-			installed = append(installed, record{Key: key, State: vendor})
-			if root {
-				roots = append(roots, key)
-				rootNames[name] = true
-			}
-			seenNames[name] = true
-		}
-	}
-	inventory, err := newInventory(installed, roots)
-	if err != nil {
-		return Observation{}, fmt.Errorf("dnf5 installed package inventory: %w", err)
-	}
-	demands := make([]demand, len(desired))
-	for index, name := range desired {
-		state := demandMissing
-		if seenNames[name] {
-			state = demandDependency
-		}
-		if rootNames[name] {
-			state = demandDirect
-		}
-		demands[index] = demand{Name: name, State: state}
-	}
-	return newObservation(desired, inventory, demands)
+	return parseDNFObservation(data, desired, dnfInventoryDialect{name: "dnf5", rootReason: dnf5RootReason})
 }
 
 func validateDNF5Desired(desired []string) error {
-	for _, name := range desired {
-		if name == "" || !dnf5NameStart(name[0]) {
-			return fmt.Errorf("dnf5 desired package must be a concrete RPM name: %q", name)
-		}
-		for index := 1; index < len(name); index++ {
-			character := name[index]
-			if !dnf5NameStart(character) && !strings.ContainsRune("._+-", rune(character)) {
-				return fmt.Errorf("dnf5 desired package must be a concrete RPM name: %q", name)
-			}
-		}
-	}
-	return nil
-}
-
-func dnf5NameStart(character byte) bool {
-	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
-}
-
-func dnf5Atom(value string) bool {
-	return strings.TrimSpace(value) == value && value != "" && !strings.ContainsAny(value, "\t\n\r")
+	return validateRPMDesired(desired, "dnf5")
 }
 
 func dnf5RootReason(reason string) (bool, bool) {
@@ -436,7 +369,7 @@ func parseDNF5NEVRA(value string) (dnf5NEVRA, error) {
 		}
 		name, version = nameVersion[:versionAt], nameVersion[versionAt+1:]
 	}
-	if err := binding.ValidatePackageName(name); err != nil || !dnf5Atom(epoch) || !dnf5Atom(version) || !dnf5Atom(release) || !dnf5Atom(architecture) {
+	if err := binding.ValidatePackageName(name); err != nil || !rpmAtom(epoch) || !rpmAtom(version) || !rpmAtom(release) || !rpmAtom(architecture) {
 		return dnf5NEVRA{}, fmt.Errorf("malformed dnf5 NEVRA %q", value)
 	}
 	if _, err := strconv.ParseUint(epoch, 10, 32); err != nil {

@@ -173,79 +173,13 @@ func (behavior dnf4Behavior) Observe(ctx context.Context, evidence proof, desire
 }
 
 func parseDNF4Observation(data []byte, desired []string) (Observation, error) {
-	if len(data) != 0 && data[len(data)-1] != '\n' {
-		return Observation{}, fmt.Errorf("truncated DNF4 installed package query")
-	}
-	installed := make([]record, 0)
-	roots := make([]string, 0)
-	seenNames := make(map[string]bool)
-	rootNames := make(map[string]bool)
-	if len(data) != 0 {
-		for _, line := range strings.Split(string(data[:len(data)-1]), "\n") {
-			fields := strings.Split(line, "\t")
-			if len(fields) != 7 {
-				return Observation{}, fmt.Errorf("malformed DNF4 installed package row")
-			}
-			name, epoch, version, release, arch, vendor, reason := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]
-			if err := binding.ValidatePackageName(name); err != nil || !dnf4Atom(version) || !dnf4Atom(release) || !dnf4Atom(arch) || !dnf4Atom(vendor) {
-				return Observation{}, fmt.Errorf("malformed DNF4 installed package row")
-			}
-			epochNumber, err := strconv.ParseUint(epoch, 10, 32)
-			if err != nil {
-				return Observation{}, fmt.Errorf("malformed DNF4 installed package row")
-			}
-			root, known := dnf4RootReason(reason)
-			if !known {
-				return Observation{}, fmt.Errorf("unknown DNF4 installed package reason %q", reason)
-			}
-			key := name + "\t" + strconv.FormatUint(epochNumber, 10) + ":" + version + "-" + release + "\t" + arch
-			installed = append(installed, record{Key: key, State: vendor})
-			if root {
-				roots = append(roots, key)
-				rootNames[name] = true
-			}
-			seenNames[name] = true
-		}
-	}
-	inventory, err := newInventory(installed, roots)
-	if err != nil {
-		return Observation{}, fmt.Errorf("DNF4 installed package inventory: %w", err)
-	}
-	demands := make([]demand, len(desired))
-	for index, name := range desired {
-		state := demandMissing
-		if seenNames[name] {
-			state = demandDependency
-		}
-		if rootNames[name] {
-			state = demandDirect
-		}
-		demands[index] = demand{Name: name, State: state}
-	}
-	return newObservation(desired, inventory, demands)
+	return parseDNFObservation(data, desired, dnfInventoryDialect{
+		name: "DNF4", canonicalEpoch: true, vendorAtom: true, rootReason: dnf4RootReason,
+	})
 }
 
 func validateDNF4Desired(desired []string) error {
-	for _, name := range desired {
-		if name == "" || !dnf4NameCharacter(name[0]) {
-			return fmt.Errorf("DNF4 desired package must be a concrete RPM name: %q", name)
-		}
-		for index := 1; index < len(name); index++ {
-			character := name[index]
-			if !dnf4NameCharacter(character) && !strings.ContainsRune("._+-", rune(character)) {
-				return fmt.Errorf("DNF4 desired package must be a concrete RPM name: %q", name)
-			}
-		}
-	}
-	return nil
-}
-
-func dnf4NameCharacter(character byte) bool {
-	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
-}
-
-func dnf4Atom(value string) bool {
-	return value != "" && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\t\n\r")
+	return validateRPMDesired(desired, "DNF4")
 }
 
 func dnf4RootReason(reason string) (bool, bool) {
@@ -408,7 +342,7 @@ func dnf4Table(lines []string, starts []int) ([]dnf4PreviewRow, int, map[string]
 		if err != nil {
 			return nil, 0, nil, err
 		}
-		if err := validateDNF4Desired([]string{fields[0]}); err != nil || !dnf4Atom(fields[1]) || !dnf4Atom(fields[3]) || !dnf4Atom(fields[4]) {
+		if err := validateDNF4Desired([]string{fields[0]}); err != nil || !rpmAtom(fields[1]) || !rpmAtom(fields[3]) || !rpmAtom(fields[4]) {
 			return nil, 0, nil, fmt.Errorf("malformed DNF4 transaction package row")
 		}
 		evr, err := normalizeDNF4EVR(fields[2])
@@ -464,7 +398,7 @@ func dnf4TableFields(line string, starts []int) ([]string, error) {
 }
 
 func normalizeDNF4EVR(value string) (string, error) {
-	if !dnf4Atom(value) {
+	if !rpmAtom(value) {
 		return "", fmt.Errorf("malformed DNF4 EVR %q", value)
 	}
 	epoch := "0"
@@ -647,7 +581,7 @@ func dnf4RootCorrections(observation Observation, offer Offer) ([]string, error)
 			continue
 		}
 		fields := strings.Split(delta.Key(), "\t")
-		if len(fields) != 2 || !dnf4Atom(delta.After()) {
+		if len(fields) != 2 || !rpmAtom(delta.After()) {
 			return nil, fmt.Errorf("malformed DNF4 selected package delta")
 		}
 		identity := fields[0] + "-" + delta.After() + "." + fields[1]
@@ -659,7 +593,7 @@ func dnf4RootCorrections(observation Observation, offer Offer) ([]string, error)
 	installed := make(map[string][]string)
 	for _, record := range observation.inventory().installed() {
 		fields := strings.Split(record.Key, "\t")
-		if len(fields) != 3 || !dnf4Atom(fields[1]) || !dnf4Atom(fields[2]) {
+		if len(fields) != 3 || !rpmAtom(fields[1]) || !rpmAtom(fields[2]) {
 			return nil, fmt.Errorf("malformed observed DNF4 package key")
 		}
 		installed[fields[0]] = append(installed[fields[0]], fields[0]+"-"+fields[1]+"."+fields[2])
