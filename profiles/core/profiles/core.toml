@@ -1,0 +1,17 @@
+[profiles.curl]
+packages = ["curl"]
+
+[profiles.git]
+packages = ["git"]
+
+[profiles.vim]
+packages = ["vim"]
+
+[profiles.ssh-server]
+packages = ["ssh-server"]
+
+[profiles.ssh-server.services.ssh-server]
+target = "system"
+packages = ["ssh-server"]
+enabled = true
+running = true

@@ -24,10 +24,24 @@ sh install.sh
 
 Set `PROOFSTRAP_INSTALL_DIR` to select another destination.
 
+The installer verifies the outer archive and both bundled pack objects, stages a
+complete content-addressed release beneath
+`$PROOFSTRAP_INSTALL_DIR/.proofstrap-releases`, then atomically switches the
+`proofstrap` launcher. Previous release generations remain available for
+recovery. Reinstalling an already-present generation fails instead of replacing
+it.
+
+Official releases bundle one semantic pack with profiles `curl`, `git`, `vim`,
+and `ssh-server`, plus one Linux binding pack. `ssh-server` requests its package
+and the enabled/running system SSH service. Run `proofstrap inspect` to obtain
+the exact bundled digests for configuration; releases never expose a mutable
+"latest profile" identity.
+
 ## Workflow
 
-Import exact profile or binding archives into the user store, or add `--system`
-for the system store:
+Release-bundled packs are acquired automatically by exact digest. Other exact
+profile or binding archives may be imported into the user store, or into the
+system store with `--system`:
 
 ```sh
 proofstrap import --digest sha256:DIGEST /absolute/profile.pstrap
@@ -69,9 +83,10 @@ See the [target configuration specification](spec/config.md),
 
 ## Supported systems
 
-Built-in package behavior covers Apt, Pacman, Zypper, DNF5, and DNF4. Service
-behavior is currently systemd-specific. Distribution names are provenance, not
-behavior selectors; Proofstrap admits the actual available manager evidence.
+Built-in package behavior covers Apt, Zypper, DNF5, DNF4, and APK v3. Service
+behavior covers systemd and system-scope OpenRC. Distribution names are
+provenance, not behavior selectors; Proofstrap admits the actual available
+manager evidence.
 
 ## License
 

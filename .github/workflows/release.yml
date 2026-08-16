@@ -36,31 +36,9 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Build reproducible Linux archives
-        run: |
-          set -eu
-          mkdir -p dist
-          epoch=$(git show -s --format=%ct HEAD)
-          for arch in amd64 arm64; do
-            name="proofstrap_linux_${arch}"
-            stage="$RUNNER_TEMP/$name"
-            mkdir -p "$stage/spec"
-            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
-              go build -trimpath -buildvcs=true -ldflags='-s -w' \
-              -o "$stage/proofstrap" ./cmd/proofstrap
-            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
-              go build -trimpath -buildvcs=true -ldflags='-s -w' \
-              -o "$stage/proofstrap-pack" ./cmd/proofstrap-pack
-            cp README.md LICENSE "$stage/"
-            cp spec/config.md spec/profile.md "$stage/spec/"
-            tar --format=gnu --sort=name --mtime="@$epoch" \
-              --owner=0 --group=0 --numeric-owner \
-              -C "$RUNNER_TEMP" -cf - "$name" | gzip -n > "dist/$name.tar.gz"
-          done
-          (
-            cd dist
-            sha256sum ./*.tar.gz > checksums.txt
-          )
-          cp install.sh dist/install.sh
+        run: test/release/build.sh dist
+      - name: Add installer
+        run: cp install.sh dist/install.sh
 
       - name: Inspect release contents
         run: |
@@ -68,19 +46,20 @@ jobs:
           for arch in amd64 arm64; do
             name="proofstrap_linux_${arch}"
             tar -tzf "dist/$name.tar.gz" > "$RUNNER_TEMP/$name.files"
-            test "$(wc -l < "$RUNNER_TEMP/$name.files")" -eq 8
+            test "$(wc -l < "$RUNNER_TEMP/$name.files")" -eq 12
             for member in \
               "$name/proofstrap" \
               "$name/proofstrap-pack" \
               "$name/README.md" \
               "$name/LICENSE" \
               "$name/spec/config.md" \
-              "$name/spec/profile.md"; do
+              "$name/spec/profile.md" \
+              "$name/packs/" \
+              "$name/packs/sha256/"; do
               grep -Fx "$member" "$RUNNER_TEMP/$name.files"
             done
+            test "$(grep -Ec "^$name/packs/sha256/[0-9a-f]{64}\.pstrap$" "$RUNNER_TEMP/$name.files")" -eq 2
           done
-          "$RUNNER_TEMP/proofstrap_linux_amd64/proofstrap" --help
-          "$RUNNER_TEMP/proofstrap_linux_amd64/proofstrap-pack" --help
           (
             cd dist
             sha256sum --check checksums.txt

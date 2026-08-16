@@ -1,0 +1,17 @@
+[package.zypper]
+"core:curl" = ["curl"]
+"core:git" = ["git"]
+"core:vim" = ["vim"]
+"core:ssh-server" = ["openssh-server"]
+
+[package.apk]
+"core:curl" = ["curl"]
+"core:git" = ["git"]
+"core:vim" = ["vim"]
+"core:ssh-server" = ["openssh-server"]
+
+[service.systemd]
+"core:ssh-server" = ["sshd.service"]
+
+[service.openrc]
+"core:ssh-server" = ["sshd"]
