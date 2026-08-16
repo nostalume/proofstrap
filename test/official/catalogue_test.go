@@ -27,7 +27,7 @@ func TestCatalogue(t *testing.T) {
 		t.Fatal(err)
 	}
 	profiles := resolved.Library().ProfileIDs()
-	wantProfiles := []string{"curl", "git", "ssh-server", "vim"}
+	wantProfiles := []string{"bootstrap-cli", "ca-certificates", "curl", "git", "gzip", "ssh-server", "tar", "vim"}
 	if !reflect.DeepEqual(profiles, wantProfiles) {
 		t.Fatalf("official profiles = %v, want %v", profiles, wantProfiles)
 	}
@@ -45,9 +45,12 @@ func TestCatalogue(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertGraph(t, semanticGraph, map[string][]string{
+		"package:ca-certificates":   {},
 		"package:curl":              {},
 		"package:git":               {},
+		"package:gzip":              {},
 		"package:ssh-server":        {},
+		"package:tar":               {},
 		"package:vim":               {},
 		"service:ssh-server:system": {"package:ssh-server"},
 	})
@@ -63,8 +66,11 @@ func TestCatalogue(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProjectedGraph(t, projected, map[string][]string{
+		"package:6:zypper15:ca-certificates":                           {},
 		"package:6:zypper4:curl":                                       {},
 		"package:6:zypper3:git":                                        {},
+		"package:6:zypper4:gzip":                                       {},
+		"package:6:zypper3:tar":                                        {},
 		"package:6:zypper3:vim":                                        {},
 		"package:6:zypper14:openssh-server":                            {},
 		"service:7:systemd12:sshd.service25:service:ssh-server:system": {"package:6:zypper14:openssh-server"},
@@ -77,8 +83,11 @@ func TestCatalogue(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProjectedGraph(t, projected, map[string][]string{
+		"package:3:apk15:ca-certificates":                    {},
 		"package:3:apk4:curl":                                {},
 		"package:3:apk3:git":                                 {},
+		"package:3:apk4:gzip":                                {},
+		"package:3:apk3:tar":                                 {},
 		"package:3:apk3:vim":                                 {},
 		"package:3:apk14:openssh-server":                     {},
 		"service:6:openrc4:sshd25:service:ssh-server:system": {"package:3:apk14:openssh-server"},

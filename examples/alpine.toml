@@ -2,12 +2,10 @@ schema = 1
 
 bindings = ["linux"]
 profiles = [
-  { profile = "core:curl" },
-  { profile = "core:git" },
+  { profile = "core:bootstrap-cli" },
   { profile = "core:ssh-server" },
-  { profile = "core:vim" },
 ]
 
 [sources]
-core = "sha256:43a222e0cbe33ca5c903b648c9c8ab83b6442f351d0fe6aa54aa0aae04af5853"
-linux = "sha256:94c6f7dcdf439a3f8e030f0afe5cbb113d751ed710caa46e22792756ccb1504b"
+core = "sha256:ec73d6e2c7e9c9ad87d9ec19034c51785af431f4e4328d432b35cbce85085197"
+linux = "sha256:b1d58cc6d64b2b83296e354cd3441b71ab25f5f77f34da6c6140b762c318d9aa"

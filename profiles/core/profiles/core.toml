@@ -1,11 +1,10 @@
-[profiles.curl]
-packages = ["curl"]
-
-[profiles.git]
-packages = ["git"]
-
-[profiles.vim]
-packages = ["vim"]
+[profiles]
+ca-certificates = { packages = ["ca-certificates"] }
+curl = { packages = ["curl"] }
+git = { packages = ["git"] }
+gzip = { packages = ["gzip"] }
+tar = { packages = ["tar"] }
+vim = { packages = ["vim"] }
 
 [profiles.ssh-server]
 packages = ["ssh-server"]
@@ -15,3 +14,13 @@ target = "system"
 packages = ["ssh-server"]
 enabled = true
 running = true
+
+[profiles.bootstrap-cli]
+include = [
+  { profile = "ca-certificates" },
+  { profile = "curl" },
+  { profile = "git" },
+  { profile = "gzip" },
+  { profile = "tar" },
+  { profile = "vim" },
+]

@@ -102,8 +102,8 @@ printf 'proofstrap-family-acceptance-v1\n' > "$work/sentinel"
 root_command install -d -m 0700 -o root -g root "$store" "$target"
 root_command install -m 0600 -o root -g root "$work/sentinel" "$sentinel"
 
-mkdir "$work/dist"
-"$project/test/release/build.sh" "$work/dist"
+"$project/test/official/stage-assets.sh" "$work/assets"
+"$project/test/release/build.sh" "$work/dist" "$work/assets"
 release=$work/dist/proofstrap_linux_amd64.tar.gz
 release_hash=$(sha256sum "$release" | awk '{print $1}')
 
@@ -225,10 +225,10 @@ printf '%s\n' "$plan_output" | grep -F ':barrier' >/dev/null
 apply_target 3
 enter_target grep -F '"status":"partial"' /root/receipt.json >/dev/null
 if [ "$family" = alpine ]; then
-  enter_target apk info --exists curl git vim openssh-server
+  enter_target apk info --exists ca-certificates curl git gzip tar vim openssh-server
   enter_target ssh-keygen -A
 else
-  enter_target rpm -q curl git vim openssh-server
+  enter_target rpm -q ca-certificates curl git gzip tar vim openssh-server
 fi
 
 stop_target

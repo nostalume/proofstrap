@@ -2,4 +2,4 @@ schema = 1
 kind = "binding"
 
 [requires]
-core = "sha256:43a222e0cbe33ca5c903b648c9c8ab83b6442f351d0fe6aa54aa0aae04af5853"
+core = "sha256:ec73d6e2c7e9c9ad87d9ec19034c51785af431f4e4328d432b35cbce85085197"
