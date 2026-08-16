@@ -32,14 +32,61 @@ jobs:
       - name: Check source shape
         run: |
           set -eu
-          test -z "$(gofmt -l cmd internal)"
+          test -z "$(gofmt -l cmd internal test)"
           test ! -d internal/proofstrap
-          if rg -n 'internal/proofstrap|_create-home|proofstrap modules|replan_required' \
+          test ! -d internal/packbuild/packages
+          test ! -d internal/linuxexec
+          test -f internal/linux/fs.go
+          test -f internal/linux/process.go
+          test ! -e internal/inventory/filesystem_linux.go
+          test ! -e internal/host/filesystem_linux.go
+          test -f profiles/core/manifest.toml
+          test -f profiles/core/profiles/core.toml
+          test -f profiles/linux/manifest.toml
+          test -f profiles/linux/bindings/linux.toml
+          test -f test/official/catalogue_test.go
+          test ! -e internal/pack/official_test.go
+          test ! -e cmd/proofstrap/executable_linux.go
+          test ! -e cmd/proofstrap/executable_linux_test.go
+          if find profiles -type f ! -name '*.toml' -print -quit | grep -q .; then
+            echo "generated or unsupported official profile source found" >&2
+            exit 1
+          fi
+          if find internal/linux -maxdepth 1 -name '*_linux.go' -print -quit | grep -q .; then
+            echo "internal/linux repeats its platform name in file suffixes" >&2
+            exit 1
+          fi
+          if rg -n 'internal/proofstrap|internal/packbuild/packages|internal/linuxexec|package linuxexec|_create-home|proofstrap modules|replan_required' \
             cmd internal README.md docs/architecture.md docs/AGENTS.md spec \
             --glob '!**/*_test.go'; then
             echo "retired architecture name found" >&2
             exit 1
           fi
+          if rg -l 'golang.org/x/sys/unix' internal --glob '*.go' \
+            | grep -Ev '^internal/linux/|_linux(_test)?\.go$'; then
+            echo "Unix mechanism escaped a Linux owner leaf" >&2
+            exit 1
+          fi
+          if rg -n '"os/exec"|exec\.Command' internal/packages internal/services --glob '*_test.go'; then
+            echo "native package/service test escaped injected effects" >&2
+            exit 1
+          fi
+          if rg -n 'exec\.Command(Context)?\([^)]*"(apk|zypper|apt-get|dnf5?|pacman|systemctl|rc-service|rc-update|openrc)"' \
+            --glob '*_test.go' .; then
+            echo "ordinary Go test invokes a native package or service manager" >&2
+            exit 1
+          fi
+          if find test -type f -name '*.sh' ! -path 'test/acceptance/*' -print0 \
+            | xargs -0 -r grep -nE '(^|[^[:alnum:]_-])(apk|zypper|apt-get|dnf5?|pacman|systemctl|rc-service|rc-update|openrc)([^[:alnum:]_-]|$)'; then
+            echo "native manager command escaped disposable acceptance" >&2
+            exit 1
+          fi
+
+      - name: Build effect-free analysis packages
+        env:
+          GOOS: windows
+          GOARCH: amd64
+        run: go build ./internal/model ./internal/profile ./internal/binding ./internal/config ./internal/engine
 
       - name: Vet
         run: go vet ./...
