@@ -3,7 +3,8 @@
 ## Status and boundary
 
 This is the production target-config contract. The CLI accepts it only through
-an explicit absolute `proofstrap plan --config` path; there is no discovery or
+an explicit `proofstrap plan --config` path; relative spelling is resolved once
+against the process working directory. There is no discovery or
 environment-selected configuration.
 
 One strict TOML document owns exact source pins, binding activation, root profile
@@ -20,7 +21,7 @@ Root values are written before tables so their TOML ownership stays visually
 clear:
 
 ~~~toml
-schema = 1
+schema = 2
 
 bindings = ["linux"]
 packages = ["curl", "flatpak:org.example.App"]
@@ -28,11 +29,7 @@ hostname = "workstation"
 timezone = "Asia/Shanghai"
 
 profiles = [
-  { profile = "core:desktop", arguments = { account = { account = "alice" }, group = { group = "users" } } },
-]
-
-memberships = [
-  { account = "alice", group = "audio", present = true },
+  { profile = "core:desktop", arguments = { account = "alice", group = "users" } },
 ]
 
 [sources]
@@ -51,9 +48,10 @@ gid = 1000
 uid = 1000
 group = "users"
 home = "/home/alice"
-mode = "0700"
+home_mode = "0700"
 shell = "/bin/bash"
 locked = true
+supplementary = { audio = true }
 
 [services.dbus]
 target = "system"
@@ -61,8 +59,10 @@ packages = ["dbus"]
 running = true
 ~~~
 
-Every root field is optional except `schema = 1`, but the document must request
-some desired state. Explicitly empty plural fields or tables fail.
+Every root field is optional except `schema = 2`, but the document must request
+some desired state. `sources`, `bindings`, and `via` are supporting authority
+and do not make an otherwise empty config valid. Explicitly empty plural fields
+or tables fail.
 
 ## Sources, bindings, and profiles
 
@@ -73,18 +73,20 @@ Every source alias must be used by `bindings` or `profiles`.
 `bindings` is a non-empty list of source aliases when present. Activation does
 not assert source kind; exact loading later requires a Binding archive.
 
-Each `profiles` entry has one `source-alias:ProfileID` and, only when needed,
-typed arguments:
+Each `profiles` entry has one `source-alias:ProfileID` and, only when required by
+that exact profile, scalar identity arguments:
 
 ~~~toml
 profiles = [
-  { profile = "core:desktop", arguments = { account = { account = "alice" } } },
+  { profile = "core:desktop", arguments = { account = "alice" } },
 ]
 ~~~
 
-Argument values are exactly `{ account = "NAME" }` or `{ group = "NAME" }`.
-They reference resources declared by this config and never create them. Later
-profile resolution checks exact parameter names and kinds.
+The resolved semantic library supplies each parameter's account/group kind.
+Values reference identities declared by this config and never create them.
+Resolution requires the exact parameter set and rejects missing, extra,
+wrong-kind, or undeclared references. `arguments` is omitted for a parameterless
+profile and is non-empty when present.
 
 ## Native references and host detection
 
@@ -188,23 +190,25 @@ uid = 1000
 group = "users"
 home = "/home/alice"
 shell = "/bin/bash"
-mode = "0700"
+home_mode = "0700"
 locked = true
+supplementary = { audio = true, docker = false }
 ~~~
 
 A group with `gid` is managed; without it, external. An account with any of
 `uid`, primary `group`, or `home` must provide all three and is managed; without
-all three, external. `shell`, `mode`, and `locked` remain separate desired
-resources despite their compact nesting. Mode requests home presence and exact
-mode. `locked = false` is invalid because unlock intent is not modeled.
+all three, external. `shell`, `home_mode`, `locked`, and `supplementary` remain
+separate desired resources despite compact nesting. `home_mode` requests home
+presence and exact mode. `locked = false` is invalid because unlock intent is
+not modeled. A managed account may use either a managed primary group or a
+declared external group whose exact nonzero GID is observed and sealed into the
+Plan; Apply rechecks it before account creation.
 
-Memberships retain the profile-aligned form and require declared endpoints:
-
-~~~toml
-memberships = [
-  { account = "alice", group = "audio", present = true },
-]
-~~~
+`supplementary` is a non-empty map from declared group names to booleans. True
+ensures one explicit `/etc/group` member edge; false removes that edge; omission
+leaves it unowned. It never changes effective membership through the passwd
+primary GID. A configured or host-observed primary-group pair is rejected.
+Account/group deletion is not modeled.
 
 Root `hostname` and `timezone` use the same model constructors and spelling as
 profiles. They express exact supported Linux invariants without naming systemd
@@ -235,16 +239,19 @@ does not preallocate maxima.
 
 Unknown fields fail strict TOML decoding. Admission returns the first error in
 canonical traversal order as a config-local diagnostic with category, field,
-reliable line/column, and detail. Categories are `Syntax`, `InvalidValue`,
-`MissingReference`, `Duplicate`, `Conflict`, `Cycle`, `UnusedSource`, and
-`Limit`. Every failure returns the zero immutable Target.
+reliable line/column, and detail. Categories are `Syntax`,
+`UnsupportedSchema`, `InvalidValue`, `MissingReference`, `Duplicate`,
+`Conflict`, `Cycle`, `UnusedSource`, and `Limit`. Every failure returns the zero
+immutable Target.
 
 ## File boundary
 
-The CLI requires one explicit clean absolute `--config` path, opens the selected
-regular file once, and reads at most 1 MiB plus one overflow byte before pure
-decoding. There is no environment, working-directory, or user-directory config
-discovery.
+The CLI canonicalizes one explicit `--config` spelling to a clean absolute path,
+opens the selected regular file once, and reads at most 1 MiB plus one overflow
+byte before pure decoding. Relative spelling uses the process working directory;
+there is no environment or user-directory config discovery.
 
 There are no fragments, directories, overlays, includes, stdin, URLs,
-environment interpolation, alternate schemas, or positional desired state.
+environment interpolation, compatibility schemas, or positional desired state.
+Syntactically valid non-2 input receives `UnsupportedSchema`; schema 1 is not
+reinterpreted.

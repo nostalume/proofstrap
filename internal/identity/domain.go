@@ -183,21 +183,24 @@ func foundAccountObservation(value passwdRecord) accountObservation {
 	return accountObservation{found, found, found, found}
 }
 
-func reconcileAccount(desired model.Account, primary model.Group, observed accountObservation) Decision {
+func reconcileAccount(desired model.Account, primary model.Group, fact GroupFact, observed accountObservation) Decision {
 	if !desired.Valid() {
 		return blocked("invalid account projection")
 	}
-	return reconcileAccountIntent(accountIntentOf(desired), groupIntentOf(primary), observed)
+	if primary.Valid() && primary.Managed() {
+		fact = GroupFact{Name: primary.Name(), GID: primary.GID()}
+	}
+	return reconcileAccountIntent(accountIntentOf(desired), fact, observed)
 }
 
-func reconcileAccountIntent(desired accountIntent, primary groupIntent, observed accountObservation) Decision {
+func reconcileAccountIntent(desired accountIntent, primary GroupFact, observed accountObservation) Decision {
 	if desired.name == "" {
 		return blocked("invalid account intent")
 	}
 	if desired.name == "root" || desired.managed && desired.uid == 0 {
 		return blocked("root account is outside managed identity authority")
 	}
-	if desired.managed && (!primary.managed || primary.name != desired.primaryGroup || primary.gid == 0) {
+	if desired.managed && (!primary.valid() || primary.Name != desired.primaryGroup) {
 		return blocked("managed account primary group evidence is invalid")
 	}
 	for _, lookup := range []accountLookup{observed.nameGlobal, observed.nameLocal, observed.numberGlobal, observed.numberLocal} {
@@ -228,7 +231,7 @@ func reconcileAccountIntent(desired accountIntent, primary groupIntent, observed
 	if global.name != desired.name {
 		return blocked("account name lookup returned another identity")
 	}
-	if desired.managed && (global.uid != desired.uid || global.gid != primary.gid || global.home != desired.home) {
+	if desired.managed && (global.uid != desired.uid || global.gid != primary.GID || global.home != desired.home) {
 		return blocked("managed account coordinates differ")
 	}
 	numberGlobal, numberGlobalFound := accountFound(observed.numberGlobal)

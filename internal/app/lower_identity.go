@@ -29,6 +29,7 @@ func lowerIdentity(ctx context.Context, projected binding.Graph) identityResult 
 		return result
 	}
 	groups := map[string]model.Group{}
+	groupFacts := map[string]identity.GroupFact{}
 	accounts := map[string]model.Account{}
 	for _, node := range identityNodes(projected) {
 		if value, ok := model.GroupOf(node.Semantic()); ok {
@@ -54,7 +55,7 @@ func lowerIdentity(ctx context.Context, projected binding.Graph) identityResult 
 			result.satisfies[key] = id
 			continue
 		}
-		planned, planErr := planIdentity(ctx, selected, semantic, groups, accounts)
+		planned, planErr := planIdentity(ctx, selected, semantic, groups, groupFacts, accounts)
 		if planErr != nil {
 			result.blockers = append(result.blockers, blocker{kind: "indeterminate", resource: key, detail: planErr.Error()})
 			continue
@@ -62,6 +63,9 @@ func lowerIdentity(ctx context.Context, projected binding.Graph) identityResult 
 		if planned.Decision().Kind() == identity.Blocked {
 			result.blockers = append(result.blockers, blocker{kind: "blocked", resource: key, detail: planned.Decision().Detail()})
 			continue
+		}
+		if fact, ok := planned.GroupFact(); ok {
+			groupFacts[fact.Name] = fact
 		}
 		if fact, ok := planned.AccountFact(); ok {
 			result.facts[fact.Name()] = fact
@@ -81,12 +85,12 @@ func lowerIdentity(ctx context.Context, projected binding.Graph) identityResult 
 	return result
 }
 
-func planIdentity(ctx context.Context, selected *identity.Selected, node model.Node, groups map[string]model.Group, accounts map[string]model.Account) (identity.Planned, error) {
+func planIdentity(ctx context.Context, selected *identity.Selected, node model.Node, groups map[string]model.Group, groupFacts map[string]identity.GroupFact, accounts map[string]model.Account) (identity.Planned, error) {
 	if value, ok := model.GroupOf(node); ok {
 		return selected.PlanGroup(ctx, value)
 	}
 	if value, ok := model.AccountOf(node); ok {
-		return selected.PlanAccount(ctx, value, groups[value.PrimaryGroup()])
+		return selected.PlanAccount(ctx, value, groups[value.PrimaryGroup()], groupFacts[value.PrimaryGroup()])
 	}
 	if value, ok := model.HomeOf(node); ok {
 		return selected.PlanHome(ctx, value, accounts[value.Account()])

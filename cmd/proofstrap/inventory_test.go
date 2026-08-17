@@ -4,12 +4,44 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/nostalume/proofstrap/internal/inventory"
 	"github.com/nostalume/proofstrap/internal/pack"
 )
+
+func TestRunInventoryCanonicalizesRelativeArchivePaths(t *testing.T) {
+	directory := t.TempDir()
+	t.Chdir(directory)
+	digest, _ := pack.ParseDigest("sha256:" + strings.Repeat("1", 64))
+	want := filepath.Join(directory, "packs", "custom.pstrap")
+	called := []string{}
+	commands := inventoryCommands{
+		importUser: func(_ context.Context, _ inventory.Environment, path string, _ pack.Digest) error {
+			called = append(called, "import:"+path)
+			return nil
+		},
+		inspectArchive: func(_ context.Context, path string, _ pack.Digest) (inventory.Record, error) {
+			called = append(called, "inspect:"+path)
+			return inventory.Record{Description: pack.Description{Digest: digest, Kind: pack.Semantic}}, nil
+		},
+	}
+	for _, arguments := range [][]string{
+		{"import", "--digest", digest.String(), "packs/../packs/custom.pstrap"},
+		{"inspect", "--digest", digest.String(), "packs/custom.pstrap"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := runCommand(context.Background(), processEnvironment{}, commands, applicationCommands{}, arguments, &stdout, &stderr); code != 0 {
+			t.Fatalf("%v: code=%d stderr=%q", arguments, code, stderr.String())
+		}
+	}
+	if wantCalls := []string{"import:" + want, "inspect:" + want}; !reflect.DeepEqual(called, wantCalls) {
+		t.Fatalf("calls = %v, want %v", called, wantCalls)
+	}
+}
 
 func TestRunInventoryExactGrammarAndJSON(t *testing.T) {
 	digest, _ := pack.ParseDigest("sha256:" + strings.Repeat("1", 64))
@@ -50,7 +82,6 @@ func TestRunInventoryInvalidGrammarDoesNotInvokeOperations(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"import", "/tmp/a"},
 		{"import", "--digest", "bad", "/tmp/a"},
-		{"import", "--digest", "sha256:" + strings.Repeat("1", 64), "relative"},
 		{"inspect", "--digest", "sha256:" + strings.Repeat("1", 64)},
 		{"inspect", "--", "sha256:" + strings.Repeat("1", 64)},
 	} {

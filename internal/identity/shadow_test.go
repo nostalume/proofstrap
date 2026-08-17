@@ -225,7 +225,7 @@ func TestAccountOperationSuppressesImplicitResourcesAndProvesLock(t *testing.T) 
 	selected := mustSelectShadow(t, fixture, []Capability{ObserveIdentity, CreateAccount, ObserveLock})
 	desired := projectedAccount(t, "alice", true, 1000, "wheel", "/home/alice")
 	primary := projectedGroup(t, "wheel", true, 1000)
-	planned, err := selected.PlanAccount(testContext(t), desired, primary)
+	planned, err := selected.PlanAccount(testContext(t), desired, primary, GroupFact{})
 	if err != nil || planned.Decision().Kind() != Change {
 		t.Fatalf("PlanAccount = %#v, %v", planned, err)
 	}
@@ -240,11 +240,68 @@ func TestAccountOperationSuppressesImplicitResourcesAndProvesLock(t *testing.T) 
 	}
 }
 
+func TestExternalPrimaryGroupCanAuthorizeAccountCreation(t *testing.T) {
+	fixture := newShadowFixture()
+	fixture.groups["users"] = groupRecord{name: "users", gid: 1000}
+	selected := mustSelectShadow(t, fixture, []Capability{ObserveIdentity, CreateAccount, ObserveLock})
+	primary := projectedGroup(t, "users", false, 0)
+	groupPlan, err := selected.PlanGroup(testContext(t), primary)
+	if err != nil || groupPlan.Decision().Kind() != Exact {
+		t.Fatalf("PlanGroup = %#v, %v", groupPlan, err)
+	}
+	fact, ok := groupPlan.GroupFact()
+	if !ok || fact.Name != "users" || fact.GID != 1000 {
+		t.Fatal("exact external group has no fact")
+	}
+	desired := projectedAccount(t, "alice", true, 1000, "users", "/home/alice")
+	planned, err := selected.PlanAccount(testContext(t), desired, primary, fact)
+	if err != nil || planned.Decision().Kind() != Change {
+		t.Fatalf("PlanAccount = %#v, %v", planned, err)
+	}
+}
+
+func TestAccountOperationRejectsPrimaryGroupDriftBeforeUseradd(t *testing.T) {
+	fixture := newShadowFixture()
+	fixture.groups["users"] = groupRecord{name: "users", gid: 1000}
+	selected := mustSelectShadow(t, fixture, []Capability{ObserveIdentity, CreateAccount, ObserveLock})
+	primary := projectedGroup(t, "users", false, 0)
+	groupPlan, _ := selected.PlanGroup(testContext(t), primary)
+	fact, _ := groupPlan.GroupFact()
+	desired := projectedAccount(t, "alice", true, 1000, "users", "/home/alice")
+	planned, _ := selected.PlanAccount(testContext(t), desired, primary, fact)
+	operation, ok := planned.Operation()
+	if !ok {
+		t.Fatal("account change has no operation")
+	}
+	fixture.groups["users"] = groupRecord{name: "users", gid: 1001}
+	result, err := operation.Apply(testContext(t), postContext(t), selected)
+	if !errors.Is(err, ErrStale) || result.Started() {
+		t.Fatalf("Apply = %#v, %v", result, err)
+	}
+	for _, call := range fixture.calls {
+		if strings.HasPrefix(call, useraddPath+" ") {
+			t.Fatalf("useradd ran after primary drift: %v", fixture.calls)
+		}
+	}
+}
+
+func TestMembershipRejectsObservedPrimaryGroup(t *testing.T) {
+	fixture := newShadowFixture()
+	fixture.groups["wheel"] = groupRecord{name: "wheel", gid: 1000}
+	fixture.accounts["alice"] = passwdRecord{name: "alice", uid: 1000, gid: 1000, home: "/home/alice", shell: "/bin/sh"}
+	selected := mustSelectShadow(t, fixture, []Capability{ObserveIdentity, ModifyMembership})
+	view := projectedMembership(t, true)
+	planned, err := selected.PlanMembership(testContext(t), view)
+	if err != nil || planned.Decision().Kind() != Blocked {
+		t.Fatalf("PlanMembership = %#v, %v", planned, err)
+	}
+}
+
 func TestExternalAccountNeedsNoPrimaryGroupAndReturnsExactFact(t *testing.T) {
 	fixture := newShadowFixture()
 	fixture.accounts["alice"] = passwdRecord{name: "alice", uid: 1000, gid: 100, home: "/home/alice", shell: "/bin/sh"}
 	selected := mustSelectShadow(t, fixture, []Capability{ObserveIdentity})
-	planned, err := selected.PlanAccount(testContext(t), projectedAccount(t, "alice", false, 0, "", ""), model.Group{})
+	planned, err := selected.PlanAccount(testContext(t), projectedAccount(t, "alice", false, 0, "", ""), model.Group{}, GroupFact{})
 	if err != nil || planned.Decision().Kind() != Exact {
 		t.Fatalf("plan=%#v,%v", planned, err)
 	}
@@ -260,7 +317,7 @@ func TestExternalAccountNeedsNoPrimaryGroupAndReturnsExactFact(t *testing.T) {
 func TestLockShellAndMembershipOperationsAreIndependent(t *testing.T) {
 	fixture := newShadowFixture()
 	fixture.groups["wheel"] = groupRecord{name: "wheel", gid: 1000, members: []string{"bob"}}
-	fixture.accounts["alice"] = passwdRecord{name: "alice", uid: 1000, gid: 1000, home: "/home/alice", shell: "/bin/sh"}
+	fixture.accounts["alice"] = passwdRecord{name: "alice", uid: 1000, gid: 100, home: "/home/alice", shell: "/bin/sh"}
 	fixture.locked["alice"] = false
 	selected := mustSelectShadow(t, fixture, []Capability{ObserveIdentity, ObserveLock, ModifyAccount, ModifyMembership})
 
@@ -299,7 +356,7 @@ func TestLockShellAndMembershipOperationsAreIndependent(t *testing.T) {
 func TestIdentityEdgePlansCoverExactAndBlocked(t *testing.T) {
 	fixture := newShadowFixture()
 	fixture.groups["wheel"] = groupRecord{name: "wheel", gid: 1000, members: []string{"alice"}}
-	fixture.accounts["alice"] = passwdRecord{name: "alice", uid: 1000, gid: 1000, home: "/home/alice", shell: "/bin/zsh"}
+	fixture.accounts["alice"] = passwdRecord{name: "alice", uid: 1000, gid: 100, home: "/home/alice", shell: "/bin/zsh"}
 	fixture.locked["alice"] = true
 	selected := mustSelectShadow(t, fixture, []Capability{ObserveIdentity, ObserveLock, ModifyAccount, ModifyMembership})
 	lock, shell, membership := projectedEdges(t)
@@ -337,7 +394,7 @@ func TestIdentityEdgePlansCoverExactAndBlocked(t *testing.T) {
 func TestMembershipRemovalPreservesUnrelatedMembers(t *testing.T) {
 	fixture := newShadowFixture()
 	fixture.groups["wheel"] = groupRecord{name: "wheel", gid: 1000, members: []string{"alice", "bob"}}
-	fixture.accounts["alice"] = passwdRecord{name: "alice", uid: 1000, gid: 1000, home: "/home/alice", shell: "/bin/sh"}
+	fixture.accounts["alice"] = passwdRecord{name: "alice", uid: 1000, gid: 100, home: "/home/alice", shell: "/bin/sh"}
 	selected := mustSelectShadow(t, fixture, []Capability{ObserveIdentity, ModifyMembership})
 	desired := projectedMembership(t, false)
 	planned, err := selected.PlanMembership(testContext(t), desired)

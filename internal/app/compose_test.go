@@ -19,7 +19,7 @@ func TestComposeProjectsExactSourceClosureOnce(t *testing.T) {
 	dependency := buildAppSource(t, filepath.Join(root, "semantic-dependency"), filepath.Join(output, "dependency.pstrap"))
 	semantic := buildAppSource(t, filepath.Join(root, "semantic-root"), filepath.Join(output, "semantic.pstrap"))
 	catalogue := buildAppSource(t, filepath.Join(root, "binding-catalogue"), filepath.Join(output, "binding.pstrap"))
-	data := []byte(fmt.Sprintf(`schema = 1
+	data := []byte(fmt.Sprintf(`schema = 2
 bindings = ["linux"]
 profiles = [{ profile = "core:workload" }]
 

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"strconv"
 
 	"github.com/nostalume/proofstrap/internal/model"
@@ -25,9 +24,6 @@ func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.
 	if raw.Accounts != nil && len(raw.Accounts) == 0 {
 		return model.Graph{}, nil, nil, diagnostic("InvalidValue", "accounts", "explicit empty accounts table")
 	}
-	if raw.Memberships != nil && len(raw.Memberships) == 0 {
-		return model.Graph{}, nil, nil, diagnostic("InvalidValue", "memberships", "explicit empty memberships list")
-	}
 	provenance, err := model.NewProvenance(origin)
 	if err != nil {
 		return model.Graph{}, nil, nil, diagnostic("InvalidValue", "", err.Error())
@@ -45,6 +41,9 @@ func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.
 		return nil
 	}
 	for _, name := range sortedKeys(raw.Groups) {
+		if name == "root" {
+			return model.Graph{}, nil, nil, diagnostic("InvalidValue", "groups."+name, "root group is outside config authority")
+		}
 		key, err := model.NewGroupKey(name)
 		if err != nil {
 			return model.Graph{}, nil, nil, diagnostic("InvalidValue", "groups."+name, err.Error())
@@ -54,6 +53,9 @@ func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.
 		if item.GID == nil {
 			err = add("groups."+name, result(model.NewExternalGroup(key)))
 		} else {
+			if *item.GID == 0 {
+				return model.Graph{}, nil, nil, diagnostic("InvalidValue", "groups."+name+".gid", "GID zero is outside config authority")
+			}
 			err = add("groups."+name, result(model.NewManagedGroup(key, *item.GID)))
 		}
 		if err != nil {
@@ -61,6 +63,9 @@ func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.
 		}
 	}
 	for _, name := range sortedKeys(raw.Accounts) {
+		if name == "root" {
+			return model.Graph{}, nil, nil, diagnostic("InvalidValue", "accounts."+name, "root account is outside config authority")
+		}
 		key, err := model.NewAccountKey(name)
 		if err != nil {
 			return model.Graph{}, nil, nil, diagnostic("InvalidValue", "accounts."+name, err.Error())
@@ -83,6 +88,9 @@ func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.
 		case 0:
 			err = add(field, result(model.NewExternalAccount(key)))
 		case 3:
+			if *item.UID == 0 {
+				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".uid", "UID zero is outside config authority")
+			}
 			group, exists := groups[*item.Group]
 			if !exists {
 				return model.Graph{}, nil, nil, diagnostic("MissingReference", field+".group", "group is not declared")
@@ -94,18 +102,18 @@ func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.
 		if err != nil {
 			return model.Graph{}, nil, nil, err
 		}
-		if item.Mode != nil {
-			if len(*item.Mode) != 4 {
-				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".mode", "mode must be four octal characters")
+		if item.HomeMode != nil {
+			if len(*item.HomeMode) != 4 {
+				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".home_mode", "mode must be four octal characters")
 			}
-			mode, parseErr := strconv.ParseUint(*item.Mode, 8, 16)
+			mode, parseErr := strconv.ParseUint(*item.HomeMode, 8, 16)
 			if parseErr != nil {
-				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".mode", "mode must be an octal string")
+				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".home_mode", "mode must be an octal string")
 			}
 			if err = add(field+".home", result(model.NewHome(key))); err != nil {
 				return model.Graph{}, nil, nil, err
 			}
-			if err = add(field+".mode", result(model.NewHomeMode(key, uint16(mode)))); err != nil {
+			if err = add(field+".home_mode", result(model.NewHomeMode(key, uint16(mode)))); err != nil {
 				return model.Graph{}, nil, nil, err
 			}
 		}
@@ -123,21 +131,23 @@ func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.
 			}
 		}
 	}
-	for index, item := range raw.Memberships {
-		field := fmt.Sprintf("memberships[%d]", index)
-		account, accountOK := accounts[item.Account]
-		group, groupOK := groups[item.Group]
-		if !accountOK {
-			return model.Graph{}, nil, nil, diagnostic("MissingReference", field+".account", "account is not declared")
+	for _, name := range sortedKeys(raw.Accounts) {
+		item, account := raw.Accounts[name], accounts[name]
+		field := "accounts." + name + ".supplementary"
+		if item.Supplementary != nil && len(item.Supplementary) == 0 {
+			return model.Graph{}, nil, nil, diagnostic("InvalidValue", field, "explicit empty supplementary table")
 		}
-		if !groupOK {
-			return model.Graph{}, nil, nil, diagnostic("MissingReference", field+".group", "group is not declared")
-		}
-		if item.Present == nil {
-			return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".present", "membership presence is required")
-		}
-		if err = add(field, result(model.NewMembership(account, group, *item.Present))); err != nil {
-			return model.Graph{}, nil, nil, err
+		for _, groupName := range sortedKeys(item.Supplementary) {
+			group, ok := groups[groupName]
+			if !ok {
+				return model.Graph{}, nil, nil, diagnostic("MissingReference", field+"."+groupName, "group is not declared")
+			}
+			if item.Group != nil && *item.Group == groupName {
+				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+"."+groupName, "primary group cannot be supplementary")
+			}
+			if err = add(field+"."+groupName, result(model.NewMembership(account, group, item.Supplementary[groupName]))); err != nil {
+				return model.Graph{}, nil, nil, err
+			}
 		}
 	}
 	if raw.Hostname != nil {
@@ -165,24 +175,4 @@ func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.
 		return model.Graph{}, nil, nil, diagnostic("Limit", "", "portable dependency edge limit exceeded")
 	}
 	return graph, accounts, groups, nil
-}
-
-func validateProfileReferences(raw []rawProfile, accounts map[string]model.AccountKey, groups map[string]model.GroupKey) error {
-	for index, item := range raw {
-		for _, name := range sortedKeys(item.Arguments) {
-			argument := item.Arguments[name]
-			field := fmt.Sprintf("profiles[%d].arguments.%s", index, name)
-			if argument.Account != nil {
-				if _, ok := accounts[*argument.Account]; !ok {
-					return diagnostic("MissingReference", field+".account", "account is not declared")
-				}
-			}
-			if argument.Group != nil {
-				if _, ok := groups[*argument.Group]; !ok {
-					return diagnostic("MissingReference", field+".group", "group is not declared")
-				}
-			}
-		}
-	}
-	return nil
 }

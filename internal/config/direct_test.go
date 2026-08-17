@@ -11,12 +11,10 @@ import (
 )
 
 func TestDecodeDirectPortableAndNativeTruth(t *testing.T) {
-	data := []byte(`schema = 1
+	data := []byte(`schema = 2
 packages = ["curl", "flatpak:org.example.App", "zypper:libfoo:amd64"]
 hostname = "workstation"
 timezone = "Asia/Shanghai"
-memberships = [{ account = "alice", group = "audio", present = true }]
-
 [via]
 flatpak = ["flatpak"]
 
@@ -28,9 +26,10 @@ gid = 1000
 uid = 1000
 group = "users"
 home = "/home/alice"
-mode = "0700"
+home_mode = "0700"
 shell = "/bin/bash"
 locked = true
+supplementary = { audio = true }
 [accounts.operator]
 
 [services.dbus]
@@ -108,6 +107,66 @@ running = false
 	}
 }
 
+func TestDecodeSchemaTwoCompactIdentityAndScalarProfiles(t *testing.T) {
+	data := []byte(`schema = 2
+profiles = [{ profile = "core:desktop", arguments = { owner = "alice", audio = "audio" } }]
+
+[sources]
+core = "` + digest + `"
+
+[groups.users]
+gid = 1000
+[groups.audio]
+
+[accounts.alice]
+uid = 1000
+group = "users"
+home = "/home/alice"
+home_mode = "0700"
+supplementary = { audio = true }
+`)
+	target, err := config.Decode("compact.toml", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(target.Profiles()) != 1 {
+		t.Fatalf("profiles = %#v", target.Profiles())
+	}
+	want := map[string]bool{"home:alice": true, "home-mode:alice": true, "membership:alice:audio": true}
+	for _, node := range target.Direct().Nodes() {
+		delete(want, node.Key().Canonical())
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing compact resources: %v", want)
+	}
+}
+
+func TestDecodeSchemaTwoRejectsUnsupportedIdentityAuthorityAndEmptyIntent(t *testing.T) {
+	tests := []struct {
+		name, body, category string
+	}{
+		{"support-only", "bindings=['linux']\n[sources]\nlinux='" + digest + "'", "InvalidValue"},
+		{"empty-groups", "[groups]", "InvalidValue"},
+		{"empty-accounts", "[accounts]", "InvalidValue"},
+		{"empty-services", "[services]", "InvalidValue"},
+		{"empty-via", "[via]", "InvalidValue"},
+		{"root-group", "[groups.root]", "InvalidValue"},
+		{"root-account", "[accounts.root]", "InvalidValue"},
+		{"zero-gid", "[groups.users]\ngid=0", "InvalidValue"},
+		{"zero-uid", "[groups.users]\ngid=1000\n[accounts.alice]\nuid=0\ngroup='users'\nhome='/home/alice'", "InvalidValue"},
+		{"primary-supplementary", "[groups.users]\ngid=1000\n[accounts.alice]\nuid=1000\ngroup='users'\nhome='/home/alice'\nsupplementary={users=true}", "InvalidValue"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target, err := config.Decode("invalid.toml", []byte("schema=2\n"+test.body+"\n"))
+			var diagnostic *config.Diagnostic
+			if target != (config.Target{}) || !errors.As(err, &diagnostic) || diagnostic.Category != test.category {
+				t.Fatalf("Decode = %#v, %#v; want zero Target and %s", target, err, test.category)
+			}
+		})
+	}
+}
+
 func TestDecodeRejectsInvalidDirectTruthAtomically(t *testing.T) {
 	tests := []struct {
 		name, body, category string
@@ -118,10 +177,9 @@ func TestDecodeRejectsInvalidDirectTruthAtomically(t *testing.T) {
 		{"partial-account", "[accounts.alice]\nuid=1000", "InvalidValue"},
 		{"missing-primary-group", "[accounts.alice]\nuid=1000\ngroup='users'\nhome='/home/alice'", "MissingReference"},
 		{"unlock", "[accounts.alice]\nlocked=false", "InvalidValue"},
-		{"short-mode", "[accounts.alice]\nmode='700'", "InvalidValue"},
-		{"missing-membership-account", "memberships=[{account='alice',group='users',present=true}]\n[groups.users]", "MissingReference"},
-		{"membership-conflict", "memberships=[{account='alice',group='users',present=true},{account='alice',group='users',present=false}]\n[groups.users]\n[accounts.alice]", "Conflict"},
-		{"missing-profile-argument", "profiles=[{profile='core:desktop',arguments={owner={account='alice'}}}]\n[sources]\ncore='" + digest + "'", "MissingReference"},
+		{"empty-supplementary", "[accounts.alice]\nsupplementary={}", "InvalidValue"},
+		{"short-mode", "[accounts.alice]\nhome_mode='700'", "InvalidValue"},
+		{"missing-supplementary-group", "[accounts.alice]\nsupplementary={users=true}", "MissingReference"},
 		{"service-missing-target", "[services.dbus]\nrunning=true", "InvalidValue"},
 		{"service-bad-target", "[services.dbus]\ntarget='user:alice:extra'\nrunning=true\n[accounts.alice]", "InvalidValue"},
 		{"service-missing-account", "[services.dbus]\ntarget='user:alice'\nrunning=true", "MissingReference"},
@@ -133,7 +191,7 @@ func TestDecodeRejectsInvalidDirectTruthAtomically(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			target, err := config.Decode("invalid.toml", []byte("schema=1\n"+test.body+"\n"))
+			target, err := config.Decode("invalid.toml", []byte("schema=2\n"+test.body+"\n"))
 			var diagnostic *config.Diagnostic
 			if target != (config.Target{}) || !errors.As(err, &diagnostic) || diagnostic.Category != test.category {
 				t.Fatalf("Decode = %#v, %#v; want zero Target and %s", target, err, test.category)
@@ -143,11 +201,11 @@ func TestDecodeRejectsInvalidDirectTruthAtomically(t *testing.T) {
 }
 
 func TestDecodeDirectOrderDoesNotChangeMeaning(t *testing.T) {
-	left, err := config.Decode("left.toml", []byte("schema=1\npackages=['zypper:curl','curl']\n"))
+	left, err := config.Decode("left.toml", []byte("schema=2\npackages=['zypper:curl','curl']\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := config.Decode("right.toml", []byte("schema=1\npackages=['curl','zypper:curl']\n"))
+	right, err := config.Decode("right.toml", []byte("schema=2\npackages=['curl','zypper:curl']\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +258,7 @@ func TestDecodeCompleteFixtureIsDeterministic(t *testing.T) {
 
 func TestDecodeBoundsCombinedDirectResources(t *testing.T) {
 	var data strings.Builder
-	data.WriteString("schema=1\npackages=[")
+	data.WriteString("schema=2\npackages=[")
 	for index := 0; index < 32768; index++ {
 		if index != 0 {
 			data.WriteByte(',')

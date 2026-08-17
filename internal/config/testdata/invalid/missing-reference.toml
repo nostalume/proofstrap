@@ -1,6 +1,4 @@
-schema = 1
-memberships = [
-  { account = "alice", group = "users", present = true },
-]
+schema = 2
 
-[groups.users]
+[accounts.alice]
+supplementary = { users = true }

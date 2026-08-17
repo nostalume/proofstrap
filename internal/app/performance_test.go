@@ -14,7 +14,7 @@ import (
 )
 
 func BenchmarkBuildPlanDirect(b *testing.B) {
-	request := Request{Origin: "benchmark", Config: []byte("schema = 1\npackages = [\"flatpak:x\"]\n")}
+	request := Request{Origin: "benchmark", Config: []byte("schema = 2\npackages = [\"flatpak:x\"]\n")}
 	benchmarkBuildPlan(b, request)
 }
 
@@ -36,7 +36,7 @@ func BenchmarkBuildPlanProfile(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	config := fmt.Sprintf("schema = 1\nbindings = [\"linux\"]\nprofiles = [{ profile = \"core:curl\" }]\n[sources]\ncore = %q\nlinux = %q\n", core, linux)
+	config := fmt.Sprintf("schema = 2\nbindings = [\"linux\"]\nprofiles = [{ profile = \"core:curl\" }]\n[sources]\ncore = %q\nlinux = %q\n", core, linux)
 	benchmarkBuildPlan(b, Request{
 		Origin: "benchmark", Config: []byte(config),
 		Environment: inventory.Environment{}, Bundles: []string{corePath, linuxPath},

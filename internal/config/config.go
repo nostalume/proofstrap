@@ -50,8 +50,9 @@ type Source struct {
 type Binding struct{ Source string }
 
 type Profile struct {
-	Source string
-	Root   profile.Root
+	Source    string
+	Name      string
+	Arguments map[string]string
 }
 
 type targetState struct {
@@ -84,7 +85,11 @@ func (t Target) Profiles() []Profile {
 	if t.state == nil {
 		return nil
 	}
-	return append([]Profile(nil), t.state.profiles...)
+	result := append([]Profile(nil), t.state.profiles...)
+	for index := range result {
+		result[index].Arguments = cloneMap(result[index].Arguments)
+	}
+	return result
 }
 
 func (t Target) Direct() model.Graph {
@@ -116,28 +121,22 @@ func (t Target) Via() []Via {
 }
 
 type rawTarget struct {
-	Schema      *int                  `toml:"schema"`
-	Sources     map[string]string     `toml:"sources"`
-	Bindings    []string              `toml:"bindings"`
-	Profiles    []rawProfile          `toml:"profiles"`
-	Packages    []string              `toml:"packages"`
-	Services    map[string]rawService `toml:"services"`
-	Via         map[string][]string   `toml:"via"`
-	Groups      map[string]rawGroup   `toml:"groups"`
-	Accounts    map[string]rawAccount `toml:"accounts"`
-	Memberships []rawMembership       `toml:"memberships"`
-	Hostname    *string               `toml:"hostname"`
-	Timezone    *string               `toml:"timezone"`
+	Schema   *int                  `toml:"schema"`
+	Sources  map[string]string     `toml:"sources"`
+	Bindings []string              `toml:"bindings"`
+	Profiles []rawProfile          `toml:"profiles"`
+	Packages []string              `toml:"packages"`
+	Services map[string]rawService `toml:"services"`
+	Via      map[string][]string   `toml:"via"`
+	Groups   map[string]rawGroup   `toml:"groups"`
+	Accounts map[string]rawAccount `toml:"accounts"`
+	Hostname *string               `toml:"hostname"`
+	Timezone *string               `toml:"timezone"`
 }
 
 type rawProfile struct {
-	Profile   string                 `toml:"profile"`
-	Arguments map[string]rawArgument `toml:"arguments"`
-}
-
-type rawArgument struct {
-	Account *string `toml:"account"`
-	Group   *string `toml:"group"`
+	Profile   string            `toml:"profile"`
+	Arguments map[string]string `toml:"arguments"`
 }
 
 type rawService struct {
@@ -152,18 +151,13 @@ type rawGroup struct {
 }
 
 type rawAccount struct {
-	UID    *uint32 `toml:"uid"`
-	Group  *string `toml:"group"`
-	Home   *string `toml:"home"`
-	Mode   *string `toml:"mode"`
-	Shell  *string `toml:"shell"`
-	Locked *bool   `toml:"locked"`
-}
-
-type rawMembership struct {
-	Account string `toml:"account"`
-	Group   string `toml:"group"`
-	Present *bool  `toml:"present"`
+	UID           *uint32         `toml:"uid"`
+	Group         *string         `toml:"group"`
+	Home          *string         `toml:"home"`
+	HomeMode      *string         `toml:"home_mode"`
+	Shell         *string         `toml:"shell"`
+	Locked        *bool           `toml:"locked"`
+	Supplementary map[string]bool `toml:"supplementary"`
 }
 
 func Decode(origin string, data []byte) (Target, error) {
@@ -179,18 +173,22 @@ func Decode(origin string, data []byte) (Target, error) {
 	if !utf8.Valid(data) {
 		return Target{}, diagnostic("Syntax", "", "config is not valid UTF-8")
 	}
+	var envelope struct {
+		Schema *int `toml:"schema"`
+	}
+	if err := toml.Unmarshal(data, &envelope); err != nil {
+		return Target{}, syntaxDiagnostic(err)
+	}
+	if envelope.Schema == nil {
+		return Target{}, diagnostic("InvalidValue", "schema", "schema is required")
+	}
+	if *envelope.Schema != 2 {
+		return Target{}, diagnostic("UnsupportedSchema", "schema", "schema must be 2")
+	}
 	var raw rawTarget
 	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
 	if err := decoder.Decode(&raw); err != nil {
-		result := diagnostic("Syntax", "", "invalid config TOML")
-		var decodeError *toml.DecodeError
-		if errors.As(err, &decodeError) {
-			result.Line, result.Column = decodeError.Position()
-		}
-		return Target{}, result
-	}
-	if raw.Schema == nil || *raw.Schema != 1 {
-		return Target{}, diagnostic("InvalidValue", "schema", "schema must be 1")
+		return Target{}, syntaxDiagnostic(err)
 	}
 	sources, err := admitSources(raw.Sources)
 	if err != nil {
@@ -200,15 +198,12 @@ func Decode(origin string, data []byte) (Target, error) {
 	if err != nil {
 		return Target{}, err
 	}
-	direct, accounts, groups, err := admitPortable(origin, raw)
+	direct, accounts, _, err := admitPortable(origin, raw)
 	if err != nil {
 		return Target{}, err
 	}
 	profiles, profileUses, err := admitProfiles(raw.Profiles, sources)
 	if err != nil {
-		return Target{}, err
-	}
-	if err := validateProfileReferences(raw.Profiles, accounts, groups); err != nil {
 		return Target{}, err
 	}
 	for alias := range profileUses {
@@ -234,7 +229,7 @@ func Decode(origin string, data []byte) (Target, error) {
 	if edges > maxEdges {
 		return Target{}, diagnostic("Limit", "", "combined dependency edge limit exceeded")
 	}
-	if len(bindings) == 0 && len(profiles) == 0 && len(direct.Nodes()) == 0 && len(packages) == 0 && len(services) == 0 {
+	if len(profiles) == 0 && len(direct.Nodes()) == 0 && len(packages) == 0 && len(services) == 0 {
 		return Target{}, diagnostic("InvalidValue", "", "config must request desired state")
 	}
 	for _, source := range sources {
@@ -246,6 +241,15 @@ func Decode(origin string, data []byte) (Target, error) {
 		sources: sources, bindings: bindings, profiles: profiles,
 		direct: direct, packages: packages, services: services, via: via,
 	}}, nil
+}
+
+func syntaxDiagnostic(err error) *Diagnostic {
+	result := diagnostic("Syntax", "", "invalid config TOML")
+	var decodeError *toml.DecodeError
+	if errors.As(err, &decodeError) {
+		result.Line, result.Column = decodeError.Position()
+	}
+	return result
 }
 
 func admitSources(raw map[string]string) ([]Source, error) {
@@ -319,12 +323,8 @@ func admitProfiles(raw []rawProfile, sources []Source) ([]Profile, map[string]st
 		if err != nil {
 			return nil, nil, err
 		}
-		root, err := profile.NewRoot(name, arguments...)
-		if err != nil {
-			return nil, nil, diagnostic("InvalidValue", field+".profile", err.Error())
-		}
 		canonical := alias + ":" + name + "|" + key
-		values[canonical] = Profile{Source: alias, Root: root}
+		values[canonical] = Profile{Source: alias, Name: name, Arguments: arguments}
 		used[alias] = struct{}{}
 	}
 	keys := sortedKeys(values)
@@ -335,7 +335,10 @@ func admitProfiles(raw []rawProfile, sources []Source) ([]Profile, map[string]st
 	return result, used, nil
 }
 
-func admitArguments(field string, raw map[string]rawArgument) ([]profile.Argument, string, error) {
+func admitArguments(field string, raw map[string]string) (map[string]string, string, error) {
+	if raw == nil {
+		return nil, "", nil
+	}
 	if raw != nil && len(raw) == 0 {
 		return nil, "", diagnostic("InvalidValue", field, "explicit empty arguments table")
 	}
@@ -343,38 +346,31 @@ func admitArguments(field string, raw map[string]rawArgument) ([]profile.Argumen
 		return nil, "", diagnostic("Limit", field, "root argument limit exceeded")
 	}
 	names := sortedKeys(raw)
-	result := make([]profile.Argument, 0, len(names))
+	result := make(map[string]string, len(names))
 	var key strings.Builder
 	for _, name := range names {
+		if !profile.IsSymbol(name) {
+			return nil, "", diagnostic("InvalidValue", field+"."+name, "invalid argument name")
+		}
 		value := raw[name]
-		if (value.Account == nil) == (value.Group == nil) {
-			return nil, "", diagnostic("InvalidValue", field+"."+name, "argument must contain exactly one account or group reference")
-		}
-		if value.Account != nil {
-			account, err := model.NewAccountKey(*value.Account)
-			if err != nil {
-				return nil, "", diagnostic("InvalidValue", field+"."+name+".account", err.Error())
-			}
-			argument, err := profile.NewAccountArgument(name, account)
-			if err != nil {
-				return nil, "", diagnostic("InvalidValue", field+"."+name, err.Error())
-			}
-			result = append(result, argument)
-			key.WriteString(name + "=account:" + account.Canonical() + ";")
-			continue
-		}
-		group, err := model.NewGroupKey(*value.Group)
-		if err != nil {
-			return nil, "", diagnostic("InvalidValue", field+"."+name+".group", err.Error())
-		}
-		argument, err := profile.NewGroupArgument(name, group)
-		if err != nil {
+		if _, err := model.NewAccountKey(value); err != nil {
 			return nil, "", diagnostic("InvalidValue", field+"."+name, err.Error())
 		}
-		result = append(result, argument)
-		key.WriteString(name + "=group:" + group.Canonical() + ";")
+		result[name] = value
+		key.WriteString(name + "=" + value + ";")
 	}
 	return result, key.String(), nil
+}
+
+func cloneMap[K comparable, V any](values map[K]V) map[K]V {
+	if values == nil {
+		return nil
+	}
+	result := make(map[K]V, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func splitProfileReference(value string) (string, string, bool) {

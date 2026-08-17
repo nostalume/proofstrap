@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	importUsage    = "usage: proofstrap import --digest DIGEST [--system] ABSOLUTE_ARCHIVE"
-	inspectUsage   = "usage: proofstrap inspect [DIGEST | --digest DIGEST ABSOLUTE_ARCHIVE]"
+	importUsage    = "usage: proofstrap import --digest DIGEST [--system] ARCHIVE"
+	inspectUsage   = "usage: proofstrap inspect [DIGEST | --digest DIGEST ARCHIVE]"
 	maxInspectJSON = 8 << 20
 )
 
@@ -42,7 +42,7 @@ func runImport(ctx context.Context, environment inventory.Environment, commands 
 		return grammarError(stderr, importUsage)
 	}
 	digest, err := pack.ParseDigest(digestText)
-	if err != nil || !validCLIPath(archive) {
+	if err != nil || archive == "" || !canonicalCLIPaths(&archive) {
 		return grammarError(stderr, importUsage)
 	}
 	if system {
@@ -70,7 +70,7 @@ func runInspect(ctx context.Context, environment inventory.Environment, commands
 		if err == nil {
 			records, err = commands.inspectStored(ctx, environment, &digest)
 		}
-	case len(arguments) == 3 && arguments[0] == "--digest" && validCLIPath(arguments[2]):
+	case len(arguments) == 3 && arguments[0] == "--digest" && arguments[2] != "" && canonicalCLIPaths(&arguments[2]):
 		var digest pack.Digest
 		digest, err = pack.ParseDigest(arguments[1])
 		if err == nil {
@@ -165,8 +165,18 @@ func (b *limitedBuffer) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func validCLIPath(path string) bool {
-	return path != "" && path != "/" && !strings.ContainsRune(path, 0) && filepath.IsAbs(path) && filepath.Clean(path) == path
+func canonicalCLIPaths(paths ...*string) bool {
+	for _, target := range paths {
+		if *target == "" {
+			continue
+		}
+		absolute, err := filepath.Abs(*target)
+		if strings.ContainsRune(*target, 0) || err != nil || absolute == "/" {
+			return false
+		}
+		*target = absolute
+	}
+	return true
 }
 
 func grammarError(stderr io.Writer, usage string) int {

@@ -45,7 +45,7 @@ func resolveComposition(ctx context.Context, target config.Target, sources []pac
 
 	type roots struct {
 		source pack.Source
-		values []profile.Root
+		values []config.Profile
 	}
 	semanticRoots := make(map[pack.Digest]roots)
 	for _, selected := range target.Profiles() {
@@ -54,9 +54,7 @@ func resolveComposition(ctx context.Context, target config.Target, sources []pac
 			return model.Graph{}, nil, fmt.Errorf("profile source %q is unavailable or not semantic", selected.Source)
 		}
 		group := semanticRoots[source.Digest()]
-		group.source = source
-		group.values = append(group.values, selected.Root)
-		semanticRoots[source.Digest()] = group
+		semanticRoots[source.Digest()] = roots{source: source, values: append(group.values, selected)}
 	}
 	digests := make([]pack.Digest, 0, len(semanticRoots))
 	for digest := range semanticRoots {
@@ -67,13 +65,26 @@ func resolveComposition(ctx context.Context, target config.Target, sources []pac
 	if graph.Nodes() == nil {
 		graph = model.EmptyGraph()
 	}
+	nodes := graph.Nodes()
+	identities := make(map[string]model.Key, len(nodes))
+	for _, node := range nodes {
+		identities[node.Key().Canonical()] = node.Key()
+	}
 	for _, digest := range digests {
 		group := semanticRoots[digest]
 		resolved, err := pack.Resolve(ctx, group.source, sources)
 		if err != nil {
 			return model.Graph{}, nil, err
 		}
-		graph, err = profile.Expand(graph, resolved.Library(), group.values)
+		roots := make([]profile.Root, 0, len(group.values))
+		for _, selected := range group.values {
+			root, bindErr := profile.BindRoot(resolved.Library(), selected.Name, selected.Arguments, identities)
+			if bindErr != nil {
+				return model.Graph{}, nil, &config.Diagnostic{Category: "InvalidValue", Field: "profiles." + selected.Source + ":" + selected.Name + ".arguments", Detail: bindErr.Error()}
+			}
+			roots = append(roots, root)
+		}
+		graph, err = profile.Expand(graph, resolved.Library(), roots)
 		if err != nil {
 			return model.Graph{}, nil, err
 		}

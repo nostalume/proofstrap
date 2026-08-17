@@ -285,8 +285,16 @@ const (
 type Planned struct {
 	decision    Decision
 	operation   *Operation
+	groupFact   GroupFact
 	accountFact *AccountFact
 }
+
+type GroupFact struct {
+	Name string
+	GID  uint32
+}
+
+func (fact GroupFact) valid() bool { return fact.Name != "" && fact.Name != "root" && fact.GID != 0 }
 
 type AccountFact struct {
 	name, home string
@@ -299,6 +307,9 @@ func (fact AccountFact) GID() uint32  { return fact.gid }
 func (fact AccountFact) Home() string { return fact.home }
 
 func (planned Planned) Decision() Decision { return planned.decision }
+func (planned Planned) GroupFact() (GroupFact, bool) {
+	return planned.groupFact, planned.groupFact.valid()
+}
 func (planned Planned) Operation() (Operation, bool) {
 	if planned.operation == nil {
 		return Operation{}, false
@@ -317,7 +328,7 @@ type Operation struct {
 	evidence          selectionEvidence
 	group             groupIntent
 	account           accountIntent
-	primary           groupIntent
+	primary           GroupFact
 	groupBefore       groupObservation
 	accountBefore     accountObservation
 	lockAccount       string
@@ -344,6 +355,11 @@ func (selected *Selected) PlanGroup(ctx context.Context, desired model.Group) (P
 	}
 	decision := reconcileGroup(desired, observed)
 	planned := Planned{decision: decision}
+	if decision.kind == Exact {
+		if record, ok := groupFound(observed.nameGlobal); ok {
+			planned.groupFact = GroupFact{Name: record.name, GID: record.gid}
+		}
+	}
 	if decision.kind == Change {
 		if _, ok := selected.tool("groupadd"); !ok {
 			return Planned{decision: blocked("groupadd is not admitted")}, nil
@@ -353,7 +369,7 @@ func (selected *Selected) PlanGroup(ctx context.Context, desired model.Group) (P
 	return planned, nil
 }
 
-func (selected *Selected) PlanAccount(ctx context.Context, desired model.Account, primary model.Group) (Planned, error) {
+func (selected *Selected) PlanAccount(ctx context.Context, desired model.Account, primary model.Group, primaryFact GroupFact) (Planned, error) {
 	if !selected.valid() || !desired.Valid() || desired.Managed() && !primary.Valid() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, account, managed primary group when owned, and bounded context are required")
 	}
@@ -361,7 +377,10 @@ func (selected *Selected) PlanAccount(ctx context.Context, desired model.Account
 	if err != nil {
 		return Planned{decision: blocked(err.Error())}, nil
 	}
-	decision := reconcileAccount(desired, primary, observed)
+	if primary.Valid() && primary.Managed() {
+		primaryFact = GroupFact{Name: primary.Name(), GID: primary.GID()}
+	}
+	decision := reconcileAccount(desired, primary, primaryFact, observed)
 	planned := Planned{decision: decision}
 	if decision.kind == Exact {
 		if record, ok := accountFound(observed.nameGlobal); ok {
@@ -375,7 +394,7 @@ func (selected *Selected) PlanAccount(ctx context.Context, desired model.Account
 		if _, ok := selected.tool("passwd"); !ok {
 			return Planned{decision: blocked("passwd status is not admitted")}, nil
 		}
-		planned.operation = &Operation{kind: createAccountOperation, evidence: selected.evidence, account: accountIntentOf(desired), primary: groupIntentOf(primary), accountBefore: observed}
+		planned.operation = &Operation{kind: createAccountOperation, evidence: selected.evidence, account: accountIntentOf(desired), primary: primaryFact, accountBefore: observed}
 	}
 	return planned, nil
 }
@@ -418,12 +437,16 @@ func (selected *Selected) PlanMembership(ctx context.Context, desired model.Memb
 	if !selected.valid() || !desired.Valid() || !linux.FutureContext(ctx) {
 		return Planned{}, fmt.Errorf("valid selection, membership, and bounded context are required")
 	}
-	if _, err := selected.observeNamedAccount(ctx, desired.Account()); err != nil {
+	account, err := selected.observeNamedAccount(ctx, desired.Account())
+	if err != nil {
 		return Planned{decision: blocked(err.Error())}, nil
 	}
 	before, err := selected.observeNamedGroup(ctx, desired.Group())
 	if err != nil {
 		return Planned{decision: blocked(err.Error())}, nil
+	}
+	if account.gid == before.gid {
+		return Planned{decision: blocked("primary group cannot be supplementary")}, nil
 	}
 	present := slices.Contains(before.members, desired.Account())
 	if present == desired.Present() {
@@ -593,6 +616,11 @@ func (operation Operation) applyGroup(effectCtx context.Context, freshPost func(
 }
 
 func (operation Operation) applyAccount(effectCtx context.Context, freshPost func() (context.Context, context.CancelFunc), fresh *Selected) (ApplyResult, error) {
+	primary := groupIntent{name: operation.primary.Name, managed: true, gid: operation.primary.GID}
+	primaryBefore, err := fresh.observeGroupIntent(effectCtx, primary)
+	if err != nil || reconcileGroupIntent(primary, primaryBefore).kind != Exact {
+		return ApplyResult{}, errors.Join(fmt.Errorf("%w: primary group evidence changed", ErrStale), err)
+	}
 	before, err := fresh.observeAccountIntent(effectCtx, operation.account)
 	if err != nil {
 		return ApplyResult{}, err
@@ -601,7 +629,7 @@ func (operation Operation) applyAccount(effectCtx context.Context, freshPost fun
 		return ApplyResult{}, fmt.Errorf("%w: account observation changed", ErrStale)
 	}
 	tool, _ := fresh.tool("useradd")
-	args := []string{"--uid", strconv.FormatUint(uint64(operation.account.uid), 10), "--gid", strconv.FormatUint(uint64(operation.primary.gid), 10), "--home-dir", operation.account.home, "--no-create-home", "--no-user-group", "--", operation.account.name}
+	args := []string{"--uid", strconv.FormatUint(uint64(operation.account.uid), 10), "--gid", strconv.FormatUint(uint64(operation.primary.GID), 10), "--home-dir", operation.account.home, "--no-create-home", "--no-user-group", "--", operation.account.name}
 	result, runErr := fresh.effects.run(effectCtx, tool, args, nil)
 	runErr = commandFailure("create account", result, runErr)
 	return finishIdentity(result.Started, runErr, freshPost, "account or lock postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {

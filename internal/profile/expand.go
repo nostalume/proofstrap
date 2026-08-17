@@ -85,6 +85,31 @@ func NewRoot(profile string, arguments ...Argument) (Root, error) {
 	return root{profile: profile, arguments: values}, nil
 }
 
+func BindRoot(library Library, name string, values map[string]string, identities map[string]model.Key) (Root, error) {
+	profileKey, exists := library.localProfiles[name]
+	if !exists {
+		return nil, fmt.Errorf("missing root profile %q", name)
+	}
+	parameters := library.profiles[profileKey].parameters
+	if len(parameters) != len(values) || len(parameters) == 0 && values != nil {
+		return nil, fmt.Errorf("arguments must exactly match profile parameters")
+	}
+	arguments := make([]Argument, 0, len(values))
+	for _, parameter := range sortedKeys(parameters) {
+		value, kind := values[parameter], parameters[parameter]
+		prefix := "account:"
+		if kind == groupReference {
+			prefix = "group:"
+		}
+		key := identities[prefix+value]
+		if key == nil {
+			return nil, fmt.Errorf("argument %q does not name a declared %s", parameter, prefix[:len(prefix)-1])
+		}
+		arguments = append(arguments, namedArgument{name: parameter, value: reference{literal: key, kind: kind}})
+	}
+	return NewRoot(name, arguments...)
+}
+
 func Expand(base model.Graph, library Library, roots []Root) (model.Graph, error) {
 	return expandWithLimits(base, library, roots, stageLimits)
 }

@@ -48,6 +48,29 @@ func TestExpandBindsIncludesAndEmitsDeterministicGraph(t *testing.T) {
 	}
 }
 
+func TestBindRootDerivesScalarKindsFromExactLibrary(t *testing.T) {
+	library := decodeComplete(t)
+	base, account, group := identityBase(t, "alice", "audio")
+	identities := map[string]model.Key{account.Canonical(): account, group.Canonical(): group}
+	root, err := BindRoot(library, "desktop", map[string]string{"account": "alice", "group": "audio"}, identities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graph, err := Expand(base, library, []Root{root}); err != nil || len(graph.Nodes()) == 0 {
+		t.Fatalf("Expand = %#v, %v", graph, err)
+	}
+	for name, values := range map[string]map[string]string{
+		"missing":    {"account": "missing", "group": "audio"},
+		"incomplete": {"account": "alice"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if root, err := BindRoot(library, "desktop", values, identities); err == nil || root != nil {
+				t.Fatalf("BindRoot = %#v, %v", root, err)
+			}
+		})
+	}
+}
+
 func TestExpandDeduplicatesInstancesAndUnionsProvenance(t *testing.T) {
 	t.Parallel()
 	library := decodeComplete(t)

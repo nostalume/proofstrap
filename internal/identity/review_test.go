@@ -17,7 +17,7 @@ func TestReviewRoundTripsEveryIdentityOperationWithoutAuthority(t *testing.T) {
 	home := homeIntent{path: "/home/alice", uid: 1000, gid: 1000}
 	operations := map[string]Operation{
 		"group":      {kind: createGroupOperation, evidence: evidence, group: groupIntent{name: "users", managed: true, gid: 1000}, groupBefore: missingGroupObservation()},
-		"account":    {kind: createAccountOperation, evidence: evidence, account: account, primary: groupIntent{name: "users", managed: true, gid: 1000}, accountBefore: missingAccountObservation()},
+		"account":    {kind: createAccountOperation, evidence: evidence, account: account, primary: GroupFact{Name: "users", GID: 1000}, accountBefore: missingAccountObservation()},
 		"lock":       {kind: lockAccountOperation, evidence: evidence, lockAccount: "alice"},
 		"shell":      {kind: setShellOperation, evidence: evidence, shellAccount: "alice", shellValue: "/bin/bash", shellBefore: passwdRecord{name: "alice", uid: 1000, gid: 1000, home: "/home/alice", shell: "/bin/sh"}},
 		"membership": {kind: setMembershipOperation, evidence: evidence, membershipAccount: "alice", membershipGroup: "wheel", membershipPresent: true, membershipBefore: groupRecord{name: "wheel", gid: 10, members: []string{"bob"}}},

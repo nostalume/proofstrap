@@ -12,7 +12,7 @@ import (
 
 func TestBuildPlanProducesCanonicalBlockedPlanForUnsupportedExactBackend(t *testing.T) {
 	plan, err := BuildPlan(buildContext(t), Request{
-		Origin: "test", Config: []byte("schema = 1\npackages = [\"flatpak:org.example.App\"]\n"), Environment: inventory.Environment{},
+		Origin: "test", Config: []byte("schema = 2\npackages = [\"flatpak:org.example.App\"]\n"), Environment: inventory.Environment{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestBuildPlanRejectsInvalidRequestBeforeSourceOrHostObservation(t *testing.
 	if _, err := BuildPlan(buildContext(t), Request{Origin: "test", Config: []byte("schema = 2\n")}); err == nil {
 		t.Fatal("invalid config admitted")
 	}
-	if _, err := BuildPlan(nil, Request{Origin: "test", Config: []byte("schema = 1\npackages = [\"flatpak:x\"]\n")}); err == nil {
+	if _, err := BuildPlan(nil, Request{Origin: "test", Config: []byte("schema = 2\npackages = [\"flatpak:x\"]\n")}); err == nil {
 		t.Fatal("nil context admitted")
 	}
 }
@@ -47,7 +47,7 @@ func TestBuildPlanReturnsCancellationBeforeDecode(t *testing.T) {
 }
 
 func TestBuildPlanServiceSelectsExactOpenRCBackendWithoutSystemdFallback(t *testing.T) {
-	plan, err := BuildPlan(buildContext(t), Request{Origin: "test", Config: []byte(`schema = 1
+	plan, err := BuildPlan(buildContext(t), Request{Origin: "test", Config: []byte(`schema = 2
 [services."openrc:sshd"]
 target = "system"
 running = true

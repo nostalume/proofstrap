@@ -296,10 +296,10 @@ scope order never hides corruption or changes truth.
 The runtime inventory interface is:
 
 ~~~text
-proofstrap import --digest DIGEST [--system] ABSOLUTE_ARCHIVE
+proofstrap import --digest DIGEST [--system] ARCHIVE
 proofstrap inspect
 proofstrap inspect DIGEST
-proofstrap inspect --digest DIGEST ABSOLUTE_ARCHIVE
+proofstrap inspect --digest DIGEST ARCHIVE
 ~~~
 
 Import defaults to the user store and writes no success output. `--system`
@@ -311,6 +311,8 @@ Bare `inspect` enumerates admitted stored sources. `inspect DIGEST` performs
 non-enumerating exact lookup in every available scope. The path form admits one
 local regular archive read-only and requires its observed digest to match the
 explicit digest; it does not import it. A path alone is never identity.
+Relative archive paths are resolved once against the process working directory
+and passed to inventory as clean absolute paths without probing during parsing.
 
 All inspect forms output one deterministic JSON array containing only digest,
 kind, sorted direct requirements, canonical member paths, and observed scopes.

@@ -78,7 +78,7 @@ func TestReconcileAccountMatrix(t *testing.T) {
 			if test.desired.Managed() {
 				group = primary
 			}
-			decision := reconcileAccount(test.desired, group, test.observed)
+			decision := reconcileAccount(test.desired, group, GroupFact{}, test.observed)
 			if decision.Kind() != test.want {
 				t.Fatalf("decision = %v (%s), want %v", decision.Kind(), decision.Detail(), test.want)
 			}

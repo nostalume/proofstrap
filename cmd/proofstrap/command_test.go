@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,25 @@ import (
 	"github.com/nostalume/proofstrap/internal/inventory"
 	"github.com/nostalume/proofstrap/internal/pack"
 )
+
+func TestPlanAndApplyParsersCanonicalizeRelativeArtifactPaths(t *testing.T) {
+	directory := t.TempDir()
+	t.Chdir(directory)
+	configPath, outputPath, bundles, ok := parsePlan([]string{
+		"--config", "config/../target.toml", "--output", "plan.json", "--profile-bundle", "packs/core.pstrap",
+	})
+	if !ok || configPath != filepath.Join(directory, "target.toml") || outputPath != filepath.Join(directory, "plan.json") ||
+		!reflect.DeepEqual(bundles, []string{filepath.Join(directory, "packs", "core.pstrap")}) {
+		t.Fatalf("parsePlan = %q, %q, %v, %t", configPath, outputPath, bundles, ok)
+	}
+	planPath, accepted, journalPath, receiptPath, ok := parseApply([]string{
+		"--plan", "plan.json", "--accept", "sha256:" + strings.Repeat("1", 64), "--journal", "state/journal", "--receipt", "receipt.json",
+	})
+	if !ok || accepted == "" || planPath != filepath.Join(directory, "plan.json") ||
+		journalPath != filepath.Join(directory, "state", "journal") || receiptPath != filepath.Join(directory, "receipt.json") {
+		t.Fatalf("parseApply = %q, %q, %q, %q, %t", planPath, accepted, journalPath, receiptPath, ok)
+	}
+}
 
 const commandEmptyPlanJSON = `{"schema":1,"digest":"sha256:6e798e7de28e940a0eecede9ff1e10d4b479db250a983744d5311354a80ffb64","plan":{"operations":[],"blockers":[]}}`
 
@@ -42,7 +62,7 @@ func TestCutoverGrammarRejectsLegacyAndForbiddenInputs(t *testing.T) {
 	}
 	environment := processEnvironment{inventory: inventory.Environment{Home: "/home/test"}, effectiveUID: 0}
 	for _, arguments := range [][]string{
-		nil, {"modules"}, {"_create-home"}, {"plan", "module"}, {"plan", "--config", "relative", "--output", "/tmp/plan"},
+		nil, {"modules"}, {"_create-home"}, {"plan", "module"},
 		{"plan", "--config", "/tmp/config", "--config", "/tmp/other", "--output", "/tmp/plan"},
 		{"apply", "--config", "/tmp/config"}, {"apply", "--plan", "/tmp/plan", "--accept", "bad"},
 		{"apply", "--plan", "/tmp/plan", "--plan", "/tmp/other", "--accept", "sha256:" + strings.Repeat("1", 64)},
@@ -67,7 +87,7 @@ func TestPlanPublishesArtifactAndRendersReview(t *testing.T) {
 	outputPath := filepath.Join(root, "plan.json")
 	bundleOne := filepath.Join(root, "one.pstrap")
 	bundleTwo := filepath.Join(root, "two.pstrap")
-	config := []byte("schema = 1\npackages = [\"flatpak:x\"]\n")
+	config := []byte("schema = 2\npackages = [\"flatpak:x\"]\n")
 	if err := os.WriteFile(configPath, config, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -91,14 +111,14 @@ func TestPlanPublishesArtifactAndRendersReview(t *testing.T) {
 func TestPlanPublishesBlockedArtifactAndReturnsOne(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	blocked, err := app.BuildPlan(ctx, app.Request{Origin: "test", Config: []byte("schema = 1\npackages = [\"flatpak:x\"]\n")})
+	blocked, err := app.BuildPlan(ctx, app.Request{Origin: "test", Config: []byte("schema = 2\npackages = [\"flatpak:x\"]\n")})
 	if err != nil || !blocked.Blocked() {
 		t.Fatalf("blocked Plan = %#v, %v", blocked, err)
 	}
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
 	outputPath := filepath.Join(root, "plan.json")
-	if err := os.WriteFile(configPath, []byte("schema = 1\npackages = [\"flatpak:x\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("schema = 2\npackages = [\"flatpak:x\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	applications := applicationCommands{buildPlan: func(context.Context, app.Request) (app.Plan, error) { return blocked, nil }}
@@ -226,7 +246,7 @@ func TestPlanBrokenOutputIsFailureAfterPublication(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
 	outputPath := filepath.Join(root, "plan.json")
-	if err := os.WriteFile(configPath, []byte("schema = 1\npackages = [\"flatpak:x\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("schema = 2\npackages = [\"flatpak:x\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	applications := applicationCommands{buildPlan: func(context.Context, app.Request) (app.Plan, error) { return plan, nil }}

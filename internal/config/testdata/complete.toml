@@ -1,16 +1,12 @@
-schema = 1
+schema = 2
 bindings = ["linux"]
 packages = ["curl", "flatpak:org.example.App", "zypper:libfoo:amd64"]
 hostname = "workstation"
 timezone = "Asia/Shanghai"
 
 profiles = [
-  { profile = "core:desktop", arguments = { account = { account = "alice" }, group = { group = "users" } } },
+  { profile = "core:desktop", arguments = { account = "alice", group = "users" } },
   { profile = "core:server" },
-]
-
-memberships = [
-  { account = "alice", group = "audio", present = true },
 ]
 
 [sources]
@@ -29,9 +25,10 @@ gid = 1000
 uid = 1000
 group = "users"
 home = "/home/alice"
-mode = "0700"
+home_mode = "0700"
 shell = "/bin/bash"
 locked = true
+supplementary = { audio = true }
 
 [accounts.operator]
 

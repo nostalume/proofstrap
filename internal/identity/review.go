@@ -209,7 +209,7 @@ func encodePayload(operation Operation) (json.RawMessage, error) {
 	case createGroupOperation:
 		value = groupPayload{groupIntentToWire(operation.group), groupObservationToWire(operation.groupBefore)}
 	case createAccountOperation:
-		value = accountPayload{accountIntentToWire(operation.account), groupIntentToWire(operation.primary), accountObservationToWire(operation.accountBefore)}
+		value = accountPayload{accountIntentToWire(operation.account), groupFactToWire(operation.primary), accountObservationToWire(operation.accountBefore)}
 	case lockAccountOperation:
 		value = lockPayload{operation.lockAccount, operation.lockBefore}
 	case setShellOperation:
@@ -248,7 +248,7 @@ func operationFromWire(wire reviewWire) (Operation, error) {
 		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
 			return Operation{}, err
 		}
-		operation.account, operation.primary, operation.accountBefore = accountIntentFromWire(value.Desired), groupIntentFromWire(value.Primary), accountObservationFromWire(value.Before)
+		operation.account, operation.primary, operation.accountBefore = accountIntentFromWire(value.Desired), groupFactFromWire(value.Primary), accountObservationFromWire(value.Before)
 	case lockAccountOperation:
 		var value lockPayload
 		if err := reviewjson.DecodeStrict(wire.Payload, &value); err != nil {
@@ -337,7 +337,7 @@ func validOperation(value Operation) bool {
 	case createGroupOperation:
 		return admitted(value.evidence, CreateGroup) && validText(value.group.name) && value.group.managed && value.group.gid != 0 && reconcileGroupIntent(value.group, value.groupBefore).kind == Change
 	case createAccountOperation:
-		return admitted(value.evidence, CreateAccount) && admitted(value.evidence, ObserveLock) && validText(value.account.name) && value.account.managed && value.account.uid != 0 && validText(value.account.home) && validText(value.primary.name) && value.primary.managed && value.primary.gid != 0 && reconcileAccountIntent(value.account, value.primary, value.accountBefore).kind == Change
+		return admitted(value.evidence, CreateAccount) && admitted(value.evidence, ObserveLock) && validText(value.account.name) && value.account.managed && value.account.uid != 0 && validText(value.account.home) && value.primary.valid() && reconcileAccountIntent(value.account, value.primary, value.accountBefore).kind == Change
 	case lockAccountOperation:
 		return admitted(value.evidence, ObserveLock) && validText(value.lockAccount) && !value.lockBefore
 	case setShellOperation:
@@ -408,6 +408,13 @@ func groupIntentToWire(v groupIntent) groupIntentWire {
 	return groupIntentWire{v.name, v.gid, v.managed}
 }
 func groupIntentFromWire(v groupIntentWire) groupIntent { return groupIntent{v.Name, v.Managed, v.GID} }
+func groupFactToWire(v GroupFact) groupIntentWire       { return groupIntentWire{v.Name, v.GID, true} }
+func groupFactFromWire(v groupIntentWire) GroupFact {
+	if !v.Managed {
+		return GroupFact{}
+	}
+	return GroupFact{v.Name, v.GID}
+}
 func accountIntentToWire(v accountIntent) accountIntentWire {
 	return accountIntentWire{v.name, v.uid, v.primaryGroup, v.home, v.managed}
 }

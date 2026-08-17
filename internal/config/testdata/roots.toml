@@ -1,7 +1,7 @@
-schema = 1
+schema = 2
 bindings = ["linux"]
 profiles = [
-  { profile = "core:desktop", arguments = { account = { account = "alice" }, group = { group = "users" } } },
+  { profile = "core:desktop", arguments = { account = "alice", group = "users" } },
   { profile = "core:server" },
 ]
 

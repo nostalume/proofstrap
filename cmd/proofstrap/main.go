@@ -22,8 +22,8 @@ import (
 
 const (
 	rootUsage       = "usage: proofstrap <import|inspect|plan|apply> [OPTIONS]"
-	planUsage       = "usage: proofstrap plan --config ABSOLUTE_FILE --output ABSOLUTE_PLAN [--profile-bundle ABSOLUTE_ARCHIVE ...]"
-	applyUsage      = "usage: proofstrap apply --plan ABSOLUTE_PLAN --accept sha256:DIGEST [--journal ABSOLUTE_FILE] [--receipt ABSOLUTE_FILE]"
+	planUsage       = "usage: proofstrap plan --config FILE --output PLAN [--profile-bundle ARCHIVE ...]"
+	applyUsage      = "usage: proofstrap apply --plan PLAN --accept sha256:DIGEST [--journal FILE] [--receipt FILE]"
 	maxConfigBytes  = 1 << 20
 	planningTimeout = 30 * time.Minute
 )
@@ -166,13 +166,12 @@ func parsePlan(arguments []string) (configPath, outputPath string, bundles []str
 			return "", "", nil, false
 		}
 	}
-	if !seenConfig || !seenOutput || !validCLIPath(configPath) || !validCLIPath(outputPath) {
-		return "", "", nil, false
+	paths := []*string{&configPath, &outputPath}
+	for index := range bundles {
+		paths = append(paths, &bundles[index])
 	}
-	for _, bundle := range bundles {
-		if !validCLIPath(bundle) {
-			return "", "", nil, false
-		}
+	if !seenConfig || !seenOutput || configPath == "" || outputPath == "" || !canonicalCLIPaths(paths...) {
+		return "", "", nil, false
 	}
 	return configPath, outputPath, bundles, true
 }
@@ -188,7 +187,7 @@ func parseApply(arguments []string) (planPath, accepted, journalPath, receiptPat
 		seen[arguments[index]], index = true, index+1
 		*target = arguments[index]
 	}
-	if !seen["--plan"] || !seen["--accept"] || !validCLIPath(planPath) || journalPath != "" && !validCLIPath(journalPath) || receiptPath != "" && !validCLIPath(receiptPath) {
+	if !seen["--plan"] || !seen["--accept"] || planPath == "" || !canonicalCLIPaths(&planPath, &journalPath, &receiptPath) {
 		return "", "", "", "", false
 	}
 	return planPath, accepted, journalPath, receiptPath, true

@@ -11,7 +11,7 @@ import (
 )
 
 func TestGroupPackagesCanonicalizesHostExactAndViaDependencies(t *testing.T) {
-	target, err := config.Decode("test", []byte(`schema = 1
+	target, err := config.Decode("test", []byte(`schema = 2
 packages = ["curl", "flatpak:org.example.App"]
 
 [via]
@@ -37,9 +37,7 @@ flatpak = ["flatpak"]
 }
 
 func TestIdentityCapabilitiesAreDerivedOnceFromDesiredKinds(t *testing.T) {
-	target, err := config.Decode("test", []byte(`schema = 1
-memberships = [{ account = "alice", group = "audio", present = true }]
-
+	target, err := config.Decode("test", []byte(`schema = 2
 [groups.users]
 gid = 1000
 [groups.audio]
@@ -50,6 +48,7 @@ group = "users"
 home = "/home/alice"
 shell = "/bin/sh"
 locked = true
+supplementary = { audio = true }
 `))
 	if err != nil {
 		t.Fatal(err)

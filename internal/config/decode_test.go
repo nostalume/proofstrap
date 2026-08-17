@@ -34,6 +34,21 @@ func TestDecodeFixtures(t *testing.T) {
 	}
 }
 
+func TestDecodeRequiresSchemaTwoWithoutSchemaOneCompatibility(t *testing.T) {
+	if _, err := config.Decode("two.toml", []byte("schema=2\npackages=['curl']\n")); err != nil {
+		t.Fatalf("schema 2: %v", err)
+	}
+	target, err := config.Decode("one.toml", []byte("schema=1\npackages=['curl']\n"))
+	var diagnostic *config.Diagnostic
+	if target != (config.Target{}) || !errors.As(err, &diagnostic) || diagnostic.Category != "UnsupportedSchema" {
+		t.Fatalf("schema 1 = %#v, %#v; want zero Target and UnsupportedSchema", target, err)
+	}
+	target, err = config.Decode("one-nested.toml", []byte("schema=1\nprofiles=[{profile='core:old',arguments={owner={account='alice'}}}]\n"))
+	if target != (config.Target{}) || !errors.As(err, &diagnostic) || diagnostic.Category != "UnsupportedSchema" {
+		t.Fatalf("nested schema 1 = %#v, %#v; want zero Target and UnsupportedSchema", target, err)
+	}
+}
+
 func TestDecodeCompleteFixture(t *testing.T) {
 	target, err := config.Decode("complete.toml", completeFixture)
 	if err != nil {
@@ -81,10 +96,10 @@ func TestDecodeInvalidFixturesAtomically(t *testing.T) {
 }
 
 func TestDecodeSourcesBindingsAndTypedProfileRoots(t *testing.T) {
-	data := []byte(`schema = 1
+	data := []byte(`schema = 2
 bindings = ["linux"]
 profiles = [
-  { profile = "core:desktop", arguments = { account = { account = "alice" }, group = { group = "users" } } },
+  { profile = "core:desktop", arguments = { account = "alice", group = "users" } },
   { profile = "core:server" }
 ]
 
@@ -109,20 +124,21 @@ linux = "` + digest + `"
 		t.Fatalf("bindings = %#v", bindings)
 	}
 	profiles := target.Profiles()
-	if len(profiles) != 2 || profiles[0].Source != "core" || profiles[0].Root == nil || profiles[1].Root == nil {
+	if len(profiles) != 2 || profiles[0].Source != "core" || profiles[0].Name == "" || profiles[1].Name == "" {
 		t.Fatalf("profiles = %#v", profiles)
 	}
 
 	sources[0].Alias = "changed"
 	bindings[0].Source = "changed"
 	profiles[0].Source = "changed"
-	if target.Sources()[0].Alias != "core" || target.Bindings()[0].Source != "linux" || target.Profiles()[0].Source != "core" {
+	profiles[0].Arguments["account"] = "changed"
+	if target.Sources()[0].Alias != "core" || target.Bindings()[0].Source != "linux" || target.Profiles()[0].Source != "core" || target.Profiles()[0].Arguments["account"] != "alice" {
 		t.Fatal("Target accessors exposed mutable slice state")
 	}
 }
 
 func TestDecodeDeduplicatesEqualSelectionsCanonically(t *testing.T) {
-	data := []byte(`schema=1
+	data := []byte(`schema=2
 bindings=["linux", "linux"]
 profiles=[{profile="core:server"}, {profile="core:server"}]
 [sources]
@@ -145,16 +161,16 @@ func TestDecodeRejectsInvalidRootAdmissionAtomically(t *testing.T) {
 		{"missing-schema", `bindings=["core"]
 [sources]
 core="` + digest + `"`, "InvalidValue"},
-		{"unknown-field", "schema=1\nunknown=true\n", "Syntax"},
-		{"empty-bindings", "schema=1\nbindings=[]\n", "InvalidValue"},
-		{"missing-source", "schema=1\nbindings=['core']\n", "MissingReference"},
-		{"unused-source", "schema=1\nprofiles=[{profile='core:server'}]\n[sources]\ncore='" + digest + "'\nunused='" + digest + "'\n", "UnusedSource"},
-		{"bad-profile-reference", "schema=1\nprofiles=[{profile='server'}]\n", "InvalidValue"},
-		{"scalar-argument", "schema=1\nprofiles=[{profile='core:server',arguments={account='alice'}}]\n[sources]\ncore='" + digest + "'\n", "Syntax"},
-		{"unknown-argument-kind", "schema=1\nprofiles=[{profile='core:server',arguments={owner={user='alice'}}}]\n[sources]\ncore='" + digest + "'\n", "Syntax"},
-		{"empty-argument", "schema=1\nprofiles=[{profile='core:server',arguments={owner={}}}]\n[sources]\ncore='" + digest + "'\n", "InvalidValue"},
-		{"dual-argument-kind", "schema=1\nprofiles=[{profile='core:server',arguments={owner={account='alice',group='users'}}}]\n[sources]\ncore='" + digest + "'\n", "InvalidValue"},
-		{"bad-source-symbol", "schema=1\nbindings=['Bad']\n[sources]\nBad='" + digest + "'\n", "InvalidValue"},
+		{"unknown-field", "schema=2\nunknown=true\n", "Syntax"},
+		{"empty-sources", "schema=2\n[sources]\n", "InvalidValue"},
+		{"empty-bindings", "schema=2\nbindings=[]\n", "InvalidValue"},
+		{"empty-profiles", "schema=2\nprofiles=[]\n", "InvalidValue"},
+		{"missing-source", "schema=2\nbindings=['core']\n", "MissingReference"},
+		{"unused-source", "schema=2\nprofiles=[{profile='core:server'}]\n[sources]\ncore='" + digest + "'\nunused='" + digest + "'\n", "UnusedSource"},
+		{"bad-profile-reference", "schema=2\nprofiles=[{profile='server'}]\n", "InvalidValue"},
+		{"nested-argument", "schema=2\nprofiles=[{profile='core:server',arguments={owner={account='alice'}}}]\n[sources]\ncore='" + digest + "'\n", "Syntax"},
+		{"empty-argument", "schema=2\nprofiles=[{profile='core:server',arguments={}}]\n[sources]\ncore='" + digest + "'\n", "InvalidValue"},
+		{"bad-source-symbol", "schema=2\nbindings=['Bad']\n[sources]\nBad='" + digest + "'\n", "InvalidValue"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -178,8 +194,8 @@ func TestDecodeBoundsBytes(t *testing.T) {
 }
 
 func FuzzDecode(f *testing.F) {
-	f.Add([]byte("schema=1\nbindings=['core']\n[sources]\ncore='" + digest + "'\n"))
-	f.Add([]byte("schema=1\n"))
+	f.Add([]byte("schema=2\nbindings=['core']\n[sources]\ncore='" + digest + "'\n"))
+	f.Add([]byte("schema=2\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 1<<20+1 {
 			data = data[:1<<20+1]
