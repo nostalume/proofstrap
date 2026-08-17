@@ -70,14 +70,14 @@ LC_ALL=C tar -tvzf "$tmp/$archive" > "$tmp/member-details"
 }
 for member in \
   "$root/" \
-  "$root/spec/" \
+  "$root/docs/" \
   "$root/packs/" \
   "$root/packs/sha256/" \
   "$root/proofstrap" \
   "$root/README.md" \
   "$root/LICENSE" \
-  "$root/spec/config.md" \
-  "$root/spec/profile.md"; do
+  "$root/docs/config.md" \
+  "$root/docs/profile.md"; do
   grep -Fx "$member" "$tmp/members" >/dev/null || {
     printf 'archive member is missing: %s\n' "$member" >&2
     exit 1
@@ -95,13 +95,13 @@ extracted="$tmp/extract/$root"
   printf 'archive root is missing or unsafe\n' >&2
   exit 1
 }
-for directory in spec packs packs/sha256; do
+for directory in docs packs packs/sha256; do
   [ -d "$extracted/$directory" ] && [ ! -L "$extracted/$directory" ] || {
     printf 'archive directory is missing or unsafe: %s\n' "$directory" >&2
     exit 1
   }
 done
-for file in proofstrap README.md LICENSE spec/config.md spec/profile.md; do
+for file in proofstrap README.md LICENSE docs/config.md docs/profile.md; do
   [ -f "$extracted/$file" ] && [ ! -L "$extracted/$file" ] || {
     printf 'archive file is missing or unsafe: %s\n' "$file" >&2
     exit 1
@@ -166,12 +166,12 @@ done
 
 mkdir -p "$install_dir" "$releases"
 stage=$(mktemp -d "$releases/.stage.XXXXXX")
-mkdir -p "$stage/spec" "$stage/packs/sha256"
+mkdir -p "$stage/docs" "$stage/packs/sha256"
 install -m 0755 "$extracted/proofstrap" "$stage/proofstrap"
 install -m 0644 "$extracted/README.md" "$stage/README.md"
 install -m 0644 "$extracted/LICENSE" "$stage/LICENSE"
-install -m 0644 "$extracted/spec/config.md" "$stage/spec/config.md"
-install -m 0644 "$extracted/spec/profile.md" "$stage/spec/profile.md"
+install -m 0644 "$extracted/docs/config.md" "$stage/docs/config.md"
+install -m 0644 "$extracted/docs/profile.md" "$stage/docs/profile.md"
 for object in "$extracted"/packs/sha256/*.pstrap; do
   install -m 0444 "$object" "$stage/packs/sha256/$(basename "$object")"
 done

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 admit_assets() {
   assets=$1
@@ -38,7 +38,7 @@ build_once() {
     stage="$work/$name"
     author_name="proofstrap-pack_linux_$arch"
     author_stage="$work/$author_name"
-    mkdir -p "$stage/spec" "$stage/packs/sha256" "$author_stage/spec"
+    mkdir -p "$stage/docs" "$stage/packs/sha256" "$author_stage/docs"
     GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
       go -C "$root" build -trimpath -buildvcs=true -ldflags='-s -w' \
       -o "$stage/proofstrap" ./cmd/proofstrap
@@ -46,23 +46,21 @@ build_once() {
       go -C "$root" build -trimpath -buildvcs=true -ldflags='-s -w' \
       -o "$author_stage/proofstrap-pack" ./cmd/proofstrap-pack
     cp "$root/README.md" "$root/LICENSE" "$stage/"
-    cp "$root/spec/config.md" "$root/spec/profile.md" "$stage/spec/"
+    cp "$root/docs/config.md" "$root/docs/profile.md" "$stage/docs/"
     cp "$root/README.md" "$root/LICENSE" "$author_stage/"
-    cp "$root/spec/profile.md" "$author_stage/spec/"
+    cp "$root/docs/profile.md" "$author_stage/docs/"
     cp "$work/core.pstrap" "$stage/packs/sha256/$core.pstrap"
     cp "$work/linux.pstrap" "$stage/packs/sha256/$linux.pstrap"
     chmod 0444 "$stage/packs/sha256/"*.pstrap
   done
 
   runtime="$work/proofstrap_linux_amd64/proofstrap"
-  "$runtime" --help >/dev/null
-  "$work/proofstrap-pack_linux_amd64/proofstrap-pack" --help >/dev/null
   "$runtime" inspect --digest "sha256:$core" "$work/core.pstrap" > "$work/core.json"
   "$runtime" inspect --digest "sha256:$linux" "$work/linux.pstrap" > "$work/linux.json"
-  grep -q '"kind": "semantic"' "$work/core.json"
-  grep -q '"kind": "binding"' "$work/linux.json"
+  grep -F '"kind": "semantic"' "$work/core.json" >/dev/null
+  grep -F '"kind": "binding"' "$work/linux.json" >/dev/null
   [ "$(grep -c '"handle"' "$work/linux.json")" -eq 1 ]
-  grep -q "\"digest\": \"sha256:$core\"" "$work/linux.json"
+  grep -F "\"digest\": \"sha256:$core\"" "$work/linux.json" >/dev/null
 
   for arch in amd64 arm64; do
     for artifact in "proofstrap_linux_$arch" "proofstrap-pack_linux_$arch"; do
@@ -70,7 +68,8 @@ build_once() {
         -C "$work" -cf - "$artifact" | gzip -n > "$output/$artifact.tar.gz"
     done
   done
-  (cd "$output" && sha256sum ./*.tar.gz > checksums.txt)
+  cp "$root/install.sh" "$output/install.sh"
+  (cd "$output" && sha256sum ./*.tar.gz install.sh > checksums.txt)
 }
 
 temporary=$(mktemp -d)
@@ -80,7 +79,8 @@ if [ "${1:-}" = --twice ]; then
   build_once "$temporary/out-one" "$temporary/one" "$2"
   build_once "$temporary/out-two" "$temporary/two" "$2"
   for file in proofstrap_linux_amd64.tar.gz proofstrap_linux_arm64.tar.gz \
-    proofstrap-pack_linux_amd64.tar.gz proofstrap-pack_linux_arm64.tar.gz checksums.txt; do
+    proofstrap-pack_linux_amd64.tar.gz proofstrap-pack_linux_arm64.tar.gz \
+    checksums.txt install.sh; do
     cmp "$temporary/out-one/$file" "$temporary/out-two/$file"
   done
   exit 0

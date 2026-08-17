@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
 metrics="$temporary/metrics"
@@ -22,8 +22,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 record runtime_amd64_bytes "$(wc -c < "$temporary/proofstrap" | tr -d ' ')"
 record author_amd64_bytes "$(wc -c < "$temporary/proofstrap-pack" | tr -d ' ')"
 
-"$root/test/release/fetch-assets.sh" "$temporary/assets"
-"$root/test/release/build.sh" "$temporary/dist" "$temporary/assets"
+"$root/release/fetch.sh" "$temporary/assets"
+"$root/release/build.sh" "$temporary/dist" "$temporary/assets"
 for archive in "$temporary/dist"/proofstrap_linux_*.tar.gz; do
   name=$(basename "$archive" .tar.gz)
   record "archive_${name#proofstrap_linux_}_bytes" "$(wc -c < "$archive" | tr -d ' ')"

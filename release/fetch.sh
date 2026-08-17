@@ -5,7 +5,7 @@ set -eu
 output=$1
 [ ! -e "$output" ] || { printf 'output already exists: %s\n' "$output" >&2; exit 1; }
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 version=$(cat "$root/release/catalogue-version")
 base="https://github.com/nostalume/proofstrap-core-profiles/releases/download/$version"
 temporary=$(mktemp -d)

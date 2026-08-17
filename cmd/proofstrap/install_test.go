@@ -241,7 +241,7 @@ func releaseArchive(t *testing.T, arch string, executable []byte, options ...str
 			semanticName = strings.Repeat("0", 64) + ".pstrap"
 		}
 	}
-	for _, directory := range []string{root + "/", root + "/spec/", root + "/packs/", root + "/packs/sha256/"} {
+	for _, directory := range []string{root + "/", root + "/docs/", root + "/packs/", root + "/packs/sha256/"} {
 		if err := tarWriter.WriteHeader(&tar.Header{Name: directory, Mode: 0o755, Typeflag: tar.TypeDir}); err != nil {
 			t.Fatal(err)
 		}
@@ -254,8 +254,8 @@ func releaseArchive(t *testing.T, arch string, executable []byte, options ...str
 		{root + "/proofstrap", 0o755, executable},
 		{root + "/README.md", 0o644, []byte("readme")},
 		{root + "/LICENSE", 0o644, []byte("license")},
-		{root + "/spec/config.md", 0o644, []byte("config")},
-		{root + "/spec/profile.md", 0o644, []byte("profile")},
+		{root + "/docs/config.md", 0o644, []byte("config")},
+		{root + "/docs/profile.md", 0o644, []byte("profile")},
 		{root + "/packs/sha256/" + semanticName, 0o444, semantic},
 		{root + "/packs/sha256/" + bindingName, 0o444, binding},
 	}

@@ -41,8 +41,16 @@ jobs:
           test ! -e internal/inventory/filesystem_linux.go
           test ! -e internal/host/filesystem_linux.go
           test ! -d profiles
+          test ! -d spec
+          test -f docs/config.md
+          test -f docs/profile.md
           test ! -d test/official
-          test -x test/release/fetch-assets.sh
+          test -x release/fetch.sh
+          test -x release/build.sh
+          test -x test/release.sh
+          test ! -d test/release
+          test ! -d test/acceptance
+          test ! -d test/performance
           test -f release/catalogue-version
           test -f release/packs.sha256
           test ! -e internal/pack/official_test.go
@@ -53,9 +61,14 @@ jobs:
             exit 1
           fi
           if rg -n 'internal/proofstrap|internal/packbuild/packages|internal/linuxexec|package linuxexec|_create-home|proofstrap modules|replan_required' \
-            cmd internal README.md docs/architecture.md docs/AGENTS.md spec \
+            cmd internal README.md docs \
             --glob '!**/*_test.go'; then
             echo "retired architecture name found" >&2
+            exit 1
+          fi
+          if rg -n 'spec/(config|profile)\.md|test/acceptance|test/release/' \
+            README.md docs install.sh test release; then
+            echo "retired documentation or acceptance path found" >&2
             exit 1
           fi
           if rg -l 'golang.org/x/sys/unix' internal --glob '*.go' \
@@ -72,11 +85,16 @@ jobs:
             echo "ordinary Go test invokes a native package or service manager" >&2
             exit 1
           fi
-          if find test -type f -name '*.sh' ! -path 'test/acceptance/*' -print0 \
+          if find test -type f -name '*.sh' -print0 \
             | xargs -0 -r grep -nE '(^|[^[:alnum:]_-])(apk|zypper|apt-get|dnf5?|pacman|systemctl|rc-service|rc-update|openrc)([^[:alnum:]_-]|$)'; then
-            echo "native manager command escaped disposable acceptance" >&2
+            echo "native manager command escaped deterministic tests" >&2
             exit 1
           fi
+          shell_lines=$(find test release -type f -name '*.sh' -exec awk 'NF { total++ } END { print total+0 }' {} +)
+          test "$shell_lines" -le 200 || {
+            echo "release/test shell exceeds 200 nonblank lines: $shell_lines" >&2
+            exit 1
+          }
 
       - name: Build effect-free analysis packages
         env:
@@ -99,5 +117,8 @@ jobs:
       - name: Build commands
         run: go build ./cmd/...
 
-      - name: Reject invalid release pack inputs
-        run: test/release/input_test.sh
+      - name: Verify Linux release access
+        run: |
+          release/fetch.sh "$RUNNER_TEMP/packs"
+          release/build.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/packs"
+          test/release.sh "$RUNNER_TEMP/dist"
