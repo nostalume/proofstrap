@@ -478,7 +478,7 @@ func (behavior apkBehavior) Commit(ctx context.Context, evidence proof, observat
 		return commitResult{}, fmt.Errorf("%w: APK transaction differs from reviewed offer", ErrStale)
 	}
 	result, runErr := behavior.effects.run(ctx, native.executable, apkTransactionArgs(false, desiredFrom(observation)), nil)
-	if runErr != nil || !result.Started || result.ExitCode != 0 || len(result.Stderr) != 0 {
+	if runErr != nil || !result.Started || result.ExitCode != 0 {
 		return commitResult{Started: result.Started}, fmt.Errorf("%s", nativeDiagnostic("commit APK transaction", result, runErr))
 	}
 	return commitResult{Started: true}, nil

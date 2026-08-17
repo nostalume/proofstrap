@@ -199,7 +199,7 @@ func TestAPKCommitRepreviewsExactOfferBeforeMutation(t *testing.T) {
 	offer, _ := parseAPKOffer(apkFixture(t, "add.txt"), before)
 	script := &apkScript{t: t, tool: proof.executable, runs: []apkRun{
 		{args: apkTransactionArgs(true, []string{"curl"}), result: startedBytes(apkFixture(t, "add.txt"))},
-		{args: apkTransactionArgs(false, []string{"curl"}), result: started("commit\n")},
+		{args: apkTransactionArgs(false, []string{"curl"}), result: linux.Result{Started: true, Stderr: []byte("post-install advice\n")}},
 	}}
 	result, err := (apkBehavior{effects: script.effects(), files: script.files()}).Commit(context.Background(), proof, before, offer)
 	if err != nil || !result.Started {
