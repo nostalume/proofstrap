@@ -110,6 +110,19 @@ func TestSealCompactsRepeatedBlockerFacts(t *testing.T) {
 	}
 }
 
+func TestSealCompactsMultilineBlockerDetail(t *testing.T) {
+	plan, err := seal(body{blockers: []blocker{{
+		kind: "unsupported", resource: "service:host", detail: "control plane unavailable\nnot root",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := RenderPlan(plan)
+	if err != nil || !strings.Contains(rendered, "control plane unavailable not root") {
+		t.Fatalf("rendered blocker = %q, %v", rendered, err)
+	}
+}
+
 func TestSealRequiresCanonicalReviewedBarrier(t *testing.T) {
 	review := []byte(`{"resource":"service:system:demo.service","capability":"systemd-unit","reason":"install the delivering package and create a fresh Plan"}`)
 	plan, err := seal(body{operations: []operation{

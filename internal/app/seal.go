@@ -162,6 +162,7 @@ func canonicalBody(value body) (wireBody, error) {
 	}
 	uniqueBlockers := make(map[string]blocker, len(value.blockers))
 	for _, item := range value.blockers {
+		item.detail = strings.Join(strings.Fields(strings.ToValidUTF8(item.detail, "�")), " ")
 		uniqueBlockers[item.kind+"\x00"+item.resource+"\x00"+item.detail] = item
 	}
 	blockers := make([]blocker, 0, len(uniqueBlockers))
