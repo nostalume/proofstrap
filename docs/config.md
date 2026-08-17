@@ -68,7 +68,9 @@ or tables fail.
 
 `sources` maps a config-local Symbol alias to one exact archive digest. It does
 not repeat archive kind, namespace, version, path, URL, registry, or store scope.
-Every source alias must be used by `bindings` or `profiles`.
+Every source alias must be used by `bindings`, a root profile, or a bound
+`profile_ref` argument. This is checked after typed profile binding, not during
+syntax-only config admission.
 
 `bindings` is a non-empty list of source aliases when present. Activation does
 not assert source kind; exact loading later requires a Binding archive.
@@ -78,15 +80,24 @@ that exact profile, scalar identity arguments:
 
 ~~~toml
 profiles = [
-  { profile = "core:desktop", arguments = { account = "alice" } },
+  { profile = "core:workstation", arguments = { account = "alice", desktop = "components:sway" } },
 ]
+
+[sources]
+core = "sha256:..."
+components = "sha256:..."
 ~~~
 
-The resolved semantic library supplies each parameter's account/group kind.
-Values reference identities declared by this config and never create them.
+The resolved semantic library supplies each parameter's account, group, or
+profile-reference kind. Account and group values name identities declared by
+this config. A profile value is exactly `source-alias:ProfileID`; its alias must
+name a pinned semantic source and the profile must exist there.
 Resolution requires the exact parameter set and rejects missing, extra,
 wrong-kind, or undeclared references. `arguments` is omitted for a parameterless
-profile and is non-empty when present.
+profile and is non-empty when present. Aliases are config-local authority:
+canonical graph and provenance identity retain the selected digest/profile,
+not the alias spelling. There are no categories, providers, defaults, fallback,
+discovery, or backtracking.
 
 ## Native references and host detection
 

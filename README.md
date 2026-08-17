@@ -318,8 +318,8 @@ These fields request exact Linux host state without selecting an implementation
 or executable in config.
 
 The complete authoritative grammar, limits, equality rules, and diagnostics are
-in the [target configuration specification](spec/config.md). Profile authoring
-and archive rules are in the [profile and binding specification](spec/profile.md).
+in the [target configuration specification](docs/config.md). Profile authoring
+and archive rules are in the [profile and binding specification](docs/profile.md).
 
 ## Official core profiles
 

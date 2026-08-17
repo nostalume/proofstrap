@@ -32,7 +32,7 @@ content, and implicit authority.
 | Identity | One Symbol grammar; semantic resource ID is domain kind plus global local name; exact digest selects source generation and provenance only. |
 | Pack | One schema-selected semantic or binding tar-gzip archive with exact requirements and bounded streaming admission. |
 | Acquisition | Fixed release/user/system content-addressed stores and create-exclusive atomic import. |
-| Profile | Map-keyed declarations, compact typed parameters, static includes, and canonical bound-instance identity. |
+| Profile | Map-keyed declarations, compact typed parameters, exact includes, and canonical bound-instance identity. |
 | Package | PackageRef set with direct-present intent only. |
 | Service | ServiceRef plus explicit System/User target, independent lifecycle axes, and explicit delivering PackageRefs. |
 | Graph | No generic authored dependency language; service delivery and closed domain laws create edges. |
@@ -70,7 +70,7 @@ The language is closed. Unknown fields and constructs are admission errors.
 | Pack manifest | Pack | Declares schema, kind, and exact requirements. |
 | Requirement | Manifest | Binds a private lexical handle to one exact admitted semantic pack. |
 | Profile | Semantic pack | Defines reusable typed composition. |
-| Parameter | Profile | Accepts a machine-owned account or group reference. |
+| Parameter | Profile | Accepts an account, group, or exact profile reference. |
 | Include | Profile | Instantiates another profile with typed arguments. |
 | Semantic resource | Profile | Declares backend-neutral package or service intent. |
 | Service package prerequisite | Service | Declares package presence and package-to-service delivery edges. |
@@ -473,15 +473,16 @@ qualify, or scope profile identity. Moving an unchanged declaration between
 members changes the exact archive source digest, but not admitted semantics or
 the Plan semantic digest.
 
-A profile has required typed parameters, static includes, and typed resources.
+A profile has required typed parameters, exact includes, and typed resources.
 The optional `parameters` field is a TOML 1.0 inline table from Symbol name to
-exact kind. The profile language admits only `account_ref` and `group_ref`. Omission means
+exact kind. The admitted kinds are `account_ref`, `group_ref`, and `profile_ref`. Omission means
 no parameters; an explicit empty map is rejected. Parameter order has no
-meaning. Parameters have no defaults, optional form, or metadata object.
+meaning. Parameters have no defaults, optional form, or metadata object, and
+every declaration must be consumed or forwarded.
 
-Binding produces an AccountKey or GroupKey, never an interpolated string, and
-creates no resource. A separately declared Account or Group node must satisfy
-every final reference.
+Binding produces an AccountKey, GroupKey, or canonical pack-digest/profile
+identity, never an interpolated string, and creates no resource. A separately
+declared Account or Group node must satisfy every final identity reference.
 
 Root selection and include share one instantiation law. Instance identity is pack
 digest, profile ID, and canonical typed arguments. Identical instances
@@ -499,6 +500,24 @@ An include may bind a literal reference or forward a same-kind parameter. It
 cannot override fields, acquire/import packs, activate bindings, or depend on
 target facts. Definition include cycles fail before target inspection.
 
+A dynamic target is exactly `{ parameter = "name" }`, where `name` is a
+`profile_ref`. Its selected profile may come from another config-pinned semantic
+source. The selected profile's complete parameter row must exactly match the
+include argument names and kinds. Active dynamic cycles fail; a completed
+repeated instance deduplicates. Config aliases disappear when the argument is
+bound and never become semantic identity.
+
+~~~toml
+[profiles.workstation]
+parameters = { account = "account_ref", desktop = "profile_ref" }
+
+[[profiles.workstation.include]]
+profile = { parameter = "desktop" }
+
+[profiles.workstation.include.arguments]
+account = { parameter = "account" }
+~~~
+
 An Include is an optional non-empty array of tables. Each entry requires exactly
 `profile`. The `arguments` table is required when the resolved target has
 parameters and forbidden when it has none. Its keys must match every target
@@ -511,7 +530,7 @@ Argument inputs are contextual:
 
 ~~~text
 ArgumentExpr<K> = Literal(K) | Forward(ParameterName, K)
-K = AccountKey | GroupKey
+K = AccountKey | GroupKey | ProfileIdentity
 ~~~
 
 A string literal is validated by the resolved target parameter kind.
