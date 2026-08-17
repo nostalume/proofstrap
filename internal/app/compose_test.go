@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/nostalume/proofstrap/internal/binding"
@@ -47,6 +48,82 @@ linux = %q
 	if id, ok := binding.ServiceIDOf(nodes[1]); !ok || id.Backend() != serviceBackend || id.Name() != "agent.service" || len(nodes[1].Dependencies()) != 1 {
 		t.Fatalf("service node = %#v", nodes[1])
 	}
+}
+
+func TestResolveCompositionBindsProfileReferenceAcrossSources(t *testing.T) {
+	root := t.TempDir()
+	core := buildInlineSemantic(t, filepath.Join(root, "core"), `[profiles.workstation]
+parameters = { desktop = "profile_ref" }
+[[profiles.workstation.include]]
+profile = { parameter = "desktop" }
+`)
+	extra := buildInlineSemantic(t, filepath.Join(root, "extra"), `[profiles.sway]
+packages = ["sway"]
+`)
+	data := []byte(fmt.Sprintf(`schema = 2
+profiles = [{ profile = "core:workstation", arguments = { desktop = "extra:sway" } }]
+[sources]
+core = %q
+extra = %q
+`, core.Digest(), extra.Digest()))
+	target, err := config.Decode("test", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, _, err := resolveComposition(context.Background(), target, []pack.Source{core, extra})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := graph.Nodes()
+	if len(nodes) != 1 || nodes[0].Key().Canonical() != "package:sway" {
+		t.Fatalf("nodes = %#v", nodes)
+	}
+	renamed := []byte(fmt.Sprintf(`schema=2
+profiles=[{profile="core:workstation",arguments={desktop="choice:sway"}}]
+[sources]
+core=%q
+choice=%q
+`, core.Digest(), extra.Digest()))
+	target, err = config.Decode("renamed", renamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, _, err := resolveComposition(context.Background(), target, []pack.Source{extra, core})
+	if err != nil || !reflect.DeepEqual(graph.Nodes(), same.Nodes()) {
+		t.Fatalf("alias changed graph truth: %v", err)
+	}
+}
+
+func TestResolveCompositionRejectsUnusedSourceAfterBinding(t *testing.T) {
+	root := t.TempDir()
+	core := buildInlineSemantic(t, filepath.Join(root, "core"), "[profiles.base]\npackages=['base']\n")
+	unused := buildInlineSemantic(t, filepath.Join(root, "unused"), "[profiles.other]\npackages=['other']\n")
+	data := []byte(fmt.Sprintf("schema=2\nprofiles=[{profile='core:base'}]\n[sources]\ncore=%q\nunused=%q\n", core.Digest(), unused.Digest()))
+	target, err := config.Decode("test", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graph, _, err := resolveComposition(context.Background(), target, []pack.Source{core, unused}); err == nil || len(graph.Nodes()) != 0 {
+		t.Fatalf("resolveComposition = %#v, %v", graph, err)
+	}
+}
+
+func buildInlineSemantic(t *testing.T, input, profileData string) pack.Source {
+	return buildInlineSemanticAt(t, input, filepath.Join(t.TempDir(), "source.pstrap"), profileData)
+}
+
+func buildInlineSemanticAt(t *testing.T, input, output, profileData string) pack.Source {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(input, "profiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(input, "manifest.toml"), []byte("schema=1\nkind=\"semantic\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(input, "profiles", "profiles.toml"), []byte(profileData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return buildAppSource(t, input, output)
 }
 
 func buildAppSource(t *testing.T, input, output string) pack.Source {

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,34 @@ func TestBuildPlanProducesCanonicalBlockedPlanForUnsupportedExactBackend(t *test
 	}
 	if decoded, err := DecodePlan(plan.Bytes()); err != nil || decoded.Digest() != plan.Digest() {
 		t.Fatalf("decode = %#v, %v", decoded, err)
+	}
+}
+
+func TestBuildPlanAcceptsTwoPinnedSemanticSources(t *testing.T) {
+	root := t.TempDir()
+	corePath, extraPath := filepath.Join(root, "core.pstrap"), filepath.Join(root, "extra.pstrap")
+	core := buildInlineSemanticAt(t, filepath.Join(root, "core"), corePath, `[profiles.workstation]
+parameters = { account = "account_ref", desktop = "profile_ref" }
+[[profiles.workstation.include]]
+profile = { parameter = "desktop" }
+[profiles.workstation.include.arguments]
+account = { parameter = "account" }
+`)
+	extra := buildInlineSemanticAt(t, filepath.Join(root, "extra"), extraPath, `[profiles.home]
+parameters = { account = "account_ref" }
+homes = [{ account = { parameter = "account" } }]
+`)
+	config := []byte(fmt.Sprintf(`schema=2
+profiles=[{profile="core:workstation",arguments={account="alice",desktop="extra:home"}}]
+[sources]
+core=%q
+extra=%q
+[accounts.alice]
+`, core.Digest(), extra.Digest()))
+	plan, err := BuildPlan(buildContext(t), Request{Origin: "test", Config: config,
+		Environment: inventory.Environment{}, Bundles: []string{corePath, extraPath}})
+	if err != nil || len(plan.Bytes()) == 0 {
+		t.Fatalf("BuildPlan = %#v, %v", plan, err)
 	}
 }
 

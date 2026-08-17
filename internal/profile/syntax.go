@@ -26,7 +26,7 @@ type rawProfile struct {
 }
 
 type rawInclude struct {
-	Profile   string         `toml:"profile"`
+	Profile   any            `toml:"profile"`
 	Arguments map[string]any `toml:"arguments"`
 }
 
@@ -77,6 +77,7 @@ func rawValueDepth(raw rawMember) int {
 	maximum := 0
 	for _, profile := range raw.Profiles {
 		for _, include := range profile.Include {
+			maximum = max(maximum, valueDepth(include.Profile))
 			for _, value := range include.Arguments {
 				maximum = max(maximum, valueDepth(value))
 			}

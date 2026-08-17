@@ -2,7 +2,7 @@ package profile
 
 import (
 	"fmt"
-	"strings"
+	"maps"
 
 	"github.com/nostalume/proofstrap/internal/model"
 )
@@ -38,17 +38,18 @@ func (a namedArgument) argumentValue() namedArgument {
 }
 
 func NewAccountArgument(name string, key model.AccountKey) (Argument, error) {
-	if !validSymbol(name) || key == nil {
-		return nil, fmt.Errorf("valid account argument name and key are required")
-	}
-	return namedArgument{name: name, value: reference{literal: key, kind: accountReference}}, nil
+	return newArgument(name, key, accountReference)
 }
 
 func NewGroupArgument(name string, key model.GroupKey) (Argument, error) {
+	return newArgument(name, key, groupReference)
+}
+
+func newArgument(name string, key model.Key, kind parameterKind) (Argument, error) {
 	if !validSymbol(name) || key == nil {
-		return nil, fmt.Errorf("valid group argument name and key are required")
+		return nil, fmt.Errorf("valid argument name and key are required")
 	}
-	return namedArgument{name: name, value: reference{literal: key, kind: groupReference}}, nil
+	return namedArgument{name: name, value: reference{literal: key, kind: kind}}, nil
 }
 
 //sumtype:decl
@@ -60,6 +61,7 @@ type Root interface {
 type root struct {
 	profile   string
 	arguments map[string]reference
+	libraries []Library
 }
 
 func (root) root() {}
@@ -85,7 +87,9 @@ func NewRoot(profile string, arguments ...Argument) (Root, error) {
 	return root{profile: profile, arguments: values}, nil
 }
 
-func BindRoot(library Library, name string, values map[string]string, identities map[string]model.Key) (Root, error) {
+type ResolveProfile func(string) (Library, string, error)
+
+func BindRoot(library Library, name string, values map[string]string, identities map[string]model.Key, resolver ResolveProfile) (Root, error) {
 	profileKey, exists := library.localProfiles[name]
 	if !exists {
 		return nil, fmt.Errorf("missing root profile %q", name)
@@ -94,9 +98,26 @@ func BindRoot(library Library, name string, values map[string]string, identities
 	if len(parameters) != len(values) || len(parameters) == 0 && values != nil {
 		return nil, fmt.Errorf("arguments must exactly match profile parameters")
 	}
-	arguments := make([]Argument, 0, len(values))
+	arguments := make(map[string]reference, len(values))
+	var libraries []Library
 	for _, parameter := range sortedKeys(parameters) {
 		value, kind := values[parameter], parameters[parameter]
+		if kind == profileReference {
+			if resolver == nil {
+				return nil, fmt.Errorf("argument %q requires a profile resolver", parameter)
+			}
+			selected, selectedName, err := resolver(value)
+			key := selected.localProfiles[selectedName]
+			if key == "" && err == nil {
+				err = fmt.Errorf("missing profile %q", selectedName)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("argument %q selects invalid profile: %w", parameter, err)
+			}
+			arguments[parameter] = reference{profile: key, kind: kind}
+			libraries = append(libraries, selected)
+			continue
+		}
 		prefix := "account:"
 		if kind == groupReference {
 			prefix = "group:"
@@ -105,9 +126,9 @@ func BindRoot(library Library, name string, values map[string]string, identities
 		if key == nil {
 			return nil, fmt.Errorf("argument %q does not name a declared %s", parameter, prefix[:len(prefix)-1])
 		}
-		arguments = append(arguments, namedArgument{name: parameter, value: reference{literal: key, kind: kind}})
+		arguments[parameter] = reference{literal: key, kind: kind}
 	}
-	return NewRoot(name, arguments...)
+	return root{profile: profileKey, arguments: arguments, libraries: append(libraries, library)}, nil
 }
 
 func Expand(base model.Graph, library Library, roots []Root) (model.Graph, error) {
@@ -117,23 +138,29 @@ func Expand(base model.Graph, library Library, roots []Root) (model.Graph, error
 type expander struct {
 	library          Library
 	limits           expansionLimits
+	active           map[string]struct{}
 	seen             map[string]struct{}
 	contributionSeen map[string]struct{}
 	contributions    []model.Contribution
 }
 
 func expandWithLimits(base model.Graph, library Library, roots []Root, limits expansionLimits) (model.Graph, error) {
-	if len(library.profiles) == 0 {
-		return base, fmt.Errorf("invalid empty admitted library")
-	}
+	profiles := make(map[string]profileDefinition, len(library.profiles))
+	maps.Copy(profiles, library.profiles)
 	canonicalRoots := make(map[string]root, len(roots))
 	for index, candidate := range roots {
 		if candidate == nil {
 			return base, fmt.Errorf("root %d is nil", index)
 		}
 		value := candidate.rootValue()
+		for _, selected := range value.libraries {
+			maps.Copy(profiles, selected.profiles)
+		}
 		profileKey, exists := library.localProfiles[value.profile]
-		definition := library.profiles[profileKey]
+		if _, canonical := profiles[value.profile]; canonical {
+			profileKey, exists = value.profile, true
+		}
+		definition := profiles[profileKey]
 		if !exists {
 			return base, fmt.Errorf("missing root profile %q", value.profile)
 		}
@@ -143,10 +170,15 @@ func expandWithLimits(base model.Graph, library Library, roots []Root, limits ex
 		value.profile = profileKey
 		canonicalRoots[instanceKey(value.profile, value.arguments)] = value
 	}
+	library.profiles = profiles
+	if len(profiles) == 0 {
+		return base, fmt.Errorf("invalid empty admitted library")
+	}
 	keys := sortedKeys(canonicalRoots)
 	engine := expander{
 		library:          library,
 		limits:           limits,
+		active:           make(map[string]struct{}),
 		seen:             make(map[string]struct{}),
 		contributionSeen: make(map[string]struct{}),
 	}
@@ -168,26 +200,43 @@ func expandWithLimits(base model.Graph, library Library, roots []Root, limits ex
 
 func (e *expander) instantiate(profileID string, bindings map[string]reference) error {
 	key := instanceKey(profileID, bindings)
+	if _, exists := e.active[key]; exists {
+		return fmt.Errorf("dynamic profile include cycle")
+	}
 	if _, exists := e.seen[key]; exists {
 		return nil
 	}
-	if len(e.seen) >= e.limits.instances {
+	if len(e.seen)+len(e.active) >= e.limits.instances {
 		return fmt.Errorf("bound profile instance limit exceeded")
 	}
-	e.seen[key] = struct{}{}
+	e.active[key] = struct{}{}
+	defer delete(e.active, key)
 	definition := e.library.profiles[profileID]
 	children := make(map[string]root, len(definition.includes))
 	for _, include := range definition.includes {
-		arguments := make(map[string]reference, len(include.arguments))
-		for name, expression := range include.arguments {
+		target, expressions := include.profile, include.arguments
+		if include.profileParameter != "" {
+			target = bindings[include.profileParameter].profile
+			child, exists := e.library.profiles[target]
+			if !exists {
+				return fmt.Errorf("profile %s: missing selected profile", profileID)
+			}
+			var err error
+			expressions, err = admitArguments(include.sourceArguments, definition.parameters, child.parameters)
+			if err != nil {
+				return fmt.Errorf("profile %s include arguments: %w", profileID, err)
+			}
+		}
+		arguments := make(map[string]reference, len(expressions))
+		for name, expression := range expressions {
 			bound, err := bindReference(expression, bindings)
 			if err != nil {
-				return fmt.Errorf("profile %s include %s argument %s: %w", profileID, include.profile, name, err)
+				return fmt.Errorf("profile %s include %s argument %s: %w", profileID, target, name, err)
 			}
 			arguments[name] = bound
 		}
-		children[instanceKey(include.profile, arguments)] = root{
-			profile:   include.profile,
+		children[instanceKey(target, arguments)] = root{
+			profile:   target,
 			arguments: arguments,
 		}
 	}
@@ -197,7 +246,11 @@ func (e *expander) instantiate(profileID string, bindings map[string]reference) 
 			return err
 		}
 	}
-	return e.emit(definition, bindings, key)
+	if err := e.emit(definition, bindings, key); err != nil {
+		return err
+	}
+	e.seen[key] = struct{}{}
+	return nil
 }
 
 func (e *expander) emit(definition profileDefinition, bindings map[string]reference, instance string) error {
@@ -370,7 +423,7 @@ func bindReference(expression reference, bindings map[string]reference) (referen
 		return expression, nil
 	}
 	bound, exists := bindings[expression.parameter]
-	if !exists || bound.kind != expression.kind || bound.parameter != "" || bound.literal == nil {
+	if !exists || bound.kind != expression.kind || bound.parameter != "" || bound.literal == nil && bound.profile == "" {
 		return reference{}, fmt.Errorf("unresolved or wrong-kind parameter %q", expression.parameter)
 	}
 	return bound, nil
@@ -407,7 +460,7 @@ func exactBindings(parameters map[string]parameterKind, bindings map[string]refe
 	for _, name := range sortedKeys(parameters) {
 		kind := parameters[name]
 		binding, exists := bindings[name]
-		if !exists || binding.kind != kind || binding.parameter != "" || binding.literal == nil {
+		if !exists || binding.kind != kind || binding.parameter != "" || binding.literal == nil && binding.profile == "" {
 			return fmt.Errorf("missing or wrong-kind argument %q", name)
 		}
 	}
@@ -415,16 +468,7 @@ func exactBindings(parameters map[string]parameterKind, bindings map[string]refe
 }
 
 func instanceKey(profile string, bindings map[string]reference) string {
-	var builder strings.Builder
-	builder.WriteString(profile)
-	builder.WriteByte('|')
-	for _, name := range sortedKeys(bindings) {
-		builder.WriteString(name)
-		builder.WriteByte('=')
-		builder.WriteString(bindings[name].canonical())
-		builder.WriteByte(';')
-	}
-	return builder.String()
+	return canonicalBindings(profile+"|", bindings)
 }
 
 func validateExpansionLimits(graph model.Graph, instances int, limits expansionLimits) error {

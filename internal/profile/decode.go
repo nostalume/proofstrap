@@ -75,7 +75,8 @@ func admitProfile(member, id string, raw rawProfile) (profileDefinition, error) 
 		if len(raw.Parameters) > maxParameters {
 			return profileDefinition{}, diagnostic(member, id, "parameters", "Limit", "parameter limit exceeded")
 		}
-		definition.parameters = make(map[string]parameterKind, len(raw.Parameters))
+		definition.parameters = make(map[string]parameterKind, len(raw.Parameters)+1)
+		definition.parameters[""] = parameterUsed
 		for _, name := range sortedKeys(raw.Parameters) {
 			if !validSymbol(name) {
 				return profileDefinition{}, diagnostic(member, id, "parameters."+name, "InvalidValue", "invalid parameter name")
@@ -96,12 +97,22 @@ func admitProfile(member, id string, raw rawProfile) (profileDefinition, error) 
 		}
 		definition.includes = make([]includeDefinition, len(raw.Include))
 		for index, include := range raw.Include {
-			if _, err := parseSemanticReference(include.Profile); err != nil {
+			value, err := admitReference(include.Profile, profileReference, definition.parameters)
+			if target, ok := include.Profile.(string); ok {
+				_, err = parseSemanticReference(target)
+				value = reference{profile: target, kind: profileReference}
+			}
+			if err != nil {
 				return profileDefinition{}, diagnostic(member, id, fmt.Sprintf("include[%d].profile", index), "InvalidValue", err.Error())
 			}
-			definition.includes[index] = includeDefinition{
-				profile:         include.Profile,
-				sourceArguments: include.Arguments,
+			definition.includes[index] = includeDefinition{profile: value.profile,
+				profileParameter: value.parameter, sourceArguments: include.Arguments}
+			for _, argument := range include.Arguments {
+				if object, ok := argument.(map[string]any); ok && len(object) == 1 {
+					if name, ok := object["parameter"].(string); ok && definition.parameters[name] != 0 {
+						definition.parameters[name] |= parameterUsed
+					}
+				}
 			}
 		}
 	}
@@ -160,6 +171,13 @@ func admitProfile(member, id string, raw rawProfile) (profileDefinition, error) 
 	}
 	if resources == 0 && len(definition.includes) == 0 {
 		return profileDefinition{}, diagnostic(member, id, "", "InvalidValue", "profile must contribute an include or resource")
+	}
+	delete(definition.parameters, "")
+	for name, kind := range definition.parameters {
+		if kind&parameterUsed == 0 {
+			return profileDefinition{}, diagnostic(member, id, "parameters."+name, "InvalidValue", "parameter is never consumed or forwarded")
+		}
+		definition.parameters[name] = kind &^ parameterUsed
 	}
 	return definition, nil
 }
@@ -349,6 +367,9 @@ func admitMemberships(member, profile string, values []rawMembership, parameters
 func admitReference(value any, kind parameterKind, parameters map[string]parameterKind) (reference, error) {
 	switch value := value.(type) {
 	case string:
+		if kind == profileReference {
+			return reference{}, fmt.Errorf("profile_ref values must be forwarded parameters")
+		}
 		if kind == accountReference {
 			key, err := model.NewAccountKey(value)
 			if err != nil {
@@ -369,8 +390,11 @@ func admitReference(value any, kind parameterKind, parameters map[string]paramet
 		if !ok || !validSymbol(name) {
 			return reference{}, fmt.Errorf("reference parameter must be a Symbol")
 		}
-		if parameters[name] != kind {
+		if parameters[name]&^parameterUsed != kind {
 			return reference{}, fmt.Errorf("missing or wrong-kind parameter %q", name)
+		}
+		if parameters[""] == parameterUsed {
+			parameters[name] |= parameterUsed
 		}
 		return reference{parameter: name, kind: kind}, nil
 	default:
@@ -384,6 +408,8 @@ func parseParameterKind(value string) (parameterKind, bool) {
 		return accountReference, true
 	case "group_ref":
 		return groupReference, true
+	case "profile_ref":
+		return profileReference, true
 	default:
 		return 0, false
 	}

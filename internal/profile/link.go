@@ -36,6 +36,9 @@ func linkLibrary(origin string, local map[string]profileDefinition, required map
 		definition := result.profiles[key]
 		for index := range definition.includes {
 			include := &definition.includes[index]
+			if include.profileParameter != "" {
+				continue
+			}
 			reference, _ := parseSemanticReference(include.profile)
 			target, err := resolveProfileReference(reference, result, required, used)
 			if err != nil {
@@ -147,6 +150,9 @@ func validateLibrary(profiles map[string]profileDefinition) error {
 		seen := make(map[string]struct{}, len(definition.includes))
 		for index := range definition.includes {
 			include := &definition.includes[index]
+			if include.profileParameter != "" {
+				continue
+			}
 			target, exists := profiles[include.profile]
 			if !exists {
 				return diagnostic(definition.member, definition.id, fmt.Sprintf("include[%d].profile", index), "MissingReference", "missing profile "+include.profile)
@@ -185,7 +191,7 @@ func admitArguments(raw map[string]any, caller, target map[string]parameterKind)
 		if !exists {
 			return nil, fmt.Errorf("missing argument %q", name)
 		}
-		reference, err := admitReference(value, target[name], caller)
+		reference, err := admitReference(value, target[name]&^parameterUsed, caller)
 		if err != nil {
 			return nil, err
 		}
@@ -206,6 +212,9 @@ func validateIncludeCycles(profiles map[string]profileDefinition) error {
 		}
 		state[id] = 1
 		for _, include := range profiles[id].includes {
+			if include.profileParameter != "" {
+				continue
+			}
 			if err := visit(include.profile); err != nil {
 				return err
 			}
@@ -222,11 +231,16 @@ func validateIncludeCycles(profiles map[string]profileDefinition) error {
 }
 
 func canonicalArguments(arguments map[string]reference) string {
+	return canonicalBindings("", arguments)
+}
+
+func canonicalBindings(prefix string, bindings map[string]reference) string {
 	var builder strings.Builder
-	for _, name := range sortedKeys(arguments) {
+	builder.WriteString(prefix)
+	for _, name := range sortedKeys(bindings) {
 		builder.WriteString(name)
 		builder.WriteByte('=')
-		builder.WriteString(arguments[name].canonical())
+		builder.WriteString(bindings[name].canonical())
 		builder.WriteByte(';')
 	}
 	return builder.String()

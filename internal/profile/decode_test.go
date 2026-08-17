@@ -24,6 +24,24 @@ func TestDecodeLanguageCompleteMember(t *testing.T) {
 	}
 }
 
+func TestDecodeAdmitsForwardedProfileTarget(t *testing.T) {
+	data := []byte(`[profiles.workstation]
+parameters = { desktop = "profile_ref" }
+[[profiles.workstation.include]]
+profile = { parameter = "desktop" }
+`)
+	if _, err := decodeTest([]Member{{Path: "profiles/dynamic.toml", Data: data}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDecodeRejectsUnusedParameter(t *testing.T) {
+	data := []byte("[profiles.bad]\nparameters={desktop='profile_ref'}\npackages=['sway']\n")
+	if library, err := decodeTest([]Member{{Path: "profiles/bad.toml", Data: data}}); err == nil || len(library.ProfileIDs()) != 0 {
+		t.Fatalf("Decode = %#v, %v", library, err)
+	}
+}
+
 func TestDecodeLanguageInvalidFixtures(t *testing.T) {
 	t.Parallel()
 	entries, err := os.ReadDir(filepath.Join("testdata", "invalid"))

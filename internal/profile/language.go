@@ -43,10 +43,13 @@ type parameterKind uint8
 const (
 	accountReference parameterKind = iota + 1
 	groupReference
+	profileReference
+	parameterUsed parameterKind = 1 << 7
 )
 
 type reference struct {
 	literal   model.Key
+	profile   string
 	parameter string
 	kind      parameterKind
 }
@@ -54,6 +57,9 @@ type reference struct {
 func (r reference) canonical() string {
 	if r.parameter != "" {
 		return fmt.Sprintf("parameter:%d:%s", r.kind, r.parameter)
+	}
+	if r.profile != "" {
+		return r.profile
 	}
 	return r.literal.Canonical()
 }
@@ -71,9 +77,10 @@ func (r semanticReference) canonical() string {
 }
 
 type includeDefinition struct {
-	profile         string
-	sourceArguments map[string]any
-	arguments       map[string]reference
+	profile          string
+	profileParameter string
+	sourceArguments  map[string]any
+	arguments        map[string]reference
 }
 
 type serviceDefinition struct {
@@ -127,17 +134,17 @@ func (l Library) ProfileIDs() []string {
 }
 
 func (l Library) DeclaresPackage(id model.PackageID) bool {
-	if id == nil {
-		return false
-	}
-	_, exists := l.packageSymbols[id.String()]
-	return exists
+	return declares(id, l.packageSymbols)
 }
 
 func (l Library) DeclaresService(id model.ServiceID) bool {
+	return declares(id, l.serviceSymbols)
+}
+
+func declares(id interface{ String() string }, symbols map[string]struct{}) bool {
 	if id == nil {
 		return false
 	}
-	_, exists := l.serviceSymbols[id.String()]
+	_, exists := symbols[id.String()]
 	return exists
 }

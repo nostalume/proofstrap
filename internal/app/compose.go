@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
-	"sort"
+	"strings"
 
 	"github.com/nostalume/proofstrap/internal/binding"
 	"github.com/nostalume/proofstrap/internal/config"
@@ -42,61 +42,79 @@ func resolveComposition(ctx context.Context, target config.Target, sources []pac
 		}
 		aliases[declared.Alias] = source
 	}
-
-	type roots struct {
-		source pack.Source
-		values []config.Profile
+	used := make(map[string]struct{}, len(aliases))
+	resolved := make(map[pack.Digest]pack.Pack)
+	resolve := func(source pack.Source) (pack.Pack, error) {
+		if value, exists := resolved[source.Digest()]; exists {
+			return value, nil
+		}
+		value, err := pack.Resolve(ctx, source, sources)
+		resolved[source.Digest()] = value
+		return value, err
 	}
-	semanticRoots := make(map[pack.Digest]roots)
+	resolveProfile := func(value string) (profile.Library, string, error) {
+		alias, name, ok := strings.Cut(value, ":")
+		if !ok || strings.Contains(name, ":") || !profile.IsSymbol(alias) || !profile.IsSymbol(name) {
+			return profile.Library{}, "", fmt.Errorf("profile reference must be source-alias:ProfileID")
+		}
+		source, exists := aliases[alias]
+		if !exists || source.Kind() != pack.Semantic {
+			return profile.Library{}, "", fmt.Errorf("profile source %q is unavailable or not semantic", alias)
+		}
+		packValue, err := resolve(source)
+		if err != nil {
+			return profile.Library{}, "", err
+		}
+		used[alias] = struct{}{}
+		return packValue.Library(), name, nil
+	}
+
+	graph := target.Direct()
+	if graph.Nodes() == nil {
+		graph = model.EmptyGraph()
+	}
+	identities := make(map[string]model.Key, len(graph.Nodes()))
+	for _, node := range graph.Nodes() {
+		identities[node.Key().Canonical()] = node.Key()
+	}
+	bound := make([]profile.Root, 0, len(target.Profiles()))
 	for _, selected := range target.Profiles() {
 		source, exists := aliases[selected.Source]
 		if !exists || source.Kind() != pack.Semantic {
 			return model.Graph{}, nil, fmt.Errorf("profile source %q is unavailable or not semantic", selected.Source)
 		}
-		group := semanticRoots[source.Digest()]
-		semanticRoots[source.Digest()] = roots{source: source, values: append(group.values, selected)}
-	}
-	digests := make([]pack.Digest, 0, len(semanticRoots))
-	for digest := range semanticRoots {
-		digests = append(digests, digest)
-	}
-	sort.Slice(digests, func(i, j int) bool { return digests[i].String() < digests[j].String() })
-	graph := target.Direct()
-	if graph.Nodes() == nil {
-		graph = model.EmptyGraph()
-	}
-	nodes := graph.Nodes()
-	identities := make(map[string]model.Key, len(nodes))
-	for _, node := range nodes {
-		identities[node.Key().Canonical()] = node.Key()
-	}
-	for _, digest := range digests {
-		group := semanticRoots[digest]
-		resolved, err := pack.Resolve(ctx, group.source, sources)
+		resolved, err := resolve(source)
 		if err != nil {
 			return model.Graph{}, nil, err
 		}
-		roots := make([]profile.Root, 0, len(group.values))
-		for _, selected := range group.values {
-			root, bindErr := profile.BindRoot(resolved.Library(), selected.Name, selected.Arguments, identities)
-			if bindErr != nil {
-				return model.Graph{}, nil, &config.Diagnostic{Category: "InvalidValue", Field: "profiles." + selected.Source + ":" + selected.Name + ".arguments", Detail: bindErr.Error()}
-			}
-			roots = append(roots, root)
-		}
-		graph, err = profile.Expand(graph, resolved.Library(), roots)
+		root, err := profile.BindRoot(resolved.Library(), selected.Name, selected.Arguments, identities, resolveProfile)
 		if err != nil {
-			return model.Graph{}, nil, err
+			return model.Graph{}, nil, &config.Diagnostic{Category: "InvalidValue", Field: "profiles." + selected.Source + ":" + selected.Name + ".arguments", Detail: err.Error()}
 		}
+		used[selected.Source] = struct{}{}
+		bound = append(bound, root)
 	}
-
-	catalogues := make([]binding.Catalogue, 0, len(target.Bindings()))
 	for _, selected := range target.Bindings() {
 		source, exists := aliases[selected.Source]
 		if !exists || source.Kind() != pack.Binding {
 			return model.Graph{}, nil, fmt.Errorf("binding source %q is unavailable or not binding", selected.Source)
 		}
-		catalogue, err := pack.ResolveCatalogue(ctx, source, sources)
+		used[selected.Source] = struct{}{}
+	}
+	for _, source := range target.Sources() {
+		if _, exists := used[source.Alias]; !exists {
+			return model.Graph{}, nil, &config.Diagnostic{Category: "UnusedSource", Field: "sources." + source.Alias, Detail: "source alias is unused"}
+		}
+	}
+	if len(bound) != 0 {
+		var err error
+		if graph, err = profile.Expand(graph, profile.Library{}, bound); err != nil {
+			return model.Graph{}, nil, err
+		}
+	}
+	catalogues := make([]binding.Catalogue, 0, len(target.Bindings()))
+	for _, selected := range target.Bindings() {
+		catalogue, err := pack.ResolveCatalogue(ctx, aliases[selected.Source], sources)
 		if err != nil {
 			return model.Graph{}, nil, err
 		}

@@ -52,7 +52,7 @@ func TestBindRootDerivesScalarKindsFromExactLibrary(t *testing.T) {
 	library := decodeComplete(t)
 	base, account, group := identityBase(t, "alice", "audio")
 	identities := map[string]model.Key{account.Canonical(): account, group.Canonical(): group}
-	root, err := BindRoot(library, "desktop", map[string]string{"account": "alice", "group": "audio"}, identities)
+	root, err := BindRoot(library, "desktop", map[string]string{"account": "alice", "group": "audio"}, identities, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,10 +64,147 @@ func TestBindRootDerivesScalarKindsFromExactLibrary(t *testing.T) {
 		"incomplete": {"account": "alice"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if root, err := BindRoot(library, "desktop", values, identities); err == nil || root != nil {
+			if root, err := BindRoot(library, "desktop", values, identities, nil); err == nil || root != nil {
 				t.Fatalf("BindRoot = %#v, %v", root, err)
 			}
 		})
+	}
+}
+
+func TestExpandSelectsExactProfileFromProfileReference(t *testing.T) {
+	caller, err := Decode("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.workstation]
+parameters = { desktop = "profile_ref" }
+[[profiles.workstation.include]]
+profile = { parameter = "desktop" }
+`)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := Decode("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.sway]
+packages = ["sway"]
+`)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, definition := range selected.profiles {
+		caller.profiles[key] = definition
+	}
+	root := root{profile: "workstation", arguments: map[string]reference{
+		"desktop": {profile: selected.localProfiles["sway"], kind: profileReference},
+	}}
+	graph, err := Expand(model.EmptyGraph(), caller, []Root{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := graphKeys(graph); !reflect.DeepEqual(got, []string{"package:sway"}) {
+		t.Fatalf("keys = %v", got)
+	}
+}
+
+func TestBindRootResolvesProfileReferenceWithoutAliasLeakage(t *testing.T) {
+	caller, err := Decode("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.workstation]
+parameters = { desktop = "profile_ref" }
+[[profiles.workstation.include]]
+profile = { parameter = "desktop" }
+`)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := Decode("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.sway]
+packages = ["sway"]
+`)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := BindRoot(caller, "workstation", map[string]string{"desktop": "extra:sway"}, nil,
+		func(value string) (Library, string, error) { return selected, "sway", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := Expand(model.EmptyGraph(), caller, []Root{root})
+	if err != nil || !reflect.DeepEqual(graphKeys(graph), []string{"package:sway"}) {
+		t.Fatalf("Expand = %v, %v", graphKeys(graph), err)
+	}
+}
+
+func TestExpandChecksDynamicSignatureAndCycleAtomically(t *testing.T) {
+	selected, err := Decode("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.home]
+parameters = { account = "account_ref" }
+homes = [{ account = { parameter = "account" } }]
+`)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, err := Decode("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.good]
+parameters = { account = "account_ref", choice = "profile_ref" }
+[[profiles.good.include]]
+profile = { parameter = "choice" }
+[profiles.good.include.arguments]
+account = { parameter = "account" }
+
+[profiles.bad]
+parameters = { choice = "profile_ref" }
+[[profiles.bad.include]]
+profile = { parameter = "choice" }
+`)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, account, _ := identityBase(t, "alice", "users")
+	for key, definition := range selected.profiles {
+		caller.profiles[key] = definition
+	}
+	choice := reference{profile: selected.localProfiles["home"], kind: profileReference}
+	good := root{profile: "good", arguments: map[string]reference{
+		"account": {literal: account, kind: accountReference}, "choice": choice,
+	}}
+	if graph, err := Expand(base, caller, []Root{good}); err != nil || !contains(graphKeys(graph), "home:alice") {
+		t.Fatalf("good expansion = %v, %v", graphKeys(graph), err)
+	}
+	bad := root{profile: "bad", arguments: map[string]reference{"choice": choice}}
+	if graph, err := Expand(base, caller, []Root{bad}); err == nil || !reflect.DeepEqual(graphProjection(graph), graphProjection(base)) {
+		t.Fatalf("signature failure = %#v, %v", graph, err)
+	}
+
+	cycle, err := Decode("cycle", []Member{{Path: "profiles/cycle.toml", Data: []byte(`[profiles.loop]
+parameters = { next = "profile_ref" }
+[[profiles.loop.include]]
+profile = { parameter = "next" }
+[profiles.loop.include.arguments]
+next = { parameter = "next" }
+`)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := cycle.localProfiles["loop"]
+	cyclicRoot := root{profile: "loop", arguments: map[string]reference{"next": {profile: loop, kind: profileReference}}}
+	if graph, err := Expand(base, cycle, []Root{cyclicRoot}); err == nil || !reflect.DeepEqual(graphProjection(graph), graphProjection(base)) {
+		t.Fatalf("cycle failure = %#v, %v", graph, err)
+	}
+	multi, err := Decode("multi", []Member{{Path: "profiles/multi.toml", Data: []byte(`[profiles.left]
+parameters = { left = "profile_ref", right = "profile_ref" }
+[[profiles.left.include]]
+profile = { parameter = "right" }
+[profiles.left.include.arguments]
+left = { parameter = "left" }
+right = { parameter = "right" }
+[profiles.right]
+parameters = { left = "profile_ref", right = "profile_ref" }
+[[profiles.right.include]]
+profile = { parameter = "left" }
+[profiles.right.include.arguments]
+left = { parameter = "left" }
+right = { parameter = "right" }
+`)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, right := multi.localProfiles["left"], multi.localProfiles["right"]
+	multiRoot := root{profile: "left", arguments: map[string]reference{
+		"left": {profile: left, kind: profileReference}, "right": {profile: right, kind: profileReference},
+	}}
+	if graph, err := Expand(base, multi, []Root{multiRoot}); err == nil || !reflect.DeepEqual(graphProjection(graph), graphProjection(base)) {
+		t.Fatalf("multi-cycle failure = %#v, %v", graph, err)
 	}
 }
 

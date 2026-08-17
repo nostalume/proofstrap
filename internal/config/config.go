@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -87,7 +88,7 @@ func (t Target) Profiles() []Profile {
 	}
 	result := append([]Profile(nil), t.state.profiles...)
 	for index := range result {
-		result[index].Arguments = cloneMap(result[index].Arguments)
+		result[index].Arguments = maps.Clone(result[index].Arguments)
 	}
 	return result
 }
@@ -194,7 +195,7 @@ func Decode(origin string, data []byte) (Target, error) {
 	if err != nil {
 		return Target{}, err
 	}
-	bindings, used, err := admitBindings(raw.Bindings, sources)
+	bindings, err := admitBindings(raw.Bindings, sources)
 	if err != nil {
 		return Target{}, err
 	}
@@ -202,12 +203,9 @@ func Decode(origin string, data []byte) (Target, error) {
 	if err != nil {
 		return Target{}, err
 	}
-	profiles, profileUses, err := admitProfiles(raw.Profiles, sources)
+	profiles, err := admitProfiles(raw.Profiles, sources)
 	if err != nil {
 		return Target{}, err
-	}
-	for alias := range profileUses {
-		used[alias] = struct{}{}
 	}
 	packages, services, via, err := admitNative(raw, accounts)
 	if err != nil {
@@ -231,11 +229,6 @@ func Decode(origin string, data []byte) (Target, error) {
 	}
 	if len(profiles) == 0 && len(direct.Nodes()) == 0 && len(packages) == 0 && len(services) == 0 {
 		return Target{}, diagnostic("InvalidValue", "", "config must request desired state")
-	}
-	for _, source := range sources {
-		if _, ok := used[source.Alias]; !ok {
-			return Target{}, diagnostic("UnusedSource", "sources."+source.Alias, "source alias is unused")
-		}
 	}
 	return Target{state: &targetState{
 		sources: sources, bindings: bindings, profiles: profiles,
@@ -274,21 +267,21 @@ func admitSources(raw map[string]string) ([]Source, error) {
 	return result, nil
 }
 
-func admitBindings(raw []string, sources []Source) ([]Binding, map[string]struct{}, error) {
+func admitBindings(raw []string, sources []Source) ([]Binding, error) {
 	used := make(map[string]struct{})
 	if raw != nil && len(raw) == 0 {
-		return nil, nil, diagnostic("InvalidValue", "bindings", "explicit empty bindings list")
+		return nil, diagnostic("InvalidValue", "bindings", "explicit empty bindings list")
 	}
 	if len(raw) > maxSources {
-		return nil, nil, diagnostic("Limit", "bindings", "binding selection limit exceeded")
+		return nil, diagnostic("Limit", "bindings", "binding selection limit exceeded")
 	}
 	known := sourceSet(sources)
 	for index, alias := range raw {
 		if !profile.IsSymbol(alias) {
-			return nil, nil, diagnostic("InvalidValue", fmt.Sprintf("bindings[%d]", index), "invalid source alias")
+			return nil, diagnostic("InvalidValue", fmt.Sprintf("bindings[%d]", index), "invalid source alias")
 		}
 		if _, ok := known[alias]; !ok {
-			return nil, nil, diagnostic("MissingReference", fmt.Sprintf("bindings[%d]", index), "source alias is not declared")
+			return nil, diagnostic("MissingReference", fmt.Sprintf("bindings[%d]", index), "source alias is not declared")
 		}
 		used[alias] = struct{}{}
 	}
@@ -297,16 +290,15 @@ func admitBindings(raw []string, sources []Source) ([]Binding, map[string]struct
 	for index, alias := range aliases {
 		result[index] = Binding{Source: alias}
 	}
-	return result, used, nil
+	return result, nil
 }
 
-func admitProfiles(raw []rawProfile, sources []Source) ([]Profile, map[string]struct{}, error) {
-	used := make(map[string]struct{})
+func admitProfiles(raw []rawProfile, sources []Source) ([]Profile, error) {
 	if raw != nil && len(raw) == 0 {
-		return nil, nil, diagnostic("InvalidValue", "profiles", "explicit empty profiles list")
+		return nil, diagnostic("InvalidValue", "profiles", "explicit empty profiles list")
 	}
 	if len(raw) > maxProfiles {
-		return nil, nil, diagnostic("Limit", "profiles", "root profile limit exceeded")
+		return nil, diagnostic("Limit", "profiles", "root profile limit exceeded")
 	}
 	known := sourceSet(sources)
 	values := make(map[string]Profile, len(raw))
@@ -314,25 +306,24 @@ func admitProfiles(raw []rawProfile, sources []Source) ([]Profile, map[string]st
 		field := fmt.Sprintf("profiles[%d]", index)
 		alias, name, ok := splitProfileReference(item.Profile)
 		if !ok {
-			return nil, nil, diagnostic("InvalidValue", field+".profile", "profile must be source-alias:ProfileID")
+			return nil, diagnostic("InvalidValue", field+".profile", "profile must be source-alias:ProfileID")
 		}
 		if _, exists := known[alias]; !exists {
-			return nil, nil, diagnostic("MissingReference", field+".profile", "source alias is not declared")
+			return nil, diagnostic("MissingReference", field+".profile", "source alias is not declared")
 		}
 		arguments, key, err := admitArguments(field+".arguments", item.Arguments)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		canonical := alias + ":" + name + "|" + key
 		values[canonical] = Profile{Source: alias, Name: name, Arguments: arguments}
-		used[alias] = struct{}{}
 	}
 	keys := sortedKeys(values)
 	result := make([]Profile, 0, len(keys))
 	for _, key := range keys {
 		result = append(result, values[key])
 	}
-	return result, used, nil
+	return result, nil
 }
 
 func admitArguments(field string, raw map[string]string) (map[string]string, string, error) {
@@ -353,24 +344,13 @@ func admitArguments(field string, raw map[string]string) (map[string]string, str
 			return nil, "", diagnostic("InvalidValue", field+"."+name, "invalid argument name")
 		}
 		value := raw[name]
-		if _, err := model.NewAccountKey(value); err != nil {
-			return nil, "", diagnostic("InvalidValue", field+"."+name, err.Error())
+		if value == "" {
+			return nil, "", diagnostic("InvalidValue", field+"."+name, "argument value must be non-empty")
 		}
 		result[name] = value
 		key.WriteString(name + "=" + value + ";")
 	}
 	return result, key.String(), nil
-}
-
-func cloneMap[K comparable, V any](values map[K]V) map[K]V {
-	if values == nil {
-		return nil
-	}
-	result := make(map[K]V, len(values))
-	for key, value := range values {
-		result[key] = value
-	}
-	return result
 }
 
 func splitProfileReference(value string) (string, string, bool) {

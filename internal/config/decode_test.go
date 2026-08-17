@@ -27,10 +27,8 @@ func TestDecodeFixtures(t *testing.T) {
 	if _, err := config.Decode("roots.toml", rootsFixture); err != nil {
 		t.Fatalf("valid fixture: %v", err)
 	}
-	target, err := config.Decode("unused-source.toml", unusedSourceFixture)
-	var diagnostic *config.Diagnostic
-	if target != (config.Target{}) || !errors.As(err, &diagnostic) || diagnostic.Category != "UnusedSource" {
-		t.Fatalf("invalid fixture = %#v, %#v", target, err)
+	if _, err := config.Decode("unused-source.toml", unusedSourceFixture); err != nil {
+		t.Fatalf("deferred source use: %v", err)
 	}
 }
 
@@ -137,6 +135,22 @@ linux = "` + digest + `"
 	}
 }
 
+func TestDecodeDefersProfileReferenceArgumentsAndSourceUse(t *testing.T) {
+	data := []byte(`schema = 2
+profiles = [{ profile = "core:workstation", arguments = { desktop = "extra:sway" } }]
+[sources]
+core = "` + digest + `"
+extra = "` + digest + `"
+`)
+	target, err := config.Decode("target.toml", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := target.Profiles()[0].Arguments["desktop"]; got != "extra:sway" {
+		t.Fatalf("desktop = %q", got)
+	}
+}
+
 func TestDecodeDeduplicatesEqualSelectionsCanonically(t *testing.T) {
 	data := []byte(`schema=2
 bindings=["linux", "linux"]
@@ -166,7 +180,6 @@ core="` + digest + `"`, "InvalidValue"},
 		{"empty-bindings", "schema=2\nbindings=[]\n", "InvalidValue"},
 		{"empty-profiles", "schema=2\nprofiles=[]\n", "InvalidValue"},
 		{"missing-source", "schema=2\nbindings=['core']\n", "MissingReference"},
-		{"unused-source", "schema=2\nprofiles=[{profile='core:server'}]\n[sources]\ncore='" + digest + "'\nunused='" + digest + "'\n", "UnusedSource"},
 		{"bad-profile-reference", "schema=2\nprofiles=[{profile='server'}]\n", "InvalidValue"},
 		{"nested-argument", "schema=2\nprofiles=[{profile='core:server',arguments={owner={account='alice'}}}]\n[sources]\ncore='" + digest + "'\n", "Syntax"},
 		{"empty-argument", "schema=2\nprofiles=[{profile='core:server',arguments={}}]\n[sources]\ncore='" + digest + "'\n", "InvalidValue"},
