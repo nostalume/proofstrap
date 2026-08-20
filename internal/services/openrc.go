@@ -101,7 +101,7 @@ func (selected *Selected) observeOpenRC(ctx context.Context, desired []Demand) (
 	if err != nil || !result.Started {
 		return nil, commandFailure("observe OpenRC services", result, err)
 	}
-	if result.ExitCode != 0 || len(result.Stderr) != 0 || len(result.Stdout) == 0 || len(result.Stdout) > maxObservationBytes {
+	if result.ExitCode != 0 || len(result.Stderr) != 0 || len(result.Stdout) > maxObservationBytes {
 		return nil, fmt.Errorf("OpenRC status output is invalid: started=%t exit=%d stdout-bytes=%d stderr=%q", result.Started, result.ExitCode, len(result.Stdout), result.Stderr)
 	}
 	statuses, err := parseOpenRCStatus(result.Stdout)
@@ -123,9 +123,14 @@ func (selected *Selected) observeOpenRC(ctx context.Context, desired []Demand) (
 			records[unit] = unitRecord{id: unit, load: "not-found"}
 			continue
 		}
-		state, exists := statuses[unit]
-		if !exists {
-			return nil, fmt.Errorf("OpenRC status omitted service %q", unit)
+		state := statuses[unit]
+		if state == "" {
+			status, runErr := selected.effects.run(ctx, selected.evidence.tool, []string{unit, "status"}, nil)
+			states := map[int]string{0: "started", 3: "stopped", 4: "stopping", 8: "starting", 16: "inactive", 32: "crashed"}
+			state = states[status.ExitCode]
+			if runErr != nil || !status.Started || len(status.Stdout)+len(status.Stderr) > maxObservationBytes || state == "" {
+				return nil, commandFailure("observe OpenRC service "+unit, status, runErr)
+			}
 		}
 		persistence := "disabled"
 		if len(file.runlevels) == 1 && file.runlevels[0] == "default" {
@@ -140,7 +145,10 @@ func (selected *Selected) observeOpenRC(ctx context.Context, desired []Demand) (
 }
 
 func parseOpenRCStatus(data []byte) (map[string]string, error) {
-	if len(data) == 0 || data[len(data)-1] != '\n' {
+	if len(data) == 0 {
+		return map[string]string{}, nil
+	}
+	if data[len(data)-1] != '\n' {
 		return nil, fmt.Errorf("OpenRC status is not newline terminated")
 	}
 	result := make(map[string]string)

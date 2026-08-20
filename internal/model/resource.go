@@ -252,12 +252,10 @@ func NewHomeMode(account AccountKey, mode uint16) (Resource, error) {
 	}
 	return homeModeResource{key: homeModeKey{account: value}, mode: mode}, nil
 }
-func (r homeModeResource) Key() Key        { return r.key }
-func (homeModeResource) resource()         {}
-func (r homeModeResource) desired() string { return fmt.Sprintf("%04o", r.mode) }
-func (r homeModeResource) dependencies() []Key {
-	return []Key{homeKey{account: r.key.account}}
-}
+func (r homeModeResource) Key() Key                { return r.key }
+func (homeModeResource) resource()                 {}
+func (r homeModeResource) desired() string         { return fmt.Sprintf("%04o", r.mode) }
+func (r homeModeResource) dependencies() []Key     { return []Key{homeKey{account: r.key.account}} }
 func (homeModeResource) coordinates() []coordinate { return nil }
 
 type accountLockResource struct{ key accountLockKey }
@@ -306,12 +304,10 @@ func NewMembership(account AccountKey, group GroupKey, present bool) (Resource, 
 	}
 	return membershipResource{key: membershipKey{account: accountValue, group: groupValue}, present: present}, nil
 }
-func (r membershipResource) Key() Key        { return r.key }
-func (membershipResource) resource()         {}
-func (r membershipResource) desired() string { return strconv.FormatBool(r.present) }
-func (r membershipResource) dependencies() []Key {
-	return []Key{r.key.account, r.key.group}
-}
+func (r membershipResource) Key() Key                { return r.key }
+func (membershipResource) resource()                 {}
+func (r membershipResource) desired() string         { return strconv.FormatBool(r.present) }
+func (r membershipResource) dependencies() []Key     { return []Key{r.key.account, r.key.group} }
 func (membershipResource) coordinates() []coordinate { return nil }
 
 type hostnameResource struct{ value string }
@@ -343,10 +339,7 @@ func (timezoneResource) dependencies() []Key       { return nil }
 func (timezoneResource) coordinates() []coordinate { return nil }
 
 func validAbsolutePath(value string) bool {
-	return strings.HasPrefix(value, "/") &&
-		value != "/" &&
-		!strings.ContainsRune(value, 0) &&
-		path.Clean(value) == value
+	return strings.HasPrefix(value, "/") && value != "/" && !strings.ContainsRune(value, 0) && path.Clean(value) == value
 }
 
 func validHostname(value string) bool {

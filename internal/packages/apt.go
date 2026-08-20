@@ -571,11 +571,11 @@ func parseAptInstallLine(value, nativeArch string) (aptPreviewInstall, error) {
 		}
 		old, rest = rest[1:end], rest[end+2:]
 	}
-	candidate, err := aptCandidateVersion(rest)
+	id, version, err := aptCandidateID(id, rest)
 	if err != nil {
 		return aptPreviewInstall{}, err
 	}
-	return aptPreviewInstall{id: id, old: old, candidate: candidate}, nil
+	return aptPreviewInstall{id: id, old: old, candidate: version}, nil
 }
 
 func parseAptCandidateLine(value, nativeArch string) (aptPackageID, string, error) {
@@ -587,19 +587,34 @@ func parseAptCandidateLine(value, nativeArch string) (aptPackageID, string, erro
 	if err != nil || id.version != "" {
 		return aptPackageID{}, "", fmt.Errorf("malformed Apt Conf identity")
 	}
-	version, err := aptCandidateVersion(rest)
-	return id, version, err
+	return aptCandidateID(id, rest)
 }
 
-func aptCandidateVersion(value string) (string, error) {
+func aptCandidateID(id aptPackageID, value string) (aptPackageID, string, error) {
+	version, arch, err := aptCandidate(value)
+	if err != nil {
+		return id, "", err
+	}
+	if id.explicitArch && id.arch != arch {
+		return aptPackageID{}, "", fmt.Errorf("Apt candidate architecture differs from request")
+	}
+	id.arch = arch
+	return id, version, nil
+}
+
+func aptCandidate(value string) (string, string, error) {
 	if len(value) < 4 || value[0] != '(' || value[len(value)-1] != ')' {
-		return "", fmt.Errorf("malformed Apt candidate")
+		return "", "", fmt.Errorf("malformed Apt candidate")
 	}
 	fields := strings.Fields(value[1 : len(value)-1])
-	if len(fields) < 2 || !validAptVersion(fields[0]) {
-		return "", fmt.Errorf("malformed Apt candidate version")
+	last := ""
+	if len(fields) != 0 {
+		last = fields[len(fields)-1]
 	}
-	return fields[0], nil
+	if len(fields) < 2 || !validAptVersion(fields[0]) || len(last) < 3 || last[0] != '[' || last[len(last)-1] != ']' || !validAptArch(last[1:len(last)-1]) {
+		return "", "", fmt.Errorf("malformed Apt candidate")
+	}
+	return fields[0], last[1 : len(last)-1], nil
 }
 
 func parseAptRemoveLine(value, nativeArch string) (aptPackageID, string, error) {

@@ -131,7 +131,7 @@ func zypperTransactionArgs(preview bool, desired []string) []string {
 		args = append(args, "--dry-run")
 	}
 	args = append(args,
-		"--details", "--no-recommends", "--force", "--no-force-resolution",
+		"--details", "--no-recommends", "--no-force-resolution",
 		"--no-allow-downgrade", "--no-allow-name-change", "--no-allow-arch-change", "--no-allow-vendor-change", "--",
 	)
 	return append(args, desired...)
@@ -159,8 +159,8 @@ func parseRPMRows(data []byte) ([]rpmRecord, error) {
 		if name == "gpg-pubkey" {
 			continue
 		}
-		decoded := make([]string, 0, 4)
-		for _, index := range []int{2, 3, 4, 5} {
+		decoded := make([]string, 0, 3)
+		for _, index := range []int{2, 3, 4} {
 			value, err := strconv.Unquote(fields[index])
 			if err != nil {
 				return nil, fmt.Errorf("malformed RPM JSON field: %w", err)
@@ -171,9 +171,17 @@ func parseRPMRows(data []byte) ([]rpmRecord, error) {
 		if err != nil {
 			return nil, fmt.Errorf("malformed RPM epoch %q", fields[1])
 		}
+		rawVendor := fields[5]
+		if rawVendor == "null" || rawVendor == "(none)" {
+			rawVendor = `""`
+		}
+		vendor, err := strconv.Unquote(rawVendor)
+		if err != nil {
+			return nil, fmt.Errorf("malformed RPM JSON field: %w", err)
+		}
 		row := rpmRecord{
 			name: name, epoch: strconv.FormatUint(epoch, 10), version: decoded[0],
-			release: decoded[1], arch: decoded[2], vendor: decoded[3],
+			release: decoded[1], arch: decoded[2], vendor: vendor,
 		}
 		if row.name == "" || row.version == "" || row.release == "" || row.arch == "" {
 			return nil, fmt.Errorf("incomplete RPM query row")

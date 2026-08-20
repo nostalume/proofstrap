@@ -142,7 +142,9 @@ func dnf5StoreArgs(store string, desired []string, cacheOnly bool) []string {
 	return append(args, desired...)
 }
 
-func dnf5ReplayArgs(store string) []string { return []string{"--assumeyes", "replay", store} }
+func dnf5ReplayArgs(store string) []string {
+	return []string{"--assumeyes", "--setopt=reposdir=" + store, "replay", store}
+}
 
 func dnf5TransactionPath(directory string) string {
 	return filepath.Join(directory, dnf5TransactionFile)
@@ -221,6 +223,9 @@ func (behavior dnf5Behavior) Preview(ctx context.Context, evidence proof, observ
 	}
 	if err := validateDNF5Desired(desiredFrom(observation)); err != nil {
 		return Offer{}, err
+	}
+	if len(unresolvedFrom(observation)) == 0 {
+		return newOffer(nil)
 	}
 	if behavior.files.mkdirTemp == nil || behavior.files.readBounded == nil || behavior.files.removeAll == nil {
 		return Offer{}, fmt.Errorf("dnf5 filesystem effects are required")

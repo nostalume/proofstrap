@@ -2,6 +2,7 @@ package packages
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -140,20 +141,10 @@ func (offer Offer) deltas() []Delta {
 	}
 	return offer.state.deltas
 }
-func (offer Offer) Deltas() []Delta {
-	return append([]Delta(nil), offer.deltas()...)
-}
+func (offer Offer) Deltas() []Delta { return append([]Delta(nil), offer.deltas()...) }
 
 func (offer Offer) equal(other Offer) bool {
-	if offer.state == nil || other.state == nil || len(offer.state.deltas) != len(other.state.deltas) {
-		return false
-	}
-	for index, delta := range offer.state.deltas {
-		if delta != other.state.deltas[index] {
-			return false
-		}
-	}
-	return true
+	return offer.state != nil && other.state != nil && slices.Equal(offer.state.deltas, other.state.deltas)
 }
 
 type decisionState struct {

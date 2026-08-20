@@ -2,6 +2,7 @@ package packages
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -195,23 +196,8 @@ func (inventory inventory) roots() []string {
 }
 
 func (inventory inventory) equal(other inventory) bool {
-	if inventory.state == nil || other.state == nil {
-		return false
-	}
-	if len(inventory.state.installed) != len(other.state.installed) || len(inventory.state.roots) != len(other.state.roots) {
-		return false
-	}
-	for index, record := range inventory.state.installed {
-		if record != other.state.installed[index] {
-			return false
-		}
-	}
-	for index, root := range inventory.state.roots {
-		if root != other.state.roots[index] {
-			return false
-		}
-	}
-	return true
+	return inventory.state != nil && other.state != nil &&
+		slices.Equal(inventory.state.installed, other.state.installed) && slices.Equal(inventory.state.roots, other.state.roots)
 }
 
 type demandState uint8
@@ -281,16 +267,8 @@ func (observation Observation) demands() []demand {
 }
 
 func (observation Observation) equal(other Observation) bool {
-	if observation.state == nil || other.state == nil || !observation.state.inventory.equal(other.state.inventory) ||
-		len(observation.state.demands) != len(other.state.demands) {
-		return false
-	}
-	for index, demand := range observation.state.demands {
-		if demand != other.state.demands[index] {
-			return false
-		}
-	}
-	return true
+	return observation.state != nil && other.state != nil && observation.state.inventory.equal(other.state.inventory) &&
+		slices.Equal(observation.state.demands, other.state.demands)
 }
 
 func verifyObservationTransition(before Observation, offer Offer, after Observation) ([]Delta, error) {

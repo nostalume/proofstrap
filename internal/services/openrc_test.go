@@ -72,7 +72,11 @@ func (fixture *openRCFixture) run(_ context.Context, tool linux.Identity, args [
 	if reflect.DeepEqual(args, []string{"--format", "ini", "--servicelist"}) {
 		var output strings.Builder
 		for _, unit := range []string{"sshd"} {
-			output.WriteString(unit + " =  " + fixture.status[unit] + " \n")
+			state, exists := fixture.status[unit]
+			if !exists {
+				continue
+			}
+			output.WriteString(unit + " =  " + state + " \n")
 			if fixture.status[unit] == fixture.transition && fixture.settle > 0 {
 				fixture.settle--
 				if fixture.settle == 0 {
@@ -91,6 +95,14 @@ func (fixture *openRCFixture) run(_ context.Context, tool linux.Identity, args [
 		return linux.Result{Started: true, ExitCode: 0}, nil
 	}
 	if filepath.Base(tool.Path) == "rc-service" && len(args) == 2 {
+		if args[1] == "status" {
+			state, exists := fixture.status[args[0]]
+			if !exists {
+				state = "stopped"
+			}
+			codes := map[string]int{"started": 0, "stopped": 3, "stopping": 4, "starting": 8, "inactive": 16, "crashed": 32}
+			return linux.Result{Started: true, ExitCode: codes[state]}, nil
+		}
 		if !fixture.noChange && args[1] == "start" {
 			fixture.status[args[0]] = "started"
 			if fixture.settle > 0 {
@@ -107,6 +119,22 @@ func (fixture *openRCFixture) run(_ context.Context, tool linux.Identity, args [
 		return result, nil
 	}
 	return linux.Result{}, errors.New("unexpected OpenRC call")
+}
+
+func TestOpenRCOmittedUnassignedServiceIsStopped(t *testing.T) {
+	fixture := newOpenRCFixture()
+	delete(fixture.status, "sshd")
+	selected, err := selectOpenRCSystem(testContext(t), fixture.system(), fixture.openrc())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, _ := binding.NewServiceBackendID("openrc")
+	id, _ := binding.NewServiceID(backend, "sshd")
+	demand, _ := NewDemand(id, model.SystemServiceTarget(), model.EnabledIntent(), model.RunningIntent())
+	planned, err := selected.Plan(testContext(t), demand)
+	if err != nil || len(planned.Operations()) != 2 {
+		t.Fatalf("OpenRC plan = %#v, %v; want enable and start", planned, err)
+	}
 }
 
 func TestOpenRCRuntimeApplySettlesBoundedTransientState(t *testing.T) {

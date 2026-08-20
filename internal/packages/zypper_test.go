@@ -68,7 +68,7 @@ func TestZypperTransactionArgumentsAreRestrictiveAndStable(t *testing.T) {
 	desired := []string{"a", "virtual >= 2"}
 	wantPreview := []string{
 		"--xmlout", "--non-interactive", "--no-refresh", "install", "--dry-run",
-		"--details", "--no-recommends", "--force", "--no-force-resolution",
+		"--details", "--no-recommends", "--no-force-resolution",
 		"--no-allow-downgrade", "--no-allow-name-change", "--no-allow-arch-change", "--no-allow-vendor-change",
 		"--", "a", "virtual >= 2",
 	}
@@ -94,7 +94,7 @@ func TestZypperPreviewForcesOnlyUnresolvedDemands(t *testing.T) {
 	})
 	want := []string{
 		"--xmlout", "--non-interactive", "--no-refresh", "install", "--dry-run",
-		"--details", "--no-recommends", "--force", "--no-force-resolution",
+		"--details", "--no-recommends", "--no-force-resolution",
 		"--no-allow-downgrade", "--no-allow-name-change", "--no-allow-arch-change", "--no-allow-vendor-change",
 		"--", "dependency", "missing",
 	}
@@ -331,6 +331,16 @@ func TestParseRPMRowsIgnoresKeyPseudoPackages(t *testing.T) {
 	rows, err := parseRPMRows(data)
 	if err != nil || len(rows) != 1 || rows[0].name != "rpm" {
 		t.Fatalf("rows = %#v, %v", rows, err)
+	}
+}
+
+func TestParseRPMRowsAcceptsMissingVendor(t *testing.T) {
+	for _, vendor := range []string{"null", "(none)"} {
+		data := []byte("\"fixture\"\t0\t\"1.0\"\t\"1\"\t\"noarch\"\t" + vendor + "\n")
+		rows, err := parseRPMRows(data)
+		if err != nil || len(rows) != 1 || rows[0].name != "fixture" || rows[0].vendor != "" {
+			t.Fatalf("vendor %q rows = %#v, %v", vendor, rows, err)
+		}
 	}
 }
 

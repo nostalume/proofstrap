@@ -300,6 +300,30 @@ func TestAptUnqualifiedDemandAndRootAcceptArchitectureAll(t *testing.T) {
 	script.assertDone()
 }
 
+func TestAptPreviewRetainsResolvedArchitectureAll(t *testing.T) {
+	proof := testAptProof()
+	inventory, _ := newInventory(nil, nil)
+	observation, _ := newObservation([]string{"docs"}, inventory, []demand{{Name: "docs", State: demandMissing}})
+	preview := "Inst docs (1.0 proofstrap [all])\nConf docs (1.0 proofstrap [all])\n"
+	script := newAptScript(t, nil, []aptRun{{
+		proof.get, aptTransactionArgs(true, aptRefs(t, "amd64", "docs")), started(preview), nil,
+	}})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	offer, err := (aptBehavior{effects: script.effects()}).Preview(ctx, proof, observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := newOffer([]Delta{
+		mustDelta(t, Add, "docs\tall", "", "1.0"),
+		mustDelta(t, RootAdd, "docs", "", "direct"),
+	})
+	if !offer.equal(want) {
+		t.Fatalf("offer = %#v, want %#v", offer.Deltas(), want.Deltas())
+	}
+	script.assertDone()
+}
+
 func TestAptPreviewFailsClosedForHeldRemovalBrokenAndMalformedEvidence(t *testing.T) {
 	proof := testAptProof()
 	for _, test := range []struct {

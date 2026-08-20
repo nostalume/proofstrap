@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -90,17 +91,7 @@ func (g Graph) Add(delta []Contribution) (Graph, error) {
 }
 
 func sameDependencies(left, right Resource) bool {
-	leftKeys := canonicalDependencies(left)
-	rightKeys := canonicalDependencies(right)
-	if len(leftKeys) != len(rightKeys) {
-		return false
-	}
-	for index := range leftKeys {
-		if leftKeys[index] != rightKeys[index] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(canonicalDependencies(left), canonicalDependencies(right))
 }
 
 func canonicalDependencies(resource Resource) []string {
@@ -195,27 +186,21 @@ func (g Graph) Nodes() []Node {
 }
 
 func PackageIDOf(candidate Node) (PackageID, bool) {
-	value, ok := candidate.(node)
-	if !ok {
+	resource, valid := resourceOf(candidate)
+	value, ok := resource.(packageResource)
+	if !valid || !ok {
 		return nil, false
 	}
-	resource, ok := value.value.resource.(packageResource)
-	if !ok {
-		return nil, false
-	}
-	return resource.key.id, true
+	return value.key.id, true
 }
 
 func ServiceIDOf(candidate Node) (ServiceID, bool) {
-	value, ok := candidate.(node)
-	if !ok {
+	resource, valid := resourceOf(candidate)
+	value, ok := resource.(serviceResource)
+	if !valid || !ok {
 		return nil, false
 	}
-	resource, ok := value.value.resource.(serviceResource)
-	if !ok {
-		return nil, false
-	}
-	return resource.key.id, true
+	return value.key.id, true
 }
 
 type Group struct {
@@ -349,12 +334,9 @@ func ServiceOf(candidate Node) (Service, bool) {
 	if !valid || !ok {
 		return Service{}, false
 	}
-	var packages []PackageKey
-	if len(value.packages) != 0 {
-		packages = make([]PackageKey, len(value.packages))
-		for index, key := range value.packages {
-			packages[index] = key
-		}
+	packages := make([]PackageKey, len(value.packages))
+	for index, key := range value.packages {
+		packages[index] = key
 	}
 	result := Service{
 		id:       value.key.id,

@@ -95,7 +95,7 @@ func TestDNF5ArgumentsFreezeSolverAndMetadataPolicy(t *testing.T) {
 	if got := dnf5StoreArgs(store, desired, true); !reflect.DeepEqual(got, wantApply) {
 		t.Fatalf("apply args = %#v", got)
 	}
-	if got := dnf5ReplayArgs(store); !reflect.DeepEqual(got, []string{"--assumeyes", "replay", store}) {
+	if got := dnf5ReplayArgs(store); !reflect.DeepEqual(got, []string{"--assumeyes", "--setopt=reposdir=" + store, "replay", store}) {
 		t.Fatalf("replay args = %#v", got)
 	}
 	if !reflect.DeepEqual(desired, []string{"bash", "kernel-core"}) {
@@ -451,6 +451,15 @@ func dnf5Observation(t *testing.T, desired string, state demandState, recordText
 		t.Fatal(err)
 	}
 	return value
+}
+
+func TestDNF5PreviewSkipsStoreWhenEveryDemandIsDirect(t *testing.T) {
+	proof := dnf5Proof{executable: linux.Identity{Path: dnf5Path, Digest: [32]byte{1}}, version: "5.2.18.0"}
+	observation := dnf5Observation(t, "curl", demandDirect, "curl\t0:8.1-1.fc42\tx86_64")
+	offer, err := (dnf5Behavior{}).Preview(context.Background(), proof, observation)
+	if err != nil || !offer.valid() || len(offer.Deltas()) != 0 {
+		t.Fatalf("offer = %#v, %v", offer.Deltas(), err)
+	}
 }
 
 func TestDNF5CommitRestoresStoreOfferBeforeReplay(t *testing.T) {
