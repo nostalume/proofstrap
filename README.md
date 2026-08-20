@@ -341,6 +341,11 @@ The current semantic pack contains:
 | `vim` | Install Vim. |
 | `bootstrap-cli` | Compose the six package profiles above. |
 | `ssh-server` | Install the SSH server package and enable/start its system service. |
+| `system-bus` | Install the system D-Bus implementation. |
+| `wayland` / `x11` | Install alternative display substrates. |
+| `network-manager` / `connman` | Install and activate alternative network managers. |
+| `bluetooth` | Install Bluetooth support. |
+| `desktop-base` | Compose caller-selected display and network profiles. |
 
 The current Linux binding pack maps these semantic IDs for Zypper, APK,
 systemd, and OpenRC. Distribution names do not select behavior. A profile
@@ -349,7 +354,7 @@ active exact binding contains its mapping; runtime support for an adapter alone
 does not invent a missing catalogue mapping.
 
 Use the catalogue's immutable
-[v0.1.0 release](https://github.com/nostalume/proofstrap-core-profiles/releases/tag/v0.1.0)
+[v0.2.0 release](https://github.com/nostalume/proofstrap-core-profiles/releases/tag/v0.2.0)
 for independently distributed pack assets and checksums.
 
 ## Exit status and recovery
