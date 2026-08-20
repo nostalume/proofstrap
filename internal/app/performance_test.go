@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nostalume/proofstrap/internal/inventory"
-	"github.com/nostalume/proofstrap/internal/packbuild"
+	"github.com/nostalume/proofstrap/internal/binding"
+	"github.com/nostalume/proofstrap/internal/config"
+	"github.com/nostalume/proofstrap/internal/pack"
 )
 
 func BenchmarkBuildPlanDirect(b *testing.B) {
@@ -18,29 +19,41 @@ func BenchmarkBuildPlanDirect(b *testing.B) {
 	benchmarkBuildPlan(b, request)
 }
 
-func BenchmarkBuildPlanProfile(b *testing.B) {
-	root, err := filepath.Abs(filepath.Join("..", "..", "profiles"))
-	if err != nil {
-		b.Fatal(err)
-	}
+func BenchmarkComposeProfile(b *testing.B) {
 	output := b.TempDir()
 	corePath := filepath.Join(output, "core.pstrap")
 	linuxPath := filepath.Join(output, "linux.pstrap")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	core, err := packbuild.Build(ctx, filepath.Join(root, "core"), corePath)
+	core := buildInlineSemanticAt(b, filepath.Join(output, "core"), corePath,
+		"[profiles.curl]\npackages=['curl']\n")
+	bindingRoot := filepath.Join(output, "linux")
+	if err := os.MkdirAll(filepath.Join(bindingRoot, "bindings"), 0o755); err != nil {
+		b.Fatal(err)
+	}
+	manifest := fmt.Sprintf("schema=1\nkind='binding'\n[requires]\ncore=%q\n", core.Digest())
+	if err := os.WriteFile(filepath.Join(bindingRoot, "manifest.toml"), []byte(manifest), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bindingRoot, "bindings", "linux.toml"),
+		[]byte("[package.zypper]\n'core:curl'=['curl']\n"), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	linux := buildAppSource(b, bindingRoot, linuxPath)
+	configData := fmt.Sprintf("schema = 2\nbindings = [\"linux\"]\nprofiles = [{ profile = \"core:curl\" }]\n[sources]\ncore = %q\nlinux = %q\n", core.Digest(), linux.Digest())
+	target, err := config.Decode("benchmark", []byte(configData))
 	if err != nil {
 		b.Fatal(err)
 	}
-	linux, err := packbuild.Build(ctx, filepath.Join(root, "linux"), linuxPath)
-	if err != nil {
-		b.Fatal(err)
+	backend, _ := binding.NewPackageBackendID("zypper")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		_, err := compose(ctx, target, []pack.Source{core, linux}, binding.Backends{Package: backend})
+		cancel()
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
-	config := fmt.Sprintf("schema = 2\nbindings = [\"linux\"]\nprofiles = [{ profile = \"core:curl\" }]\n[sources]\ncore = %q\nlinux = %q\n", core, linux)
-	benchmarkBuildPlan(b, Request{
-		Origin: "benchmark", Config: []byte(config),
-		Environment: inventory.Environment{}, Bundles: []string{corePath, linuxPath},
-	})
 }
 
 func benchmarkBuildPlan(b *testing.B, request Request) {

@@ -108,11 +108,11 @@ func TestResolveCompositionRejectsUnusedSourceAfterBinding(t *testing.T) {
 	}
 }
 
-func buildInlineSemantic(t *testing.T, input, profileData string) pack.Source {
+func buildInlineSemantic(t testing.TB, input, profileData string) pack.Source {
 	return buildInlineSemanticAt(t, input, filepath.Join(t.TempDir(), "source.pstrap"), profileData)
 }
 
-func buildInlineSemanticAt(t *testing.T, input, output, profileData string) pack.Source {
+func buildInlineSemanticAt(t testing.TB, input, output, profileData string) pack.Source {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(input, "profiles"), 0o755); err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func buildInlineSemanticAt(t *testing.T, input, output, profileData string) pack
 	return buildAppSource(t, input, output)
 }
 
-func buildAppSource(t *testing.T, input, output string) pack.Source {
+func buildAppSource(t testing.TB, input, output string) pack.Source {
 	t.Helper()
 	absolute, err := filepath.Abs(input)
 	if err != nil {

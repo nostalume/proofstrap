@@ -30,8 +30,8 @@ for archive in "$temporary/dist"/proofstrap_linux_*.tar.gz; do
 done
 
 go -C "$root" test ./internal/app -run '^$' \
-  -bench 'Benchmark(BuildPlanDirect|BuildPlanProfile|ApplyNoop)$' \
-  -benchmem -benchtime=5x -count=5 > "$temporary/bench"
+  -bench 'Benchmark(BuildPlanDirect|ComposeProfile|ApplyNoop)$' \
+  -benchmem -benchtime=5x -count=20 > "$temporary/bench"
 awk '/^Benchmark/ {
   name=$1
   sub(/-[0-9]+$/, "", name)
