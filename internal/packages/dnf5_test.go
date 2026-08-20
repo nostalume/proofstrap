@@ -86,7 +86,7 @@ func TestDNF5ArgumentsFreezeSolverAndMetadataPolicy(t *testing.T) {
 		"--assumeyes",
 		"--setopt=best=true", "--setopt=multilib_policy=best", "--setopt=install_weak_deps=false",
 		"--setopt=obsoletes=false", "--setopt=allow_vendor_change=false", "--setopt=allow_downgrade=false",
-		"install", "--store=" + store, "--", "bash", "kernel-core",
+		"install", "--store=" + store, "bash", "kernel-core",
 	}
 	if got := dnf5StoreArgs(store, desired, false); !reflect.DeepEqual(got, wantPlan) {
 		t.Fatalf("plan args = %#v", got)

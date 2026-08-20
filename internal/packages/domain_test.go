@@ -10,6 +10,21 @@ import (
 	"github.com/nostalume/proofstrap/internal/linux"
 )
 
+func TestDNFInventoryQueryFormatsHonorNativeRecordBoundaries(t *testing.T) {
+	row := "--queryformat=%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{vendor}\t%{reason}"
+	for name, test := range map[string]struct {
+		args []string
+		want string
+	}{
+		"dnf4": {dnf4InventoryArgs(), row},
+		"dnf5": {dnf5InventoryArgs(), row + "\n"},
+	} {
+		if got := test.args[len(test.args)-1]; got != test.want {
+			t.Errorf("%s query format = %q, want %q", name, got, test.want)
+		}
+	}
+}
+
 func verificationObservation(t *testing.T, desired []string, installed []record, roots []string, demands []demand) Observation {
 	t.Helper()
 	inventory, err := newInventory(installed, roots)

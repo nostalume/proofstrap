@@ -228,7 +228,8 @@ func TestDNF4RejectsNonConcreteDesiredNamesBeforeExecution(t *testing.T) {
 func TestDNF4PreviewParsesCompleteTransactionAndSummary(t *testing.T) {
 	proof := dnf4Proof{executable: linux.Identity{Path: "/usr/bin/dnf-3", Digest: [32]byte{1}}, version: "4.23.0"}
 	observation := dnf4Observation(t, "kernel", demandMissing)
-	result := linux.Result{Started: true, ExitCode: 1, Stdout: dnf4Fixture(t, "preview-install.txt")}
+	stdout := []byte(strings.TrimSuffix(string(dnf4Fixture(t, "preview-install.txt")), "Operation aborted.\n"))
+	result := linux.Result{Started: true, ExitCode: 1, Stdout: stdout, Stderr: []byte(dnf4VendorNotice + dnf4Abort)}
 	script := &dnf4Script{t: t, runs: []dnf4Run{{identity: proof.executable, args: dnf4TransactionArgs(true, false, []string{"kernel"}), result: result}}}
 	got, err := (dnf4Behavior{effects: script.effects()}).Preview(context.Background(), proof, observation)
 	if err != nil {

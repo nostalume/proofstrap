@@ -137,7 +137,7 @@ func dnf5StoreArgs(store string, desired []string, cacheOnly bool) []string {
 		"--assumeyes",
 		"--setopt=best=true", "--setopt=multilib_policy=best", "--setopt=install_weak_deps=false",
 		"--setopt=obsoletes=false", "--setopt=allow_vendor_change=false", "--setopt=allow_downgrade=false",
-		"install", "--store="+store, "--",
+		"install", "--store="+store,
 	)
 	return append(args, desired...)
 }
@@ -148,7 +148,7 @@ func dnf5TransactionPath(directory string) string {
 	return filepath.Join(directory, dnf5TransactionFile)
 }
 
-const dnf5InventoryFormat = "%{name}\\t%{epoch}\\t%{version}\\t%{release}\\t%{arch}\\t%{vendor}\\t%{reason}\\n"
+const dnf5InventoryFormat = "%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{vendor}\t%{reason}\n"
 
 func dnf5InventoryArgs() []string {
 	return []string{

@@ -148,7 +148,7 @@ func dnf4TransactionArgs(preview, cacheOnly bool, desired []string) []string {
 	return append(args, desired...)
 }
 
-const dnf4InventoryFormat = "%{name}\\t%{epoch}\\t%{version}\\t%{release}\\t%{arch}\\t%{vendor}\\t%{reason}\\n"
+const dnf4InventoryFormat = "%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{vendor}\t%{reason}"
 
 func dnf4InventoryArgs() []string {
 	return []string{
@@ -201,15 +201,34 @@ func (behavior dnf4Behavior) Preview(ctx context.Context, evidence proof, observ
 	return behavior.preview(ctx, native, observation, false)
 }
 
+const (
+	dnf4VendorNotice = "allow_vendor_change is disabled. This option is currently not supported for downgrade and distro-sync commands\n"
+	dnf4Abort        = "Operation aborted.\n"
+)
+
 func (behavior dnf4Behavior) preview(ctx context.Context, native dnf4Proof, observation Observation, cacheOnly bool) (Offer, error) {
 	if err := validateDNF4Desired(desiredFrom(observation)); err != nil {
 		return Offer{}, err
 	}
 	result, runErr := behavior.effects.run(ctx, native.executable, dnf4TransactionArgs(true, cacheOnly, desiredFrom(observation)), nil)
-	if runErr != nil || !result.Started || len(result.Stderr) != 0 {
+	abortOnStderr := false
+	switch string(result.Stderr) {
+	case "", dnf4VendorNotice:
+	case dnf4Abort, dnf4VendorNotice + dnf4Abort:
+		abortOnStderr = true
+	default:
 		return Offer{}, fmt.Errorf("%s", nativeDiagnostic("preview DNF4 transaction", result, runErr))
 	}
-	offer, transaction, err := parseDNF4Preview(result.Stdout, observation)
+	if runErr != nil || !result.Started {
+		return Offer{}, fmt.Errorf("%s", nativeDiagnostic("preview DNF4 transaction", result, runErr))
+	}
+	preview := result.Stdout
+	if abortOnStderr {
+		preview = make([]byte, 0, len(result.Stdout)+len(dnf4Abort))
+		preview = append(preview, result.Stdout...)
+		preview = append(preview, dnf4Abort...)
+	}
+	offer, transaction, err := parseDNF4Preview(preview, observation)
 	if err != nil {
 		return Offer{}, err
 	}
