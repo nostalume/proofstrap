@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      managers:
+        description: Run digest-pinned native manager qualification
+        required: true
+        default: false
+        type: boolean
   workflow_call:
 
 permissions:
@@ -48,6 +54,9 @@ jobs:
           test -x release/fetch.sh
           test -x release/build.sh
           test -x test/release.sh
+          test -x test/managers.sh
+          test -f test/managers-version
+          test -f test/managers.sha256
           test ! -d test/release
           test ! -d test/acceptance
           test ! -d test/performance
@@ -85,16 +94,27 @@ jobs:
             echo "ordinary Go test invokes a native package or service manager" >&2
             exit 1
           fi
-          if find test -type f -name '*.sh' -print0 \
+          if find test -type f -name '*.sh' ! -name managers.sh -print0 \
             | xargs -0 -r grep -nE '(^|[^[:alnum:]_-])(apk|zypper|apt-get|dnf5?|pacman|systemctl|rc-service|rc-update|openrc)([^[:alnum:]_-]|$)'; then
             echo "native manager command escaped deterministic tests" >&2
             exit 1
           fi
           shell_lines=$(find test release -type f -name '*.sh' -exec awk 'NF { total++ } END { print total+0 }' {} +)
-          test "$shell_lines" -le 200 || {
-            echo "release/test shell exceeds 200 nonblank lines: $shell_lines" >&2
+          test "$shell_lines" -le 400 || {
+            echo "release/test shell exceeds 400 nonblank lines: $shell_lines" >&2
             exit 1
           }
+          test "$(awk 'NF { lines++ } END { print lines+0 }' test/managers.sh)" -le 200
+
+      - name: Check manager runner admission failures
+        run: |
+          set -eu
+          if test/managers.sh unknown >"$RUNNER_TEMP/unknown.out" 2>&1; then exit 1; fi
+          grep -Fx 'FAIL case=unknown reason=unknown-case' "$RUNNER_TEMP/unknown.out"
+          mkdir "$RUNNER_TEMP/bad-cache"
+          : > "$RUNNER_TEMP/bad-cache/package-apt_linux_amd64.tar.gz"
+          if PROOFSTRAP_MANAGER_CACHE="$RUNNER_TEMP/bad-cache" test/managers.sh package:apt >"$RUNNER_TEMP/digest.out" 2>&1; then exit 1; fi
+          grep -Fx 'FAIL case=package:apt reason=digest' "$RUNNER_TEMP/digest.out"
 
       - name: Build effect-free analysis packages
         env:
@@ -122,3 +142,23 @@ jobs:
           release/fetch.sh "$RUNNER_TEMP/packs"
           release/build.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/packs"
           test/release.sh "$RUNNER_TEMP/dist"
+
+  managers:
+    if: github.event_name == 'workflow_dispatch' && inputs.managers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - package:apt
+          - package:dnf4
+          - package:dnf5
+          - package:zypper
+          - package:apk
+          - service:systemd
+          - service:openrc
+    steps:
+      - uses: actions/checkout@v7
+      - name: Qualify ${{ matrix.case }}
+        run: sudo test/managers.sh '${{ matrix.case }}'
