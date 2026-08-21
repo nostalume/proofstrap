@@ -22,7 +22,8 @@ check_members() {
 for arch in amd64 arm64; do
   name=proofstrap_linux_$arch
   check_members "$dist/$name.tar.gz" "$name/" "$name/LICENSE" "$name/README.md" \
-    "$name/docs/" "$name/docs/config.md" "$name/docs/profile.md" "$name/packs/" \
+    "$name/docs/" "$name/docs/config.md" "$name/docs/profile.md" \
+    "$name/examples/" "$name/examples/bootstrap.toml" "$name/packs/" \
     "$name/packs/sha256/" "$name/packs/sha256/$core.pstrap" \
     "$name/packs/sha256/$linux.pstrap" "$name/proofstrap"
   name=proofstrap-pack_linux_$arch
@@ -39,15 +40,13 @@ mkdir "$temporary/extract" "$temporary/home" "$temporary/data" "$temporary/tmp"
 tar -xzf "$dist/proofstrap_linux_$arch.tar.gz" -C "$temporary/extract"
 tar -xzf "$dist/proofstrap-pack_linux_$arch.tar.gz" -C "$temporary/extract"
 runtime=$temporary/extract/proofstrap_linux_$arch/proofstrap
-author=$temporary/extract/proofstrap-pack_linux_$arch/proofstrap-pack
 core_pack=$temporary/extract/proofstrap_linux_$arch/packs/sha256/$core.pstrap
-linux_pack=$temporary/extract/proofstrap_linux_$arch/packs/sha256/$linux.pstrap
 run() { env HOME="$temporary/home" XDG_DATA_HOME="$temporary/data" TMPDIR="$temporary/tmp" "$runtime" "$@"; }
 
 run --help >/dev/null
-"$author" --help >/dev/null
+"$temporary/extract/proofstrap-pack_linux_$arch/proofstrap-pack" --help >/dev/null
 run inspect --digest "sha256:$core" "$core_pack" > "$temporary/core.json"
-run inspect --digest "sha256:$linux" "$linux_pack" > "$temporary/linux.json"
+run inspect --digest "sha256:$linux" "$temporary/extract/proofstrap_linux_$arch/packs/sha256/$linux.pstrap" > "$temporary/linux.json"
 grep -F '"kind": "semantic"' "$temporary/core.json" >/dev/null
 grep -F '"kind": "binding"' "$temporary/linux.json" >/dev/null
 [ "$(grep -c '"handle"' "$temporary/linux.json")" -eq 1 ]

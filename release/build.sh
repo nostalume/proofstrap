@@ -31,14 +31,15 @@ build_once() {
   core=$(sed -n '1s/  core\.pstrap$//p' "$work/observed.sha256")
   linux=$(sed -n '2s/  linux\.pstrap$//p' "$work/observed.sha256")
   [ "${#core}" -eq 64 ] && [ "${#linux}" -eq 64 ]
+  printf 'schema = 2\n\nbindings = ["linux"]\nprofiles = [{ profile = "core:bootstrap-cli" }]\n\n[sources]\ncore = "sha256:%s"\nlinux = "sha256:%s"\n' \
+    "$core" "$linux" > "$work/bootstrap.toml"
   epoch=$(git -C "$root" show -s --format=%ct HEAD)
 
   for arch in amd64 arm64; do
     name="proofstrap_linux_$arch"
     stage="$work/$name"
-    author_name="proofstrap-pack_linux_$arch"
-    author_stage="$work/$author_name"
-    mkdir -p "$stage/docs" "$stage/packs/sha256" "$author_stage/docs"
+    author_stage="$work/proofstrap-pack_linux_$arch"
+    mkdir -p "$stage/docs" "$stage/examples" "$stage/packs/sha256" "$author_stage/docs"
     GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
       go -C "$root" build -trimpath -buildvcs=true -ldflags='-s -w' \
       -o "$stage/proofstrap" ./cmd/proofstrap
@@ -47,16 +48,16 @@ build_once() {
       -o "$author_stage/proofstrap-pack" ./cmd/proofstrap-pack
     cp "$root/README.md" "$root/LICENSE" "$stage/"
     cp "$root/docs/config.md" "$root/docs/profile.md" "$stage/docs/"
+    cp "$work/bootstrap.toml" "$stage/examples/"
     cp "$root/README.md" "$root/LICENSE" "$author_stage/"
     cp "$root/docs/profile.md" "$author_stage/docs/"
     cp "$work/core.pstrap" "$stage/packs/sha256/$core.pstrap"
     cp "$work/linux.pstrap" "$stage/packs/sha256/$linux.pstrap"
-    chmod 0444 "$stage/packs/sha256/"*.pstrap
+    chmod 0444 "$stage/examples/bootstrap.toml" "$stage/packs/sha256/"*.pstrap
   done
 
-  runtime="$work/proofstrap_linux_amd64/proofstrap"
-  "$runtime" inspect --digest "sha256:$core" "$work/core.pstrap" > "$work/core.json"
-  "$runtime" inspect --digest "sha256:$linux" "$work/linux.pstrap" > "$work/linux.json"
+  "$work/proofstrap_linux_amd64/proofstrap" inspect --digest "sha256:$core" "$work/core.pstrap" > "$work/core.json"
+  "$work/proofstrap_linux_amd64/proofstrap" inspect --digest "sha256:$linux" "$work/linux.pstrap" > "$work/linux.json"
   grep -F '"kind": "semantic"' "$work/core.json" >/dev/null
   grep -F '"kind": "binding"' "$work/linux.json" >/dev/null
   [ "$(grep -c '"handle"' "$work/linux.json")" -eq 1 ]

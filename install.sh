@@ -64,20 +64,22 @@ LC_ALL=C tar -tvzf "$tmp/$archive" > "$tmp/member-details"
   printf 'archive contains links or special members\n' >&2
   exit 1
 }
-[ "$(wc -l < "$tmp/members")" -eq 11 ] || {
+[ "$(wc -l < "$tmp/members")" -eq 13 ] || {
   printf 'archive has unexpected member count\n' >&2
   exit 1
 }
 for member in \
   "$root/" \
   "$root/docs/" \
+  "$root/examples/" \
   "$root/packs/" \
   "$root/packs/sha256/" \
   "$root/proofstrap" \
   "$root/README.md" \
   "$root/LICENSE" \
   "$root/docs/config.md" \
-  "$root/docs/profile.md"; do
+  "$root/docs/profile.md" \
+  "$root/examples/bootstrap.toml"; do
   grep -Fx "$member" "$tmp/members" >/dev/null || {
     printf 'archive member is missing: %s\n' "$member" >&2
     exit 1
@@ -95,23 +97,23 @@ extracted="$tmp/extract/$root"
   printf 'archive root is missing or unsafe\n' >&2
   exit 1
 }
-for directory in docs packs packs/sha256; do
+for directory in docs examples packs packs/sha256; do
   [ -d "$extracted/$directory" ] && [ ! -L "$extracted/$directory" ] || {
     printf 'archive directory is missing or unsafe: %s\n' "$directory" >&2
     exit 1
   }
 done
-for file in proofstrap README.md LICENSE docs/config.md docs/profile.md; do
+for file in proofstrap README.md LICENSE docs/config.md docs/profile.md examples/bootstrap.toml; do
   [ -f "$extracted/$file" ] && [ ! -L "$extracted/$file" ] || {
     printf 'archive file is missing or unsafe: %s\n' "$file" >&2
     exit 1
   }
 done
-[ "$(find "$extracted" -mindepth 1 -type d | wc -l)" -eq 3 ] || {
+[ "$(find "$extracted" -mindepth 1 -type d | wc -l)" -eq 4 ] || {
   printf 'archive has unexpected directories\n' >&2
   exit 1
 }
-[ "$(find "$extracted" -type f | wc -l)" -eq 7 ] || {
+[ "$(find "$extracted" -type f | wc -l)" -eq 8 ] || {
   printf 'archive has unexpected files\n' >&2
   exit 1
 }
@@ -124,6 +126,7 @@ pack_count=0
 semantic_count=0
 binding_count=0
 semantic_digest=
+binding_digest=
 binding_inspect=
 for object in "$extracted"/packs/sha256/*.pstrap; do
   [ -f "$object" ] || continue
@@ -147,6 +150,7 @@ for object in "$extracted"/packs/sha256/*.pstrap; do
     semantic_digest=$name
   elif grep -q '"kind"[[:space:]]*:[[:space:]]*"binding"' "$inspect"; then
     binding_count=$((binding_count + 1))
+    binding_digest=$name
     binding_inspect=$inspect
   else
     printf 'pack inspection has unknown kind: %s\n' "$name" >&2
@@ -163,15 +167,22 @@ done
   printf 'binding pack does not require the bundled semantic pack exactly\n' >&2
   exit 1
 }
+printf 'schema = 2\n\nbindings = ["linux"]\nprofiles = [{ profile = "core:bootstrap-cli" }]\n\n[sources]\ncore = "sha256:%s"\nlinux = "sha256:%s"\n' \
+  "$semantic_digest" "$binding_digest" > "$tmp/expected-bootstrap.toml"
+cmp "$tmp/expected-bootstrap.toml" "$extracted/examples/bootstrap.toml" || {
+  printf 'starter config does not pin the bundled packs exactly\n' >&2
+  exit 1
+}
 
 mkdir -p "$install_dir" "$releases"
 stage=$(mktemp -d "$releases/.stage.XXXXXX")
-mkdir -p "$stage/docs" "$stage/packs/sha256"
+mkdir -p "$stage/docs" "$stage/examples" "$stage/packs/sha256"
 install -m 0755 "$extracted/proofstrap" "$stage/proofstrap"
 install -m 0644 "$extracted/README.md" "$stage/README.md"
 install -m 0644 "$extracted/LICENSE" "$stage/LICENSE"
 install -m 0644 "$extracted/docs/config.md" "$stage/docs/config.md"
 install -m 0644 "$extracted/docs/profile.md" "$stage/docs/profile.md"
+install -m 0444 "$extracted/examples/bootstrap.toml" "$stage/examples/bootstrap.toml"
 for object in "$extracted"/packs/sha256/*.pstrap; do
   install -m 0444 "$object" "$stage/packs/sha256/$(basename "$object")"
 done
@@ -214,3 +225,8 @@ link_tmp="$install_dir/.proofstrap-link.$$"
 ln -s ".proofstrap-releases/$generation/proofstrap" "$link_tmp"
 mv -Tf -- "$link_tmp" "$launcher"
 link_tmp=
+printf 'starter config: %s\n' "$final/examples/bootstrap.toml"
+printf 'copy it for review with:\n'
+printf '  cp -- "%s" ./proofstrap.toml\n' "$final/examples/bootstrap.toml"
+printf 'then run:\n'
+printf '  proofstrap plan --config ./proofstrap.toml --output ./plan.json\n'

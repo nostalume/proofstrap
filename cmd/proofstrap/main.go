@@ -22,7 +22,7 @@ import (
 
 const (
 	rootUsage       = "usage: proofstrap <import|inspect|plan|apply> [OPTIONS]"
-	planUsage       = "usage: proofstrap plan --config FILE --output PLAN [--profile-bundle ARCHIVE ...]"
+	planUsage       = "usage: proofstrap plan --config FILE --output PLAN [--profile-bundle ARCHIVE [ARCHIVE ...]]"
 	applyUsage      = "usage: proofstrap apply --plan PLAN --accept sha256:DIGEST [--journal FILE] [--receipt FILE]"
 	maxConfigBytes  = 1 << 20
 	planningTimeout = 30 * time.Minute
@@ -157,11 +157,14 @@ func parsePlan(arguments []string) (configPath, outputPath string, bundles []str
 			}
 			seenOutput, index, outputPath = true, index+1, arguments[index+1]
 		case "--profile-bundle":
-			if index+1 >= len(arguments) {
+			before := len(bundles)
+			for index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1], "--") {
+				index++
+				bundles = append(bundles, arguments[index])
+			}
+			if len(bundles) == before {
 				return "", "", nil, false
 			}
-			index++
-			bundles = append(bundles, arguments[index])
 		default:
 			return "", "", nil, false
 		}

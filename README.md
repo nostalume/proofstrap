@@ -33,10 +33,12 @@ The default destination is `$HOME/.local/bin`. Set
 PROOFSTRAP_INSTALL_DIR=/absolute/bin sh install.sh
 ```
 
-The installer verifies the release archive and its two bundled pack objects,
-stages a content-addressed generation under `.proofstrap-releases`, and
-atomically switches the `proofstrap` launcher. It never overwrites an existing
-generation. Older generations remain available for manual recovery.
+The installer verifies the release archive, its two bundled pack objects, and
+their digest-pinned starter config. It stages a content-addressed generation
+under `.proofstrap-releases`, atomically switches the `proofstrap` launcher,
+and prints the exact starter path. It does not copy that config into your
+working directory or apply it. Older generations remain available for manual
+recovery.
 
 The user release contains the `proofstrap` runtime. Profile authors use the
 separate `proofstrap-pack` release archive; the runtime installation does not
@@ -44,23 +46,27 @@ include that authoring command.
 
 ## Quick start
 
-### 1. Inspect the bundled packs
+### 1. Copy and review the starter config
+
+```sh
+cp /exact/path/printed/by/installer/bootstrap.toml ./proofstrap.toml
+$EDITOR ./proofstrap.toml
+```
+
+The installed runtime automatically sees packs beside its release generation,
+so this official-install path needs no bundle flags and no import. Inspect the
+visible exact objects when needed:
 
 ```sh
 proofstrap inspect
 ```
 
-`inspect` emits JSON. A release record reports an exact digest, archive kind,
-requirements, members, and storage scopes. The current official packs are:
+`inspect` emits bounded structural JSON with exact digests, archive kinds,
+requirements, members, and storage scopes.
 
-```text
-semantic  sha256:ec73d6e2c7e9c9ad87d9ec19034c51785af431f4e4328d432b35cbce85085197
-binding   sha256:b1d58cc6d64b2b83296e354cd3441b71ab25f5f77f34da6c6140b762c318d9aa
-```
+### 2. Understand config truth
 
-### 2. Write a target configuration
-
-Create `proofstrap.toml` in the working directory:
+The starter has this shape, with release-specific digests filled in:
 
 ```toml
 schema = 2
@@ -69,8 +75,8 @@ bindings = ["linux"]
 profiles = [{ profile = "core:bootstrap-cli" }]
 
 [sources]
-core = "sha256:ec73d6e2c7e9c9ad87d9ec19034c51785af431f4e4328d432b35cbce85085197"
-linux = "sha256:b1d58cc6d64b2b83296e354cd3441b71ab25f5f77f34da6c6140b762c318d9aa"
+core = "sha256:..."
+linux = "sha256:..."
 ```
 
 Config aliases such as `core` and `linux` are local names. Desired truth is the
@@ -98,16 +104,37 @@ digest. `progressable` means the Plan contains a verified barrier and may
 intentionally stop after partial progress so the next invocation can replan
 from fresh host state.
 
-An archive path may supply bytes for a digest already pinned by config:
+An archive path only transports bytes for a digest already pinned by config.
+One flag accepts one or more paths, and the flag may also be repeated:
 
 ```sh
 proofstrap plan \
   --config proofstrap.toml \
   --output plan.json \
-  --profile-bundle packs/custom.pstrap
+  --profile-bundle core.pstrap linux.pstrap
 ```
 
-`--profile-bundle` does not change config truth and may be repeated.
+The equivalent repeated spelling is
+`--profile-bundle core.pstrap --profile-bundle linux.pstrap`. Input order is
+preserved. Unused, duplicate, malformed, or digest-mismatched bundles fail;
+supplying bytes never changes config truth.
+
+For bootstrap without an installed release, download one fixed release of
+[the official profile catalogue](https://github.com/nostalume/proofstrap-core-profiles/releases),
+including all four sibling assets:
+
+```sh
+tag=CATALOGUE_TAG
+base=https://github.com/nostalume/proofstrap-core-profiles/releases/download/$tag
+for asset in core.pstrap linux.pstrap bootstrap.toml checksums.txt; do
+  curl --fail --location --remote-name "$base/$asset"
+done
+sha256sum --check checksums.txt
+```
+
+Copy `bootstrap.toml` for review and use the two archives with
+`--profile-bundle` as above. Import is optional: it only publishes verified
+bytes into a content-addressed store for later plans.
 
 ### 4. Apply the accepted Plan
 
@@ -160,13 +187,15 @@ state.
 
 ```text
 proofstrap plan --config FILE --output PLAN \
-  [--profile-bundle ARCHIVE ...]
+  [--profile-bundle ARCHIVE [ARCHIVE ...]]
 ```
 
 Read one regular config file once, resolve exact pack inputs, observe required
 host capabilities, and create a sealed canonical Plan. Planning performs no
 host mutation. Relative artifact paths are resolved once against the process
-working directory and passed onward as clean absolute paths.
+working directory and passed onward as clean absolute paths. With no bundle
+flags, resolution uses only known content-addressed stores. Every bundle value
+is one explicit archive file—not a directory, glob, URL, or discovered neighbor.
 
 ### `proofstrap apply`
 

@@ -219,6 +219,12 @@ func TestAcquireClosureReadsExactBundlesAndRejectsUnusedInputs(t *testing.T) {
 	}
 }
 
+func TestAcquireClosureRejectsMoreThanSixtyFourBundlesBeforeIO(t *testing.T) {
+	if _, err := AcquireClosure(context.Background(), Environment{}, []pack.Digest{{}}, make([]string, maxClosureInputs+1)); category(t, err) != pack.Limit {
+		t.Fatalf("bundle overflow = %v", err)
+	}
+}
+
 func TestRecordAndProjectionLimitsAreExact(t *testing.T) {
 	records := make([]Record, maxRecords)
 	if err := checkRecordBudget(records); err != nil {

@@ -38,6 +38,29 @@ func TestPlanAndApplyParsersCanonicalizeRelativeArtifactPaths(t *testing.T) {
 	}
 }
 
+func TestPlanParserAggregatesGroupedAndRepeatedBundles(t *testing.T) {
+	directory := t.TempDir()
+	t.Chdir(directory)
+	_, _, bundles, ok := parsePlan([]string{
+		"--profile-bundle", "one.pstrap", "two.pstrap", "--config", "config.toml",
+		"--profile-bundle", "three.pstrap", "--output", "plan.json",
+	})
+	want := []string{
+		filepath.Join(directory, "one.pstrap"), filepath.Join(directory, "two.pstrap"), filepath.Join(directory, "three.pstrap"),
+	}
+	if !ok || !reflect.DeepEqual(bundles, want) {
+		t.Fatalf("bundles = %v, ok = %t; want %v, true", bundles, ok, want)
+	}
+	for _, arguments := range [][]string{
+		{"--config", "config.toml", "--output", "plan.json", "--profile-bundle"},
+		{"--config", "config.toml", "--output", "plan.json", "--profile-bundle", "--unknown"},
+	} {
+		if _, _, _, ok := parsePlan(arguments); ok {
+			t.Fatalf("empty --profile-bundle group accepted: %v", arguments)
+		}
+	}
+}
+
 const commandEmptyPlanJSON = `{"schema":1,"digest":"sha256:6e798e7de28e940a0eecede9ff1e10d4b479db250a983744d5311354a80ffb64","plan":{"operations":[],"blockers":[]}}`
 
 func TestAdjacentReleaseRootUsesKernelResolvedPath(t *testing.T) {

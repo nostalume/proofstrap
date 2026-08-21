@@ -183,6 +183,16 @@ exec /usr/bin/mv "$@"
 				if _, err := os.Stat(filepath.Join(filepath.Dir(packs[0]), "..", "..", "proofstrap-pack")); !os.IsNotExist(err) {
 					t.Fatalf("runtime generation contains author tool: %v", err)
 				}
+				starter := filepath.Join(filepath.Dir(installed), ".proofstrap-releases", checksumFor(test.archive), "examples", "bootstrap.toml")
+				if contents, err := os.ReadFile(starter); err != nil || !bytes.Contains(contents, []byte("profiles = [{ profile = \"core:bootstrap-cli\" }]")) || !bytes.Contains(output, []byte("cp -- \""+starter+"\" ./proofstrap.toml")) {
+					t.Fatalf("starter config = %q, %v; output=%q", contents, err, output)
+				}
+				if info, err := os.Stat(starter); err != nil || info.Mode().Perm() != 0o444 {
+					t.Fatalf("starter mode = %v, %v", info, err)
+				}
+				if _, err := os.Stat(filepath.Join(home, "proofstrap.toml")); !os.IsNotExist(err) {
+					t.Fatalf("installer wrote user config: %v", err)
+				}
 			}
 			if test.wantLegacy {
 				legacy, err := filepath.Glob(filepath.Join(filepath.Dir(installed), ".proofstrap-releases", "legacy-*", "proofstrap"))
@@ -241,7 +251,7 @@ func releaseArchive(t *testing.T, arch string, executable []byte, options ...str
 			semanticName = strings.Repeat("0", 64) + ".pstrap"
 		}
 	}
-	for _, directory := range []string{root + "/", root + "/docs/", root + "/packs/", root + "/packs/sha256/"} {
+	for _, directory := range []string{root + "/", root + "/docs/", root + "/examples/", root + "/packs/", root + "/packs/sha256/"} {
 		if err := tarWriter.WriteHeader(&tar.Header{Name: directory, Mode: 0o755, Typeflag: tar.TypeDir}); err != nil {
 			t.Fatal(err)
 		}
@@ -256,6 +266,7 @@ func releaseArchive(t *testing.T, arch string, executable []byte, options ...str
 		{root + "/LICENSE", 0o644, []byte("license")},
 		{root + "/docs/config.md", 0o644, []byte("config")},
 		{root + "/docs/profile.md", 0o644, []byte("profile")},
+		{root + "/examples/bootstrap.toml", 0o644, []byte(fmt.Sprintf("schema = 2\n\nbindings = [\"linux\"]\nprofiles = [{ profile = \"core:bootstrap-cli\" }]\n\n[sources]\ncore = \"sha256:%s\"\nlinux = \"sha256:%s\"\n", strings.TrimSuffix(semanticName, ".pstrap"), strings.TrimSuffix(bindingName, ".pstrap")))},
 		{root + "/packs/sha256/" + semanticName, 0o444, semantic},
 		{root + "/packs/sha256/" + bindingName, 0o444, binding},
 	}
