@@ -8,7 +8,7 @@ temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
 
 [ "$(find "$dist" -mindepth 1 -maxdepth 1 | wc -l)" -eq 6 ]
-(cd "$dist" && sha256sum --check --status checksums.txt)
+(cd "$dist" && sha256sum --check --status checksums.txt && cut -d ' ' -f3- checksums.txt | LC_ALL=C sort -c)
 core=$(sed -n '1s/  core\.pstrap$//p' "$root/release/packs.sha256")
 linux=$(sed -n '2s/  linux\.pstrap$//p' "$root/release/packs.sha256")
 

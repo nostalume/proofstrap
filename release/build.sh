@@ -70,7 +70,7 @@ build_once() {
     done
   done
   cp "$root/install.sh" "$output/install.sh"
-  (cd "$output" && sha256sum ./*.tar.gz install.sh > checksums.txt)
+  (cd "$output" && export LC_ALL=C && sha256sum ./*.tar.gz install.sh > checksums.txt)
 }
 
 temporary=$(mktemp -d)
