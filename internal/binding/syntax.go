@@ -10,6 +10,15 @@ import (
 type rawMember struct {
 	Package map[string]map[string][]string `toml:"package"`
 	Service map[string]map[string][]string `toml:"service"`
+	Bind    []bindClause                   `toml:"bind"`
+}
+
+type bindClause struct {
+	Package []string            `toml:"package"`
+	Service []string            `toml:"service"`
+	From    string              `toml:"from"`
+	Same    []string            `toml:"same"`
+	To      map[string][]string `toml:"to"`
 }
 
 func decodeMember(member Member) (rawMember, error) {
@@ -26,7 +35,7 @@ func decodeMember(member Member) (rawMember, error) {
 		}
 		return rawMember{}, result
 	}
-	if len(raw.Package) == 0 && len(raw.Service) == 0 {
+	if len(raw.Package) == 0 && len(raw.Service) == 0 && len(raw.Bind) == 0 {
 		return rawMember{}, bindingDiagnostic("InvalidValue", member.Path, "", "binding member has no mappings", nil)
 	}
 	return raw, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,136 @@ func TestDecodeAndProjectTypedCatalogue(t *testing.T) {
 	if services != 2 {
 		t.Fatalf("projected service count = %d, want 2", services)
 	}
+}
+
+func TestDecodeFactoredClausesMatchExpandedCatalogue(t *testing.T) {
+	library, err := profile.Decode("semantic", []profile.Member{{
+		Path: "profiles/base.toml",
+		Data: []byte("[profiles.base]\npackages=['agent','archive']\n[profiles.base.services.daemon]\ntarget='system'\nrunning=true\n"),
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	required := map[string]profile.Library{"core": library}
+	clause := "[[bind]]\npackage=['apt','zypper']\nfrom='core'\nsame=['agent']\nto={archive=['zip','unzip']}\n" +
+		"[[bind]]\nservice=['systemd']\nfrom='core'\nsame=['daemon']\n"
+	expanded := "[package.apt]\n'core:agent'=['agent']\n'core:archive'=['zip','unzip']\n" +
+		"[package.zypper]\n'core:agent'=['agent']\n'core:archive'=['zip','unzip']\n" +
+		"[service.systemd]\n'core:daemon'=['daemon']\n"
+	decode := func(body string) Catalogue {
+		t.Helper()
+		catalogue, err := Decode(context.Background(), "binding", []Member{{Path: "bindings/base.toml", Data: []byte(body)}}, required)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return catalogue
+	}
+	clauseCatalogue, expandedCatalogue := decode(clause), decode(expanded)
+	if got, want := clauseCatalogue, expandedCatalogue; !reflect.DeepEqual(got, want) {
+		t.Fatalf("clause catalogue = %#v, want %#v", got, want)
+	}
+	reordered := strings.Replace(clause, "['apt','zypper']", "['zypper','apt']", 1)
+	if got, want := decode(reordered), decode(clause); !reflect.DeepEqual(got, want) {
+		t.Fatalf("reordered clause catalogue = %#v, want %#v", got, want)
+	}
+	packageBackend, _ := NewPackageBackendID("apt")
+	serviceBackend, _ := NewServiceBackendID("systemd")
+	backends := Backends{Package: packageBackend, Service: serviceBackend}
+	semantic := semanticGraph(t, library)
+	got, gotErr := Project(context.Background(), semantic, backends, []Catalogue{clauseCatalogue})
+	want, wantErr := Project(context.Background(), semantic, backends, []Catalogue{expandedCatalogue})
+	if gotErr != nil || wantErr != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("clause projection = %#v, %v; want %#v, %v", got, gotErr, want, wantErr)
+	}
+}
+
+func TestDecodeRejectsFactoredClauseDefectsAtomically(t *testing.T) {
+	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
+		"[profiles.base]\npackages=['agent','other']\n[profiles.base.services.daemon]\ntarget='system'\nrunning=true\n")}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct{ name, body, category string }{
+		{"neither-domain", "[[bind]]\nfrom='core'\nsame=['agent']\n", "InvalidValue"},
+		{"both-domains", "[[bind]]\npackage=['apt']\nservice=['systemd']\nfrom='core'\nsame=['agent']\n", "InvalidValue"},
+		{"empty-backends", "[[bind]]\npackage=[]\nfrom='core'\nsame=['agent']\n", "InvalidValue"},
+		{"missing-handle", "[[bind]]\npackage=['apt']\nfrom='missing'\nsame=['agent']\n", "MissingReference"},
+		{"missing-symbol", "[[bind]]\npackage=['apt']\nfrom='core'\nsame=['absent']\n", "MissingReference"},
+		{"invalid-symbol", "[[bind]]\npackage=['apt']\nfrom='core'\nsame=['Agent']\n", "MissingReference"},
+		{"wrong-domain", "[[bind]]\nservice=['systemd']\nfrom='core'\nsame=['agent']\n", "WrongDomain"},
+		{"invalid-backend", "[[bind]]\npackage=['APT']\nfrom='core'\nsame=['agent']\n", "InvalidValue"},
+		{"duplicate-backend", "[[bind]]\npackage=['apt','apt']\nfrom='core'\nsame=['agent']\n", "Duplicate"},
+		{"empty-mapping", "[[bind]]\npackage=['apt']\nfrom='core'\n", "InvalidValue"},
+		{"duplicate-same", "[[bind]]\npackage=['apt']\nfrom='core'\nsame=['agent','agent']\n", "Duplicate"},
+		{"overlap", "[[bind]]\npackage=['apt']\nfrom='core'\nsame=['agent']\nto={agent=['native']}\n", "Duplicate"},
+		{"empty-output", "[[bind]]\npackage=['apt']\nfrom='core'\nto={agent=[]}\n", "InvalidValue"},
+		{"clause-duplicate", "[[bind]]\npackage=['apt']\nfrom='core'\nsame=['agent']\n[[bind]]\npackage=['apt']\nfrom='core'\nsame=['agent']\n", "Duplicate"},
+		{"legacy-duplicate", "[package.apt]\n'core:agent'=['agent']\n[[bind]]\npackage=['apt']\nfrom='core'\nsame=['agent']\n", "Duplicate"},
+		{"native-collision", "[[bind]]\npackage=['apt']\nfrom='core'\nto={agent=['native'],other=['native']}\n", "Conflict"},
+		{"unknown-field", "[[bind]]\npackage=['apt']\nfrom='core'\nsame=['agent']\nfallback=true\n", "Syntax"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			catalogue, err := Decode(context.Background(), "binding", []Member{{Path: "bindings/base.toml", Data: []byte(test.body)}}, map[string]profile.Library{"core": library})
+			var diagnostic *Diagnostic
+			if catalogue != (Catalogue{}) || !errors.As(err, &diagnostic) || diagnostic.Category != test.category {
+				t.Fatalf("Decode = %#v, %v; want zero %s", catalogue, err, test.category)
+			}
+		})
+	}
+	legacy := []byte("[package.apt]\n'core:agent'=['agent']\n")
+	members := []Member{{Path: "bindings/a.toml", Data: legacy}, {Path: "bindings/b.toml", Data: legacy}}
+	if _, err := Decode(context.Background(), "binding", members, map[string]profile.Library{"core": library}); err != nil {
+		t.Fatalf("legacy duplicate compatibility: %v", err)
+	}
+	members[0].Data = []byte("[[bind]]\npackage=['apt']\nfrom='core'\nsame=['agent']\n")
+	if catalogue, err := Decode(context.Background(), "binding", members, map[string]profile.Library{"core": library}); catalogue != (Catalogue{}) || diagnosticCategory(err) != "Duplicate" {
+		t.Fatalf("clause-first legacy duplicate = %#v, %v", catalogue, err)
+	}
+}
+
+func TestFactoredClauseExpandedKeyLimitAndCancellation(t *testing.T) {
+	var semanticBody strings.Builder
+	semanticBody.WriteString("[profiles.base]\npackages=[")
+	same := make([]string, 1024)
+	for index := range same {
+		same[index] = fmt.Sprintf("p%d", index)
+		fmt.Fprintf(&semanticBody, "'%s',", same[index])
+	}
+	semanticBody.WriteString("]\n")
+	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(semanticBody.String())}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bindingBody strings.Builder
+	bindingBody.WriteString("[[bind]]\npackage=['b0','b1','b2','b3','b4','b5','b6','b7']\nfrom='core'\nsame=[")
+	for index, symbol := range same {
+		if index > 0 {
+			bindingBody.WriteByte(',')
+		}
+		fmt.Fprintf(&bindingBody, "'%s'", symbol)
+	}
+	bindingBody.WriteString("]\n")
+	members := []Member{{Path: "bindings/base.toml", Data: []byte(bindingBody.String())}}
+	required := map[string]profile.Library{"core": library}
+	if _, err := Decode(context.Background(), "binding", members, required); err != nil {
+		t.Fatalf("exact expanded key maximum rejected: %v", err)
+	}
+	members[0].Data = append(members[0].Data, []byte("[[bind]]\npackage=['overflow']\nfrom='core'\nsame=['p0']\n")...)
+	if catalogue, err := Decode(context.Background(), "binding", members, required); catalogue != (Catalogue{}) || diagnosticCategory(err) != "Limit" {
+		t.Fatalf("expanded maximum plus one = %#v, %v", catalogue, err)
+	}
+	if catalogue, err := Decode(&countingContext{remaining: 5}, "binding", members[:1], required); catalogue != (Catalogue{}) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("mid-clause cancellation = %#v, %v", catalogue, err)
+	}
+}
+
+func diagnosticCategory(err error) string {
+	var diagnostic *Diagnostic
+	if errors.As(err, &diagnostic) {
+		return diagnostic.Category
+	}
+	return ""
 }
 
 func TestBackendAndNativeIdentityBoundaries(t *testing.T) {
@@ -123,6 +254,7 @@ func TestDecodeClosedShapeRejectsNestedOutputAsSyntax(t *testing.T) {
 func FuzzDecode(f *testing.F) {
 	f.Add([]byte("[package.zypper]\n'core:agent'=['agent-native']\n"))
 	f.Add([]byte("[service.systemd]\n'core:daemon'=['agent.service']\n"))
+	f.Add([]byte("[[bind]]\npackage=['zypper']\nfrom='core'\nsame=['agent']\n"))
 	f.Add([]byte{0xff, 0xfe})
 	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
 		"[profiles.base]\npackages=['agent']\n[profiles.base.services.daemon]\ntarget='system'\nrunning=true\n")}}, nil)

@@ -27,7 +27,39 @@ func Decode(ctx context.Context, origin string, members []Member, required map[s
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Path < ordered[j].Path })
 	mappings := make(map[mappingKey]mapping)
 	nativeOwners := make(map[string]string)
+	factored := make(map[mappingKey]bool)
 	used := make(map[string]struct{})
+	admit := func(member Member, domain Domain, backend, field, symbol string, values []string, clause bool) error {
+		outputs, err := admitOutputs(values)
+		if err != nil {
+			return bindingDiagnostic("InvalidValue", member.Path, field, err.Error(), err)
+		}
+		key := mappingKey{domain: domain, backend: backend, semantic: symbol}
+		if prior, exists := mappings[key]; exists {
+			if clause || factored[key] {
+				return bindingDiagnostic("Duplicate", member.Path, field, "binding cell is already defined", nil)
+			}
+			if strings.Join(prior.outputs, "\x00") != strings.Join(outputs, "\x00") {
+				return bindingDiagnostic("Conflict", member.Path, field, "different outputs for one binding key", nil)
+			}
+			prior.sources = unionStrings(prior.sources, []string{origin + ":" + member.Path})
+			mappings[key] = prior
+			return nil
+		}
+		if len(mappings) >= maxBindingKeys {
+			return bindingDiagnostic("Limit", member.Path, field, "binding key limit exceeded", nil)
+		}
+		for _, output := range outputs {
+			collision := fmt.Sprintf("%d\x00%s\x00%s", domain, backend, output)
+			if owner, exists := nativeOwners[collision]; exists && owner != symbol {
+				return bindingDiagnostic("Conflict", member.Path, field, "native identity already emitted by "+owner, nil)
+			}
+			nativeOwners[collision] = symbol
+		}
+		mappings[key] = mapping{outputs: outputs, sources: []string{origin + ":" + member.Path}}
+		factored[key] = clause
+		return nil
+	}
 	previous := ""
 	for _, member := range ordered {
 		if err := canceled(ctx); err != nil {
@@ -66,38 +98,66 @@ func Decode(ctx context.Context, origin string, members []Member, required map[s
 						return Catalogue{}, bindingDiagnostic("MissingReference", member.Path, reference, "missing requirement handle "+handle, nil)
 					}
 					used[handle] = struct{}{}
-					if err := proveDeclaration(domain, library, symbol); err != nil {
-						category := "MissingReference"
-						if strings.HasPrefix(err.Error(), "wrong domain") {
-							category = "WrongDomain"
-						}
+					if category, err := proveDeclaration(domain, library, symbol); err != nil {
 						return Catalogue{}, bindingDiagnostic(category, member.Path, reference, err.Error(), err)
 					}
-					outputs, err := admitOutputs(tables[backend][reference])
-					if err != nil {
-						return Catalogue{}, bindingDiagnostic("InvalidValue", member.Path, reference, err.Error(), err)
+					if err := admit(member, domain, backend, reference, symbol, tables[backend][reference], false); err != nil {
+						return Catalogue{}, err
 					}
-					key := mappingKey{domain: domain, backend: backend, semantic: symbol}
-					source := origin + ":" + member.Path
-					if prior, exists := mappings[key]; exists {
-						if strings.Join(prior.outputs, "\x00") != strings.Join(outputs, "\x00") {
-							return Catalogue{}, bindingDiagnostic("Conflict", member.Path, reference, "different outputs for one binding key", nil)
-						}
-						prior.sources = unionStrings(prior.sources, []string{source})
-						mappings[key] = prior
-						continue
+				}
+			}
+		}
+		for index, clause := range raw.Bind {
+			field := fmt.Sprintf("bind.%d", index)
+			domain, backends := Package, clause.Package
+			if (len(clause.Package) == 0) == (len(clause.Service) == 0) {
+				return Catalogue{}, bindingDiagnostic("InvalidValue", member.Path, field, "exactly one non-empty package or service backend list is required", nil)
+			}
+			if len(clause.Service) > 0 {
+				domain, backends = Service, clause.Service
+			}
+			library, exists := required[clause.From]
+			if !validSymbol(clause.From) || !exists {
+				return Catalogue{}, bindingDiagnostic("MissingReference", member.Path, field, "missing requirement handle "+clause.From, nil)
+			}
+			used[clause.From] = struct{}{}
+			seen := make(map[string]struct{}, len(backends))
+			for _, backend := range backends {
+				if !validBackendID(backend) {
+					return Catalogue{}, bindingDiagnostic("InvalidValue", member.Path, field, "invalid backend", nil)
+				}
+				if _, exists := seen[backend]; exists {
+					return Catalogue{}, bindingDiagnostic("Duplicate", member.Path, field, "duplicate backend", nil)
+				}
+				seen[backend] = struct{}{}
+			}
+			if len(clause.Same) == 0 && len(clause.To) == 0 {
+				return Catalogue{}, bindingDiagnostic("InvalidValue", member.Path, field, "same or to mappings are required", nil)
+			}
+			values := make(map[string][]string, len(clause.Same)+len(clause.To))
+			for _, symbol := range clause.Same {
+				if _, exists := values[symbol]; exists {
+					return Catalogue{}, bindingDiagnostic("Duplicate", member.Path, field, "duplicate or overlapping symbol", nil)
+				}
+				values[symbol] = []string{symbol}
+			}
+			for symbol, outputs := range clause.To {
+				if _, exists := values[symbol]; exists {
+					return Catalogue{}, bindingDiagnostic("Duplicate", member.Path, field, "duplicate or overlapping symbol", nil)
+				}
+				values[symbol] = outputs
+			}
+			for _, symbol := range sortedMapKeys(values) {
+				if category, err := proveDeclaration(domain, library, symbol); err != nil {
+					return Catalogue{}, bindingDiagnostic(category, member.Path, field, err.Error(), err)
+				}
+				for _, backend := range backends {
+					if err := canceled(ctx); err != nil {
+						return Catalogue{}, err
 					}
-					if len(mappings) >= maxBindingKeys {
-						return Catalogue{}, bindingDiagnostic("Limit", member.Path, reference, "binding key limit exceeded", nil)
+					if err := admit(member, domain, backend, field, symbol, values[symbol], true); err != nil {
+						return Catalogue{}, err
 					}
-					for _, output := range outputs {
-						collision := fmt.Sprintf("%d\x00%s\x00%s", domain, backend, output)
-						if owner, exists := nativeOwners[collision]; exists && owner != symbol {
-							return Catalogue{}, bindingDiagnostic("Conflict", member.Path, reference, "native identity already emitted by "+owner, nil)
-						}
-						nativeOwners[collision] = symbol
-					}
-					mappings[key] = mapping{outputs: outputs, sources: []string{source}}
 				}
 			}
 		}
@@ -110,28 +170,28 @@ func Decode(ctx context.Context, origin string, members []Member, required map[s
 	return Catalogue{state: &catalogueState{mappings: mappings}}, nil
 }
 
-func proveDeclaration(domain Domain, library profile.Library, symbol string) error {
+func proveDeclaration(domain Domain, library profile.Library, symbol string) (string, error) {
 	packageID, packageErr := model.NewPackageID(symbol)
 	serviceID, serviceErr := model.NewServiceID(symbol)
 	if packageErr != nil || serviceErr != nil {
-		return fmt.Errorf("invalid semantic Symbol")
+		return "MissingReference", fmt.Errorf("invalid semantic Symbol")
 	}
 	if domain == Package {
 		if library.DeclaresPackage(packageID) {
-			return nil
+			return "", nil
 		}
 		if library.DeclaresService(serviceID) {
-			return fmt.Errorf("wrong domain: declaration is a service")
+			return "WrongDomain", fmt.Errorf("wrong domain: declaration is a service")
 		}
-		return fmt.Errorf("missing package declaration %s", symbol)
+		return "MissingReference", fmt.Errorf("missing package declaration %s", symbol)
 	}
 	if library.DeclaresService(serviceID) {
-		return nil
+		return "", nil
 	}
 	if library.DeclaresPackage(packageID) {
-		return fmt.Errorf("wrong domain: declaration is a package")
+		return "WrongDomain", fmt.Errorf("wrong domain: declaration is a package")
 	}
-	return fmt.Errorf("missing service declaration %s", symbol)
+	return "MissingReference", fmt.Errorf("missing service declaration %s", symbol)
 }
 
 func parseQualified(value string) (string, string, error) {

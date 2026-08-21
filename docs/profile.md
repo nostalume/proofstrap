@@ -856,6 +856,38 @@ Package and service mappings are independently indexed by observed backend:
 "core:network-manager" = ["networkmanager"]
 ~~~
 
+Equal explicit cells may instead use a factored clause:
+
+~~~toml
+[[bind]]
+package = ["apt", "dnf5", "zypper", "apk"]
+from = "core"
+same = ["ca-certificates", "curl", "git"]
+to = { zip = ["zip", "unzip"] }
+
+[[bind]]
+service = ["openrc"]
+from = "core"
+to = { network-manager = ["networkmanager"] }
+~~~
+
+Exactly one of `package` or `service` is a non-empty, orderless backend list.
+`from` names one direct manifest requirement handle. Every symbol in `same`
+maps to the one native output with the same spelling; every `to` entry supplies
+an exact non-empty output set. At least one of `same` and `to` must be non-empty,
+and their symbols must be disjoint. Backends and symbols cannot repeat.
+
+A clause is only a finite rectangular spelling of ordinary binding cells. Each
+expanded cell passes the same declaration, output, collision, and 8,192-key
+admission laws as the expanded tables. A cell emitted by a clause cannot also
+occur in another clause or an expanded table; there is no source-order override.
+Clause order and list order do not affect the admitted catalogue.
+
+Expanded tables remain accepted. Clauses add no default, wildcard, inheritance,
+fallback, backend group, or runtime projection behavior. The archived member is
+still the exact authored TOML and pack schema remains 1. Readers predating clause
+support reject the closed `bind` field rather than guessing its meaning.
+
 The canonical binding key is:
 
 ~~~text
