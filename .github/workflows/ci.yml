@@ -61,7 +61,7 @@ jobs:
           test ! -d test/acceptance
           test ! -d test/performance
           test -f release/catalogue-version
-          test -f release/packs.sha256
+          test -f release/catalogue.sha256
           test ! -e internal/pack/official_test.go
           test ! -e cmd/proofstrap/executable_linux.go
           test ! -e cmd/proofstrap/executable_linux_test.go

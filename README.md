@@ -395,7 +395,7 @@ exact binding maps its complete expanded closure; an adapter alone does not
 invent a missing mapping.
 
 Use the catalogue's immutable
-[v0.2.0 release](https://github.com/nostalume/proofstrap-core-profiles/releases/tag/v0.2.0)
+[v0.3.0 release](https://github.com/nostalume/proofstrap-core-profiles/releases/tag/v0.3.0)
 for independently distributed pack assets and checksums.
 
 ## Exit status and recovery
