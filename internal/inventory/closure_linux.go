@@ -31,7 +31,8 @@ func AcquireClosure(ctx context.Context, environment Environment, roots []pack.D
 		}
 	}
 
-	provided := make(map[pack.Digest]pack.Source, len(packFiles))
+	provided := make([]pack.Source, 0, len(packFiles))
+	providedDigests := make(map[pack.Digest]struct{}, len(packFiles))
 	paths := make(map[string]struct{}, len(packFiles))
 	for _, path := range packFiles {
 		if _, exists := paths[path]; exists {
@@ -42,65 +43,45 @@ func AcquireClosure(ctx context.Context, environment Environment, roots []pack.D
 		if err != nil {
 			return nil, err
 		}
-		if _, exists := provided[source.Digest()]; exists {
+		if _, exists := providedDigests[source.Digest()]; exists {
 			return nil, diagnostic(pack.Duplicate, path, "duplicate pack file digest", nil)
 		}
-		provided[source.Digest()] = source
+		providedDigests[source.Digest()] = struct{}{}
+		provided = append(provided, source)
 	}
 
 	stores, err := closureStores(environment)
 	if err != nil {
 		return nil, err
 	}
-	rootSet := make(map[pack.Digest]struct{}, len(roots))
-	for _, digest := range roots {
-		rootSet[digest] = struct{}{}
-	}
-	loaded := make(map[pack.Digest]pack.Source)
-	usedPackFiles := make(map[pack.Digest]struct{})
-	for len(queue) > 0 {
-		if err := canceled(ctx); err != nil {
+	result, err := pack.ResolveClosure(ctx, roots, provided, func(ctx context.Context, digest pack.Digest) (pack.Source, error) {
+		if len(stores) == 0 {
+			return pack.Source{}, diagnostic(pack.MissingRequirement, digest.String(), "exact source is unavailable", nil)
+		}
+		source, loadErr := pack.LoadExact(ctx, stores, digest)
+		if loadErr != nil {
+			return pack.Source{}, diagnostic(packCategory(loadErr), digest.String(), "load exact closure source", loadErr)
+		}
+		return source, nil
+	})
+	if err != nil {
+		var inventoryError *Diagnostic
+		if errors.As(err, &inventoryError) {
 			return nil, err
 		}
-		digest := queue[0]
-		queue = queue[1:]
-		if _, exists := loaded[digest]; exists {
-			continue
-		}
-		source, supplied := provided[digest]
-		if supplied {
-			usedPackFiles[digest] = struct{}{}
-		} else {
-			if len(stores) == 0 {
-				return nil, diagnostic(pack.MissingRequirement, digest.String(), "exact source is unavailable", nil)
+		var packError *pack.Diagnostic
+		if errors.As(err, &packError) {
+			detail := packError.Detail
+			if packError.Category == pack.UnusedRequirement {
+				detail = "pack file is outside requested closure"
 			}
-			var loadErr error
-			source, loadErr = pack.LoadExact(ctx, stores, digest)
-			if loadErr != nil {
-				return nil, diagnostic(packCategory(loadErr), digest.String(), "load exact closure source", loadErr)
+			if packError.Category == pack.Canceled {
+				return nil, canceled(ctx)
 			}
+			return nil, diagnostic(packError.Category, packError.Source, detail, err)
 		}
-		if _, root := rootSet[digest]; !root && source.Kind() != pack.Semantic {
-			return nil, diagnostic(pack.KindMismatch, digest.String(), "required closure source is not semantic", nil)
-		}
-		loaded[digest] = source
-		if len(loaded) > maxClosureInputs {
-			return nil, diagnostic(pack.Limit, digest.String(), "closure source limit exceeded", nil)
-		}
-		for _, requirement := range source.Description().Requirements {
-			queue = append(queue, requirement.Digest)
-		}
+		return nil, err
 	}
-	for digest := range provided {
-		if _, used := usedPackFiles[digest]; !used {
-			return nil, diagnostic(pack.UnusedRequirement, digest.String(), "pack file is outside requested closure", nil)
-		}
-	}
-	result := make([]pack.Source, 0, len(loaded))
-	for _, source := range loaded {
-		result = append(result, source)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Digest().String() < result[j].Digest().String() })
 	return result, nil
 }
 

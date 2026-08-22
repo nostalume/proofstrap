@@ -34,7 +34,7 @@ linux = %q
 	}
 	packageBackend, _ := binding.NewPackageBackendID("zypper")
 	serviceBackend, _ := binding.NewServiceBackendID("systemd")
-	graph, err := compose(context.Background(), target, []pack.Source{catalogue, semantic, dependency}, binding.Backends{Package: packageBackend, Service: serviceBackend})
+	graph, err := projectDocument(context.Background(), target, []pack.Source{catalogue, semantic, dependency}, binding.Backends{Package: packageBackend, Service: serviceBackend})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ to = { agent = ["agent.service"] }
 	}
 	packageBackend, _ := binding.NewPackageBackendID("zypper")
 	serviceBackend, _ := binding.NewServiceBackendID("systemd")
-	graph, err := compose(context.Background(), target, nil, binding.Backends{Package: packageBackend, Service: serviceBackend})
+	graph, err := projectDocument(context.Background(), target, nil, binding.Backends{Package: packageBackend, Service: serviceBackend})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ extra = %q
 	if err != nil {
 		t.Fatal(err)
 	}
-	graph, _, err := resolveComposition(context.Background(), target, []pack.Source{core, extra})
+	graph, _, err := document.Resolve(context.Background(), target, []pack.Source{core, extra})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ choice=%q
 	if err != nil {
 		t.Fatal(err)
 	}
-	same, _, err := resolveComposition(context.Background(), target, []pack.Source{extra, core})
+	same, _, err := document.Resolve(context.Background(), target, []pack.Source{extra, core})
 	if err != nil || !reflect.DeepEqual(graph.Nodes(), same.Nodes()) {
 		t.Fatalf("alias changed graph truth: %v", err)
 	}
@@ -146,8 +146,8 @@ func TestResolveCompositionRejectsUnusedSourceAfterBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if graph, _, err := resolveComposition(context.Background(), target, []pack.Source{core, unused}); err == nil || len(graph.Nodes()) != 0 {
-		t.Fatalf("resolveComposition = %#v, %v", graph, err)
+	if graph, _, err := document.Resolve(context.Background(), target, []pack.Source{core, unused}); err == nil || len(graph.Nodes()) != 0 {
+		t.Fatalf("document.Resolve = %#v, %v", graph, err)
 	}
 }
 
@@ -188,4 +188,12 @@ func buildAppSource(t testing.TB, input, output string) pack.Source {
 		t.Fatal(err)
 	}
 	return source
+}
+
+func projectDocument(ctx context.Context, target document.Document, sources []pack.Source, backends binding.Backends) (binding.Graph, error) {
+	graph, catalogues, err := document.Resolve(ctx, target, sources)
+	if err != nil {
+		return binding.Graph{}, err
+	}
+	return binding.Project(ctx, graph, backends, catalogues)
 }

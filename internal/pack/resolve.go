@@ -163,52 +163,8 @@ func semanticClosure(ctx context.Context, root Source, available []Source) ([]So
 		}
 	}
 	inventory[root.Digest()] = root
-	state := make(map[Digest]uint8)
-	ordered := make([]Source, 0)
-	var bytes int64
-	var visit func(Source) error
-	visit = func(source Source) error {
-		if err := ctx.Err(); err != nil {
-			return cancellationDiagnostic(err)
-		}
-		if state[source.Digest()] == 1 {
-			return locatedDiagnostic(source, Cycle, "manifest.toml", "requires", "requirement cycle", nil)
-		}
-		if state[source.Digest()] == 2 {
-			return nil
-		}
-		if len(state) >= maxClosureSources {
-			return locatedDiagnostic(source, Limit, "manifest.toml", "requires", "closure source limit exceeded", nil)
-		}
-		bytes += source.state.compressed
-		if bytes > maxClosureBytes {
-			return locatedDiagnostic(source, Limit, "manifest.toml", "requires", "closure compressed-byte limit exceeded", nil)
-		}
-		state[source.Digest()] = 1
-		for _, handle := range sortedRequirementHandles(source.state.requirements) {
-			digest := source.state.requirements[handle]
-			required, exists := inventory[digest]
-			if !exists {
-				return locatedDiagnostic(source, MissingRequirement, "manifest.toml", "requires."+handle, "required source is unavailable", nil)
-			}
-			if required.Kind() != Semantic {
-				return locatedDiagnostic(source, KindMismatch, "manifest.toml", "requires."+handle, "required source is not semantic", nil)
-			}
-			if state[digest] == 1 {
-				return locatedDiagnostic(source, Cycle, "manifest.toml", "requires."+handle, "requirement cycle", nil)
-			}
-			if err := visit(required); err != nil {
-				return err
-			}
-		}
-		state[source.Digest()] = 2
-		ordered = append(ordered, source)
-		return nil
-	}
-	if err := visit(root); err != nil {
-		return nil, err
-	}
-	return ordered, nil
+	ordered, _, err := walkClosure(ctx, []Digest{root.Digest()}, inventory, nil)
+	return ordered, err
 }
 
 func profileMembers(source Source) []profile.Member {

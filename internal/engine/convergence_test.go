@@ -208,24 +208,21 @@ func traceText(keys []engine.Key, outcomes []engine.Outcome, operations []int) s
 	return buffer.String()
 }
 
-func compareCore(t testing.TB, fixture graphFixture, outcomes []engine.Outcome, operations []int, want oracle, state engine.State, checkpoint engine.Checkpoint) {
+func compareCore(t testing.TB, fixture graphFixture, outcomes []engine.Outcome, operations []int, want oracle, checkpoint engine.Checkpoint) {
 	t.Helper()
 	context := fixture.description + " trace=" + traceText(fixture.keys, outcomes, operations)
 	wantOffer, hasWant := want.offer()
-	stateOffer, hasState := state.Next()
 	checkpointOffer, hasCheckpoint := checkpoint.Next()
-	if hasState != hasWant || hasCheckpoint != hasWant ||
-		(hasWant && (stateOffer != fixture.keys[wantOffer] || checkpointOffer != fixture.keys[wantOffer])) {
-		t.Fatalf("%s: offer oracle=%d/%v state=%s/%v checkpoint=%s/%v", context, wantOffer, hasWant, stateOffer, hasState, checkpointOffer, hasCheckpoint)
+	if hasCheckpoint != hasWant || hasWant && checkpointOffer != fixture.keys[wantOffer] {
+		t.Fatalf("%s: offer oracle=%d/%v checkpoint=%s/%v", context, wantOffer, hasWant, checkpointOffer, hasCheckpoint)
 	}
-	if state.Status() != want.status() || checkpoint.Status() != want.status() {
-		t.Fatalf("%s: status oracle=%s state=%s checkpoint=%s", context, want.status(), state.Status(), checkpoint.Status())
+	if checkpoint.Status() != want.status() {
+		t.Fatalf("%s: status oracle=%s checkpoint=%s", context, want.status(), checkpoint.Status())
 	}
-	compareResults(t, context+" state", fixture.keys, want, state.Results(), false)
-	compareResults(t, context+" checkpoint", fixture.keys, want, checkpoint.Results(), true)
+	compareResults(t, context+" checkpoint", fixture.keys, want, checkpoint.Results())
 }
 
-func compareResults(t testing.TB, context string, keys []engine.Key, want oracle, got []engine.Result, evidence bool) {
+func compareResults(t testing.TB, context string, keys []engine.Key, want oracle, got []engine.Result) {
 	t.Helper()
 	if len(got) != len(keys) {
 		t.Fatalf("%s: result count=%d want=%d", context, len(got), len(keys))
@@ -235,11 +232,8 @@ func compareResults(t testing.TB, context string, keys []engine.Key, want oracle
 		if result.Key != keys[operation] || result.Status != want.statuses[operation] {
 			t.Fatalf("%s: result[%d]=%s/%s want=%s/%s", context, operation, result.Key, result.Status, keys[operation], want.statuses[operation])
 		}
-		if evidence && result.Detail != details[operation] {
+		if result.Detail != details[operation] {
 			t.Fatalf("%s: detail[%d]=%q want=%q", context, operation, result.Detail, details[operation])
-		}
-		if !evidence && result.Detail != "" {
-			t.Fatalf("%s: lightweight state retained detail %q", context, result.Detail)
 		}
 	}
 }
@@ -247,7 +241,6 @@ func compareResults(t testing.TB, context string, keys []engine.Key, want oracle
 func runSemanticTrace(t testing.TB, fixture graphFixture, outcomes []engine.Outcome, operations []int) int {
 	t.Helper()
 	want := newOracle(fixture.dependencies)
-	state := fixture.dag.Start()
 	run, initial, err := engine.Begin(fixture.dag, digest(t))
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +250,7 @@ func runSemanticTrace(t testing.TB, fixture graphFixture, outcomes []engine.Outc
 		t.Fatal(err)
 	}
 	journal := initial.Frame()
-	compareCore(t, fixture, nil, nil, want, state, checkpoint)
+	compareCore(t, fixture, nil, nil, want, checkpoint)
 	for generation, outcome := range outcomes {
 		offered, ok := want.offer()
 		if !ok || offered != operations[generation] {
@@ -272,12 +265,8 @@ func runSemanticTrace(t testing.TB, fixture graphFixture, outcomes []engine.Outc
 		if err != nil {
 			t.Fatal(err)
 		}
-		state, err = state.Record(fixture.keys[offered], outcome)
-		if err != nil {
-			t.Fatal(err)
-		}
 		want.apply(offered, outcome)
-		compareCore(t, fixture, outcomes[:generation+1], operations[:generation+1], want, state, checkpoint)
+		compareCore(t, fixture, outcomes[:generation+1], operations[:generation+1], want, checkpoint)
 	}
 	if _, ok := want.offer(); ok {
 		t.Fatalf("%s: trace is not terminal", fixture.description)
@@ -289,7 +278,7 @@ func runSemanticTrace(t testing.TB, fixture graphFixture, outcomes []engine.Outc
 	if summary.PlanDigest() != digest(t) || summary.Generation() != uint32(len(outcomes)) || summary.Status() != want.status() {
 		t.Fatalf("%s: summary digest=%s generation=%d status=%s", fixture.description, summary.PlanDigest(), summary.Generation(), summary.Status())
 	}
-	compareResults(t, fixture.description+" summary", fixture.keys, want, summary.Results(), true)
+	compareResults(t, fixture.description+" summary", fixture.keys, want, summary.Results())
 	return len(outcomes) + 1
 }
 

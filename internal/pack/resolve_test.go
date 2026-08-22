@@ -237,6 +237,26 @@ func syntheticSource(identity byte) Source {
 	}}
 }
 
+func TestResolveClosureLoadsEachMissingDigestOnceAndRejectsUnusedProvided(t *testing.T) {
+	root, dependency := syntheticSource(1), syntheticSource(2)
+	root.state.requirements = map[string]Digest{"core": dependency.Digest()}
+	loads := 0
+	closure, err := ResolveClosure(context.Background(), []Digest{root.Digest()}, []Source{root}, func(_ context.Context, digest Digest) (Source, error) {
+		loads++
+		if digest != dependency.Digest() {
+			t.Fatalf("loaded digest = %s", digest)
+		}
+		return dependency, nil
+	})
+	if err != nil || loads != 1 || len(closure) != 2 || closure[0].Digest().String() > closure[1].Digest().String() {
+		t.Fatalf("ResolveClosure = %#v, %v; loads=%d", closure, err, loads)
+	}
+	unused := syntheticSource(3)
+	if closure, err := ResolveClosure(context.Background(), []Digest{root.Digest()}, []Source{root, dependency, unused}, nil); closure != nil || errorCategory(t, err) != UnusedRequirement {
+		t.Fatalf("unused closure = %#v, %v", closure, err)
+	}
+}
+
 func TestResolveAdmitsSemanticRootAtomically(t *testing.T) {
 	t.Parallel()
 	root := semanticSource(t, "schema=1\nkind='semantic'\n",

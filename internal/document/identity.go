@@ -15,18 +15,18 @@ func result(resource model.Resource, err error) resourceResult {
 	return resourceResult{resource: resource, err: err}
 }
 
-func admitIdentity(origin string, raw rawDocument) (model.Graph, map[string]model.AccountKey, map[string]model.GroupKey, error) {
+func admitIdentity(origin string, raw rawDocument) (model.Graph, error) {
 	accounts := make(map[string]model.AccountKey, len(raw.Accounts))
 	groups := make(map[string]model.GroupKey, len(raw.Groups))
 	if raw.Groups != nil && len(raw.Groups) == 0 {
-		return model.Graph{}, nil, nil, diagnostic("InvalidValue", "groups", "explicit empty groups table")
+		return model.Graph{}, diagnostic("InvalidValue", "groups", "explicit empty groups table")
 	}
 	if raw.Accounts != nil && len(raw.Accounts) == 0 {
-		return model.Graph{}, nil, nil, diagnostic("InvalidValue", "accounts", "explicit empty accounts table")
+		return model.Graph{}, diagnostic("InvalidValue", "accounts", "explicit empty accounts table")
 	}
 	provenance, err := model.NewProvenance(origin)
 	if err != nil {
-		return model.Graph{}, nil, nil, diagnostic("InvalidValue", "", err.Error())
+		return model.Graph{}, diagnostic("InvalidValue", "", err.Error())
 	}
 	var contributions []model.Contribution
 	add := func(field string, built resourceResult) error {
@@ -42,11 +42,11 @@ func admitIdentity(origin string, raw rawDocument) (model.Graph, map[string]mode
 	}
 	for _, name := range sortedKeys(raw.Groups) {
 		if name == "root" {
-			return model.Graph{}, nil, nil, diagnostic("InvalidValue", "groups."+name, "root group is outside config authority")
+			return model.Graph{}, diagnostic("InvalidValue", "groups."+name, "root group is outside config authority")
 		}
 		key, err := model.NewGroupKey(name)
 		if err != nil {
-			return model.Graph{}, nil, nil, diagnostic("InvalidValue", "groups."+name, err.Error())
+			return model.Graph{}, diagnostic("InvalidValue", "groups."+name, err.Error())
 		}
 		groups[name] = key
 		item := raw.Groups[name]
@@ -54,21 +54,21 @@ func admitIdentity(origin string, raw rawDocument) (model.Graph, map[string]mode
 			err = add("groups."+name, result(model.NewExternalGroup(key)))
 		} else {
 			if *item.GID == 0 {
-				return model.Graph{}, nil, nil, diagnostic("InvalidValue", "groups."+name+".gid", "GID zero is outside config authority")
+				return model.Graph{}, diagnostic("InvalidValue", "groups."+name+".gid", "GID zero is outside config authority")
 			}
 			err = add("groups."+name, result(model.NewManagedGroup(key, *item.GID)))
 		}
 		if err != nil {
-			return model.Graph{}, nil, nil, err
+			return model.Graph{}, err
 		}
 	}
 	for _, name := range sortedKeys(raw.Accounts) {
 		if name == "root" {
-			return model.Graph{}, nil, nil, diagnostic("InvalidValue", "accounts."+name, "root account is outside config authority")
+			return model.Graph{}, diagnostic("InvalidValue", "accounts."+name, "root account is outside config authority")
 		}
 		key, err := model.NewAccountKey(name)
 		if err != nil {
-			return model.Graph{}, nil, nil, diagnostic("InvalidValue", "accounts."+name, err.Error())
+			return model.Graph{}, diagnostic("InvalidValue", "accounts."+name, err.Error())
 		}
 		accounts[name] = key
 	}
@@ -89,45 +89,45 @@ func admitIdentity(origin string, raw rawDocument) (model.Graph, map[string]mode
 			err = add(field, result(model.NewExternalAccount(key)))
 		case 3:
 			if *item.UID == 0 {
-				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".uid", "UID zero is outside config authority")
+				return model.Graph{}, diagnostic("InvalidValue", field+".uid", "UID zero is outside config authority")
 			}
 			group, exists := groups[*item.Group]
 			if !exists {
-				return model.Graph{}, nil, nil, diagnostic("MissingReference", field+".group", "group is not declared")
+				return model.Graph{}, diagnostic("MissingReference", field+".group", "group is not declared")
 			}
 			err = add(field, result(model.NewManagedAccount(key, *item.UID, group, *item.Home)))
 		default:
-			return model.Graph{}, nil, nil, diagnostic("InvalidValue", field, "uid, group, and home must be supplied together")
+			return model.Graph{}, diagnostic("InvalidValue", field, "uid, group, and home must be supplied together")
 		}
 		if err != nil {
-			return model.Graph{}, nil, nil, err
+			return model.Graph{}, err
 		}
 		if item.HomeMode != nil {
 			if len(*item.HomeMode) != 4 {
-				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".home_mode", "mode must be four octal characters")
+				return model.Graph{}, diagnostic("InvalidValue", field+".home_mode", "mode must be four octal characters")
 			}
 			mode, parseErr := strconv.ParseUint(*item.HomeMode, 8, 16)
 			if parseErr != nil {
-				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".home_mode", "mode must be an octal string")
+				return model.Graph{}, diagnostic("InvalidValue", field+".home_mode", "mode must be an octal string")
 			}
 			if err = add(field+".home", result(model.NewHome(key))); err != nil {
-				return model.Graph{}, nil, nil, err
+				return model.Graph{}, err
 			}
 			if err = add(field+".home_mode", result(model.NewHomeMode(key, uint16(mode)))); err != nil {
-				return model.Graph{}, nil, nil, err
+				return model.Graph{}, err
 			}
 		}
 		if item.Shell != nil {
 			if err = add(field+".shell", result(model.NewAccountShell(key, *item.Shell))); err != nil {
-				return model.Graph{}, nil, nil, err
+				return model.Graph{}, err
 			}
 		}
 		if item.Locked != nil {
 			if !*item.Locked {
-				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+".locked", "false unlock intent is not supported")
+				return model.Graph{}, diagnostic("InvalidValue", field+".locked", "false unlock intent is not supported")
 			}
 			if err = add(field+".locked", result(model.NewAccountLock(key))); err != nil {
-				return model.Graph{}, nil, nil, err
+				return model.Graph{}, err
 			}
 		}
 	}
@@ -135,44 +135,44 @@ func admitIdentity(origin string, raw rawDocument) (model.Graph, map[string]mode
 		item, account := raw.Accounts[name], accounts[name]
 		field := "accounts." + name + ".supplementary"
 		if item.Supplementary != nil && len(item.Supplementary) == 0 {
-			return model.Graph{}, nil, nil, diagnostic("InvalidValue", field, "explicit empty supplementary table")
+			return model.Graph{}, diagnostic("InvalidValue", field, "explicit empty supplementary table")
 		}
 		for _, groupName := range sortedKeys(item.Supplementary) {
 			group, ok := groups[groupName]
 			if !ok {
-				return model.Graph{}, nil, nil, diagnostic("MissingReference", field+"."+groupName, "group is not declared")
+				return model.Graph{}, diagnostic("MissingReference", field+"."+groupName, "group is not declared")
 			}
 			if item.Group != nil && *item.Group == groupName {
-				return model.Graph{}, nil, nil, diagnostic("InvalidValue", field+"."+groupName, "primary group cannot be supplementary")
+				return model.Graph{}, diagnostic("InvalidValue", field+"."+groupName, "primary group cannot be supplementary")
 			}
 			if err = add(field+"."+groupName, result(model.NewMembership(account, group, item.Supplementary[groupName]))); err != nil {
-				return model.Graph{}, nil, nil, err
+				return model.Graph{}, err
 			}
 		}
 	}
 	if raw.Hostname != nil {
 		if err = add("hostname", result(model.NewHostname(*raw.Hostname))); err != nil {
-			return model.Graph{}, nil, nil, err
+			return model.Graph{}, err
 		}
 	}
 	if raw.Timezone != nil {
 		if err = add("timezone", result(model.NewTimezone(*raw.Timezone))); err != nil {
-			return model.Graph{}, nil, nil, err
+			return model.Graph{}, err
 		}
 	}
 	if len(contributions) > maxResources {
-		return model.Graph{}, nil, nil, diagnostic("Limit", "", "portable resource limit exceeded")
+		return model.Graph{}, diagnostic("Limit", "", "portable resource limit exceeded")
 	}
 	graph, err := model.EmptyGraph().Add(contributions)
 	if err != nil {
-		return model.Graph{}, nil, nil, diagnostic("Conflict", "", err.Error())
+		return model.Graph{}, diagnostic("Conflict", "", err.Error())
 	}
 	edges := 0
 	for _, node := range graph.Nodes() {
 		edges += len(node.Dependencies())
 	}
 	if edges > maxEdges {
-		return model.Graph{}, nil, nil, diagnostic("Limit", "", "portable dependency edge limit exceeded")
+		return model.Graph{}, diagnostic("Limit", "", "portable dependency edge limit exceeded")
 	}
-	return graph, accounts, groups, nil
+	return graph, nil
 }

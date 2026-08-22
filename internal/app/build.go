@@ -57,7 +57,7 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 
 	projected := binding.Graph{}
 	if len(view.Include) != 0 || len(view.Direct.Nodes()) != 0 {
-		semantic, catalogues, resolveErr := resolveComposition(ctx, target, sources)
+		semantic, catalogues, resolveErr := document.Resolve(ctx, target, sources)
 		if resolveErr != nil {
 			return Plan{}, resolveErr
 		}

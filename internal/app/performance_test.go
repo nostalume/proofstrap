@@ -48,7 +48,7 @@ func BenchmarkComposeProfile(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		_, err := compose(ctx, target, []pack.Source{core, linux}, binding.Backends{Package: backend})
+		_, err := projectDocument(ctx, target, []pack.Source{core, linux}, binding.Backends{Package: backend})
 		cancel()
 		if err != nil {
 			b.Fatal(err)

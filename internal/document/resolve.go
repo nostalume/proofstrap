@@ -1,4 +1,4 @@
-package app
+package document
 
 import (
 	"context"
@@ -6,21 +6,14 @@ import (
 	"strings"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/document"
 	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/pack"
 	"github.com/nostalume/proofstrap/internal/profile"
 )
 
-func compose(ctx context.Context, target document.Document, sources []pack.Source, backends binding.Backends) (binding.Graph, error) {
-	graph, catalogues, err := resolveComposition(ctx, target, sources)
-	if err != nil {
-		return binding.Graph{}, err
-	}
-	return binding.Project(ctx, graph, backends, catalogues)
-}
-
-func resolveComposition(ctx context.Context, target document.Document, sources []pack.Source) (model.Graph, []binding.Catalogue, error) {
+// Resolve links and expands an admitted document against its exact acquired
+// sources. It performs no I/O and does not select native backends.
+func Resolve(ctx context.Context, target Document, sources []pack.Source) (model.Graph, []binding.Catalogue, error) {
 	if ctx == nil || ctx.Err() != nil {
 		return model.Graph{}, nil, context.Canceled
 	}
@@ -105,7 +98,7 @@ func resolveComposition(ctx context.Context, target document.Document, sources [
 	for _, call := range view.Include {
 		root, err := profile.BindCall(local, call, identities, resolveProfile)
 		if err != nil {
-			return model.Graph{}, nil, &document.Diagnostic{Category: "InvalidValue", Field: "include", Detail: err.Error()}
+			return model.Graph{}, nil, &Diagnostic{Category: "InvalidValue", Field: "include", Detail: err.Error()}
 		}
 		bound = append(bound, root)
 	}
@@ -142,7 +135,7 @@ func resolveComposition(ctx context.Context, target document.Document, sources [
 	}
 	for _, source := range view.Sources {
 		if _, exists := used[source.Name]; !exists {
-			return model.Graph{}, nil, &document.Diagnostic{Category: "UnusedSource", Field: "sources." + source.Name, Detail: "source alias is unused"}
+			return model.Graph{}, nil, &Diagnostic{Category: "UnusedSource", Field: "sources." + source.Name, Detail: "source alias is unused"}
 		}
 	}
 	return graph, catalogues, nil

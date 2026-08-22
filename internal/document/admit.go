@@ -170,7 +170,7 @@ func Decode(origin string, data []byte) (Document, error) {
 			return Document{}, convertBinding(err)
 		}
 	}
-	direct, _, _, err := admitIdentity(origin, raw)
+	direct, err := admitIdentity(origin, raw)
 	if err != nil {
 		return Document{}, err
 	}

@@ -38,19 +38,6 @@ func ParsePlanDigest(value string) (PlanDigest, error) {
 
 func (digest PlanDigest) String() string { return digest.value }
 
-type stringHeap []string
-
-func (values stringHeap) Len() int           { return len(values) }
-func (values stringHeap) Less(i, j int) bool { return values[i] < values[j] }
-func (values stringHeap) Swap(i, j int)      { values[i], values[j] = values[j], values[i] }
-func (values *stringHeap) Push(value any)    { *values = append(*values, value.(string)) }
-func (values *stringHeap) Pop() any {
-	old := *values
-	value := old[len(old)-1]
-	*values = old[:len(old)-1]
-	return value
-}
-
 type operationRecord struct {
 	status OperationStatus
 	detail string
