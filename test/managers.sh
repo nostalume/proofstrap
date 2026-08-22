@@ -69,8 +69,7 @@ select_case() {
 		service:openrc) physical=package-apk-openrc; domain=service; backend=openrc; tier=openrc ;;
 		*) fail "reason=unknown-case" ;;
 	esac
-	archive=${physical}_linux_amd64.tar.gz
-	digest=$(awk -v name="$archive" '$2 == name { print $1 }' "$pins")
+	archive=${physical}_linux_amd64.tar.gz; digest=$(awk -v name="$archive" '$2 == name { print $1 }' "$pins")
 	[ "${#digest}" -eq 64 ] || fail "reason=missing-pin"
 }
 
@@ -174,8 +173,7 @@ run_case() {
 	case_id=$1; reported=0; began=$(date +%s); select_case; resolve_case
 	for tool in tar sha256sum unshare nsenter mount chroot pgrep; do command -v "$tool" >/dev/null || unavailable "reason=$tool"; done
 	[ "$outer_uid" -eq 0 ] || [ "$tier" != package ] || { [ -n "$subuid" ] && [ -n "$subgid" ]; } || unavailable "reason=subids"
-	generation=$(mktemp -d "${TMPDIR:-/tmp}/proofstrap-manager.XXXXXX")
-	touch "$generation/SENTINEL.proofstrap-manager"
+	generation=$(mktemp -d "${TMPDIR:-/tmp}/proofstrap-manager.XXXXXX"); touch "$generation/SENTINEL.proofstrap-manager"
 	runner=$generation/runner; install -m 0755 "$root/test/managers.sh" "$runner"
 	tar --no-same-owner -xzf "$object" -C "$generation"
 	target=$generation/root; work=$target/proofstrap-case; mkdir -p "$work"
@@ -215,5 +213,4 @@ run_case() {
 [ "$version" = cases-v1 ] || { case_id=setup; fail "reason=version"; }
 [ -f "$pins" ] && [ "$(wc -l < "$pins")" -eq 5 ] || { case_id=setup; fail "reason=pins"; }
 if [ "$#" -eq 0 ]; then set -- package:apt package:dnf4 package:dnf5 package:zypper package:apk service:systemd service:openrc; fi
-for selected in "$@"; do run_case "$selected"; done
-trap - EXIT HUP INT TERM
+for selected in "$@"; do run_case "$selected"; done; trap - EXIT HUP INT TERM

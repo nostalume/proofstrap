@@ -20,10 +20,7 @@ Proofstrap releases support Linux `amd64` and `arm64`. Download the installer
 before running it:
 
 ```sh
-curl --fail --location --show-error --silent \
-  https://github.com/nostalume/proofstrap/releases/latest/download/install.sh \
-  -o install.sh
-sh install.sh
+curl --fail --location --show-error --silent https://github.com/nostalume/proofstrap/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 The default destination is `$HOME/.local/bin`. Set
