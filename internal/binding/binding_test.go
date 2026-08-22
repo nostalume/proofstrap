@@ -1,6 +1,7 @@
 package binding
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,17 +12,97 @@ import (
 
 	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/profile"
+	"github.com/pelletier/go-toml/v2"
 )
 
-func TestDecodeAndProjectTypedCatalogue(t *testing.T) {
-	library, err := profile.Decode("semantic", []profile.Member{{
+func admitProfile(origin string, members []profile.Member, required map[string]profile.Library) (profile.Library, error) {
+	inputs := make([]profile.Input, len(members))
+	for index, member := range members {
+		input, err := profile.Parse(member)
+		if err != nil {
+			return profile.Library{}, err
+		}
+		inputs[index] = input
+	}
+	module, err := profile.Admit(inputs)
+	if err != nil {
+		return profile.Library{}, err
+	}
+	return profile.Link(origin, module, required)
+}
+
+func admitBinding(ctx context.Context, origin string, members []Member, required map[string]profile.Library) (Catalogue, error) {
+	inputs := make([]Input, len(members))
+	for index, member := range members {
+		input, err := Parse(member)
+		if err != nil {
+			return Catalogue{}, err
+		}
+		inputs[index] = input
+	}
+	module, err := Admit(ctx, origin, inputs)
+	if err != nil {
+		return Catalogue{}, err
+	}
+	return Link(ctx, module, required)
+}
+
+func TestPackedAndEmbeddedAdmissionAgree(t *testing.T) {
+	library, err := admitProfile("semantic", []profile.Member{{
+		Path: "profiles/base.toml",
+		Data: []byte("[profiles.base]\npackages=['agent']\n"),
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("[package.apt]\n'core:agent'=['agent']\n")
+	packed, err := Parse(Member{Path: "bindings/base.toml", Data: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packedModule, err := Admit(context.Background(), "binding", []Input{packed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packedCatalogue, err := Link(context.Background(), packedModule, map[string]profile.Library{"core": library})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var document struct {
+		Schema int `toml:"schema"`
+		Syntax
+	}
+	decoder := toml.NewDecoder(bytes.NewReader(append([]byte("schema=3\n"), body...))).DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		t.Fatal(err)
+	}
+	embedded, err := Embed("bindings/base.toml", document.Syntax)
+	if err != nil {
+		t.Fatal(err)
+	}
+	embeddedModule, err := Admit(context.Background(), "binding", []Input{embedded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	embeddedCatalogue, err := Link(context.Background(), embeddedModule, map[string]profile.Library{"core": library})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(packedCatalogue, embeddedCatalogue) {
+		t.Fatalf("packed and embedded catalogues differ:\n%#v\n%#v", packedCatalogue, embeddedCatalogue)
+	}
+}
+
+func TestAdmissionAndProjectTypedCatalogue(t *testing.T) {
+	library, err := admitProfile("semantic", []profile.Member{{
 		Path: "profiles/base.toml",
 		Data: []byte("[profiles.base]\npackages=['agent']\n[profiles.base.services.agent]\ntarget='system'\nrunning=true\npackages=['agent']\n"),
 	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalogue, err := Decode(context.Background(), "binding", []Member{{
+	catalogue, err := admitBinding(context.Background(), "binding", []Member{{
 		Path: "bindings/base.toml",
 		Data: []byte("[package.zypper]\n'core:agent'=['agent-native','agent-tools']\n[service.systemd]\n'core:agent'=['agent.service','agent-helper.service']\n"),
 	}}, map[string]profile.Library{"core": library})
@@ -55,8 +136,8 @@ func TestDecodeAndProjectTypedCatalogue(t *testing.T) {
 	}
 }
 
-func TestDecodeFactoredClausesMatchExpandedCatalogue(t *testing.T) {
-	library, err := profile.Decode("semantic", []profile.Member{{
+func TestAdmissionFactoredClausesMatchExpandedCatalogue(t *testing.T) {
+	library, err := admitProfile("semantic", []profile.Member{{
 		Path: "profiles/base.toml",
 		Data: []byte("[profiles.base]\npackages=['agent','archive']\n[profiles.base.services.daemon]\ntarget='system'\nrunning=true\n"),
 	}}, nil)
@@ -71,7 +152,7 @@ func TestDecodeFactoredClausesMatchExpandedCatalogue(t *testing.T) {
 		"[service.systemd]\n'core:daemon'=['daemon']\n"
 	decode := func(body string) Catalogue {
 		t.Helper()
-		catalogue, err := Decode(context.Background(), "binding", []Member{{Path: "bindings/base.toml", Data: []byte(body)}}, required)
+		catalogue, err := admitBinding(context.Background(), "binding", []Member{{Path: "bindings/base.toml", Data: []byte(body)}}, required)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,8 +177,8 @@ func TestDecodeFactoredClausesMatchExpandedCatalogue(t *testing.T) {
 	}
 }
 
-func TestDecodeRejectsFactoredClauseDefectsAtomically(t *testing.T) {
-	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
+func TestAdmissionRejectsFactoredClauseDefectsAtomically(t *testing.T) {
+	library, err := admitProfile("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
 		"[profiles.base]\npackages=['agent','other']\n[profiles.base.services.daemon]\ntarget='system'\nrunning=true\n")}}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +204,7 @@ func TestDecodeRejectsFactoredClauseDefectsAtomically(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			catalogue, err := Decode(context.Background(), "binding", []Member{{Path: "bindings/base.toml", Data: []byte(test.body)}}, map[string]profile.Library{"core": library})
+			catalogue, err := admitBinding(context.Background(), "binding", []Member{{Path: "bindings/base.toml", Data: []byte(test.body)}}, map[string]profile.Library{"core": library})
 			var diagnostic *Diagnostic
 			if catalogue != (Catalogue{}) || !errors.As(err, &diagnostic) || diagnostic.Category != test.category {
 				t.Fatalf("Decode = %#v, %v; want zero %s", catalogue, err, test.category)
@@ -132,11 +213,11 @@ func TestDecodeRejectsFactoredClauseDefectsAtomically(t *testing.T) {
 	}
 	legacy := []byte("[package.apt]\n'core:agent'=['agent']\n")
 	members := []Member{{Path: "bindings/a.toml", Data: legacy}, {Path: "bindings/b.toml", Data: legacy}}
-	if _, err := Decode(context.Background(), "binding", members, map[string]profile.Library{"core": library}); err != nil {
+	if _, err := admitBinding(context.Background(), "binding", members, map[string]profile.Library{"core": library}); err != nil {
 		t.Fatalf("legacy duplicate compatibility: %v", err)
 	}
 	members[0].Data = []byte("[[bind]]\npackage=['apt']\nfrom='core'\nsame=['agent']\n")
-	if catalogue, err := Decode(context.Background(), "binding", members, map[string]profile.Library{"core": library}); catalogue != (Catalogue{}) || diagnosticCategory(err) != "Duplicate" {
+	if catalogue, err := admitBinding(context.Background(), "binding", members, map[string]profile.Library{"core": library}); catalogue != (Catalogue{}) || diagnosticCategory(err) != "Duplicate" {
 		t.Fatalf("clause-first legacy duplicate = %#v, %v", catalogue, err)
 	}
 }
@@ -150,7 +231,7 @@ func TestFactoredClauseExpandedKeyLimitAndCancellation(t *testing.T) {
 		fmt.Fprintf(&semanticBody, "'%s',", same[index])
 	}
 	semanticBody.WriteString("]\n")
-	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(semanticBody.String())}}, nil)
+	library, err := admitProfile("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(semanticBody.String())}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,14 +246,14 @@ func TestFactoredClauseExpandedKeyLimitAndCancellation(t *testing.T) {
 	bindingBody.WriteString("]\n")
 	members := []Member{{Path: "bindings/base.toml", Data: []byte(bindingBody.String())}}
 	required := map[string]profile.Library{"core": library}
-	if _, err := Decode(context.Background(), "binding", members, required); err != nil {
+	if _, err := admitBinding(context.Background(), "binding", members, required); err != nil {
 		t.Fatalf("exact expanded key maximum rejected: %v", err)
 	}
 	members[0].Data = append(members[0].Data, []byte("[[bind]]\npackage=['overflow']\nfrom='core'\nsame=['p0']\n")...)
-	if catalogue, err := Decode(context.Background(), "binding", members, required); catalogue != (Catalogue{}) || diagnosticCategory(err) != "Limit" {
+	if catalogue, err := admitBinding(context.Background(), "binding", members, required); catalogue != (Catalogue{}) || diagnosticCategory(err) != "Limit" {
 		t.Fatalf("expanded maximum plus one = %#v, %v", catalogue, err)
 	}
-	if catalogue, err := Decode(&countingContext{remaining: 5}, "binding", members[:1], required); catalogue != (Catalogue{}) || !errors.Is(err, context.Canceled) {
+	if catalogue, err := admitBinding(&countingContext{remaining: 5}, "binding", members[:1], required); catalogue != (Catalogue{}) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("mid-clause cancellation = %#v, %v", catalogue, err)
 	}
 }
@@ -205,8 +286,8 @@ func TestBackendAndNativeIdentityBoundaries(t *testing.T) {
 	}
 }
 
-func TestDecodeRejectsReferenceAndCollisionDefectsAtomically(t *testing.T) {
-	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
+func TestAdmissionRejectsReferenceAndCollisionDefectsAtomically(t *testing.T) {
+	library, err := admitProfile("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
 		"[profiles.base]\npackages=['agent','other']\n[profiles.base.services.daemon]\ntarget='system'\nrunning=true\n")}}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +308,7 @@ func TestDecodeRejectsReferenceAndCollisionDefectsAtomically(t *testing.T) {
 			if test.name == "unused-handle" {
 				required["unused"] = library
 			}
-			catalogue, err := Decode(context.Background(), "binding", []Member{{Path: "bindings/base.toml", Data: []byte(test.body)}}, required)
+			catalogue, err := admitBinding(context.Background(), "binding", []Member{{Path: "bindings/base.toml", Data: []byte(test.body)}}, required)
 			var diagnostic *Diagnostic
 			if catalogue != (Catalogue{}) || !errors.As(err, &diagnostic) || diagnostic.Category != test.category {
 				t.Fatalf("Decode = %#v, %v; want zero %s", catalogue, err, test.category)
@@ -236,13 +317,13 @@ func TestDecodeRejectsReferenceAndCollisionDefectsAtomically(t *testing.T) {
 	}
 }
 
-func TestDecodeClosedShapeRejectsNestedOutputAsSyntax(t *testing.T) {
-	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
+func TestAdmissionClosedShapeRejectsNestedOutputAsSyntax(t *testing.T) {
+	library, err := admitProfile("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
 		"[profiles.base]\npackages=['agent']\n")}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalogue, err := Decode(context.Background(), "binding", []Member{{
+	catalogue, err := admitBinding(context.Background(), "binding", []Member{{
 		Path: "bindings/nested.toml", Data: []byte("[package.test]\n'core:agent'={nested=['native']}\n"),
 	}}, map[string]profile.Library{"core": library})
 	var diagnostic *Diagnostic
@@ -251,12 +332,12 @@ func TestDecodeClosedShapeRejectsNestedOutputAsSyntax(t *testing.T) {
 	}
 }
 
-func FuzzDecode(f *testing.F) {
+func FuzzAdmission(f *testing.F) {
 	f.Add([]byte("[package.zypper]\n'core:agent'=['agent-native']\n"))
 	f.Add([]byte("[service.systemd]\n'core:daemon'=['agent.service']\n"))
 	f.Add([]byte("[[bind]]\npackage=['zypper']\nfrom='core'\nsame=['agent']\n"))
 	f.Add([]byte{0xff, 0xfe})
-	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
+	library, err := admitProfile("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
 		"[profiles.base]\npackages=['agent']\n[profiles.base.services.daemon]\ntarget='system'\nrunning=true\n")}}, nil)
 	if err != nil {
 		f.Fatal(err)
@@ -265,7 +346,7 @@ func FuzzDecode(f *testing.F) {
 		if len(data) > maxMemberBytes+1 {
 			data = data[:maxMemberBytes+1]
 		}
-		catalogue, err := Decode(context.Background(), "binding", []Member{{Path: "bindings/fuzz.toml", Data: data}}, map[string]profile.Library{"core": library})
+		catalogue, err := admitBinding(context.Background(), "binding", []Member{{Path: "bindings/fuzz.toml", Data: data}}, map[string]profile.Library{"core": library})
 		if err != nil && catalogue != (Catalogue{}) {
 			t.Fatalf("Decode returned partial Catalogue with %v", err)
 		}
@@ -276,7 +357,7 @@ func FuzzDecode(f *testing.F) {
 }
 
 func TestProjectConflictPrecedesUnsupportedAndUnusedMappingsAreInert(t *testing.T) {
-	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
+	library, err := admitProfile("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(
 		"[profiles.base]\npackages=['wanted']\n[profiles.spare]\npackages=['unused-a','unused-b']\n")}}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -359,7 +440,7 @@ func TestCatalogueKeyBoundary(t *testing.T) {
 		fmt.Fprintf(&semanticBody, "'p%d'", index)
 	}
 	semanticBody.WriteString("]\n")
-	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(semanticBody.String())}}, nil)
+	library, err := admitProfile("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte(semanticBody.String())}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,12 +452,12 @@ func TestCatalogueKeyBoundary(t *testing.T) {
 		}
 	}
 	members := []Member{{Path: "bindings/base.toml", Data: []byte(bindingBody.String())}}
-	if _, err := Decode(context.Background(), "binding", members, map[string]profile.Library{"core": library}); err != nil {
+	if _, err := admitBinding(context.Background(), "binding", members, map[string]profile.Library{"core": library}); err != nil {
 		t.Fatalf("exact catalogue-key maximum rejected: %v", err)
 	}
 	bindingBody.WriteString("[package.overflow]\n'core:p0'=['overflow']\n")
 	members[0].Data = []byte(bindingBody.String())
-	catalogue, err := Decode(context.Background(), "binding", members, map[string]profile.Library{"core": library})
+	catalogue, err := admitBinding(context.Background(), "binding", members, map[string]profile.Library{"core": library})
 	var diagnostic *Diagnostic
 	if catalogue != (Catalogue{}) || !errors.As(err, &diagnostic) || diagnostic.Category != "Limit" {
 		t.Fatalf("catalogue maximum plus one = %#v, %v", catalogue, err)
@@ -518,7 +599,7 @@ func semanticGraph(t *testing.T, library profile.Library) model.Graph {
 }
 
 func TestProjectReturnsCompleteUnsupportedBlockersAtomically(t *testing.T) {
-	library, err := profile.Decode("semantic", []profile.Member{{
+	library, err := admitProfile("semantic", []profile.Member{{
 		Path: "profiles/base.toml",
 		Data: []byte("[profiles.base]\npackages=['one','two']\n"),
 	}}, nil)

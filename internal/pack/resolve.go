@@ -62,7 +62,7 @@ func Resolve(ctx context.Context, root Source, available []Source) (Pack, error)
 		for index, member := range source.state.members {
 			members[index] = profile.Member{Path: member.path, Data: append([]byte(nil), member.data...)}
 		}
-		library, err := profile.Decode(source.Digest().String(), members, required)
+		library, err := admitProfileMembers(source.Digest().String(), members, required)
 		if err != nil {
 			return Pack{}, convertProfileDiagnostic(source, err)
 		}
@@ -102,7 +102,7 @@ func ResolveCatalogue(ctx context.Context, root Source, available []Source) (bin
 		for handle, digest := range source.state.requirements {
 			required[handle] = libraries[digest]
 		}
-		library, err := profile.Decode(source.Digest().String(), profileMembers(source), required)
+		library, err := admitProfileMembers(source.Digest().String(), profileMembers(source), required)
 		if err != nil {
 			return binding.Catalogue{}, convertProfileDiagnostic(source, err)
 		}
@@ -116,11 +116,43 @@ func ResolveCatalogue(ctx context.Context, root Source, available []Source) (bin
 	for index, member := range root.state.members {
 		members[index] = binding.Member{Path: member.path, Data: append([]byte(nil), member.data...)}
 	}
-	catalogue, err := binding.Decode(ctx, root.Digest().String(), members, required)
+	catalogue, err := admitBindingMembers(ctx, root.Digest().String(), members, required)
 	if err != nil {
 		return binding.Catalogue{}, convertBindingDiagnostic(root, err)
 	}
 	return catalogue, nil
+}
+
+func admitProfileMembers(origin string, members []profile.Member, required map[string]profile.Library) (profile.Library, error) {
+	inputs := make([]profile.Input, len(members))
+	for index, member := range members {
+		input, err := profile.Parse(member)
+		if err != nil {
+			return profile.Library{}, err
+		}
+		inputs[index] = input
+	}
+	module, err := profile.Admit(inputs)
+	if err != nil {
+		return profile.Library{}, err
+	}
+	return profile.Link(origin, module, required)
+}
+
+func admitBindingMembers(ctx context.Context, origin string, members []binding.Member, required map[string]profile.Library) (binding.Catalogue, error) {
+	inputs := make([]binding.Input, len(members))
+	for index, member := range members {
+		input, err := binding.Parse(member)
+		if err != nil {
+			return binding.Catalogue{}, err
+		}
+		inputs[index] = input
+	}
+	module, err := binding.Admit(ctx, origin, inputs)
+	if err != nil {
+		return binding.Catalogue{}, err
+	}
+	return binding.Link(ctx, module, required)
 }
 
 func semanticClosure(ctx context.Context, root Source, available []Source) ([]Source, error) {

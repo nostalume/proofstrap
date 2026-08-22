@@ -263,11 +263,27 @@ func TestNativeDemandUsesTheSameTypedContractAsBindingDemand(t *testing.T) {
 
 func projectedServiceNode(t *testing.T, user bool, unit string) binding.Node {
 	t.Helper()
-	library, err := profile.Decode("semantic", []profile.Member{{Path: "profiles/base.toml", Data: []byte("[profiles.base.services.demo]\ntarget='system'\nenabled=true\nrunning=true\n")}}, nil)
+	profileInput, err := profile.Parse(profile.Member{Path: "profiles/base.toml", Data: []byte("[profiles.base.services.demo]\ntarget='system'\nenabled=true\nrunning=true\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalogue, err := binding.Decode(context.Background(), "binding", []binding.Member{{Path: "bindings/base.toml", Data: []byte("[service.systemd]\n'core:demo'=['" + unit + "']\n")}}, map[string]profile.Library{"core": library})
+	profileModule, err := profile.Admit([]profile.Input{profileInput})
+	if err != nil {
+		t.Fatal(err)
+	}
+	library, err := profile.Link("semantic", profileModule, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingInput, err := binding.Parse(binding.Member{Path: "bindings/base.toml", Data: []byte("[service.systemd]\n'core:demo'=['" + unit + "']\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingModule, err := binding.Admit(context.Background(), "binding", []binding.Input{bindingInput})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := binding.Link(context.Background(), bindingModule, map[string]profile.Library{"core": library})
 	if err != nil {
 		t.Fatal(err)
 	}

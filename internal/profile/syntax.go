@@ -8,8 +8,16 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-type rawMember struct {
+// Syntax is the profile-owned TOML surface embedded by larger documents.
+// Callers must pass it to Embed; admitted state never retains this mutable form.
+type Syntax struct {
 	Profiles map[string]rawProfile `toml:"profiles"`
+}
+
+// Input is one validated syntax unit with immutable provenance.
+type Input struct {
+	path   string
+	syntax Syntax
 }
 
 type rawProfile struct {
@@ -52,28 +60,37 @@ type rawMembership struct {
 	Present *bool `toml:"present"`
 }
 
-func decodeMember(member Member) (rawMember, error) {
+// Parse strictly decodes one standalone profile member.
+func Parse(member Member) (Input, error) {
 	if len(member.Data) > MaxMemberBytes {
-		return rawMember{}, diagnostic(member.Path, "", "", "Limit", "member exceeds 1 MiB")
+		return Input{}, diagnostic(member.Path, "", "", "Limit", "member exceeds 1 MiB")
 	}
 	if !utf8.Valid(member.Data) {
-		return rawMember{}, diagnostic(member.Path, "", "", "Syntax", "member is not valid UTF-8")
+		return Input{}, diagnostic(member.Path, "", "", "Syntax", "member is not valid UTF-8")
 	}
-	var raw rawMember
+	var raw Syntax
 	decoder := toml.NewDecoder(bytes.NewReader(member.Data)).DisallowUnknownFields()
 	if err := decoder.Decode(&raw); err != nil {
-		return rawMember{}, decodeDiagnostic(member.Path, err)
+		return Input{}, decodeDiagnostic(member.Path, err)
 	}
-	if rawValueDepth(raw) > maxDepth {
-		return rawMember{}, diagnostic(member.Path, "", "", "Limit", "structural depth exceeds 16")
-	}
-	if len(raw.Profiles) == 0 {
-		return rawMember{}, diagnostic(member.Path, "", "profiles", "InvalidValue", "root profiles table must be non-empty")
-	}
-	return raw, nil
+	return Embed(member.Path, raw)
 }
 
-func rawValueDepth(raw rawMember) int {
+// Embed validates profile syntax decoded as part of a larger strict document.
+func Embed(path string, raw Syntax) (Input, error) {
+	if path == "" {
+		return Input{}, &Diagnostic{Category: "InvalidValue", Detail: "member path provenance is required"}
+	}
+	if rawValueDepth(raw) > maxDepth {
+		return Input{}, diagnostic(path, "", "", "Limit", "structural depth exceeds 16")
+	}
+	if len(raw.Profiles) == 0 {
+		return Input{}, diagnostic(path, "", "profiles", "InvalidValue", "root profiles table must be non-empty")
+	}
+	return Input{path: path, syntax: raw}, nil
+}
+
+func rawValueDepth(raw Syntax) int {
 	maximum := 0
 	for _, profile := range raw.Profiles {
 		for _, include := range profile.Include {

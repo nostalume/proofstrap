@@ -5,6 +5,17 @@ import (
 	"strings"
 )
 
+// Link resolves an admitted module against its exact semantic requirements.
+func Link(origin string, module Module, required map[string]Library) (Library, error) {
+	if origin == "" {
+		return Library{}, &Diagnostic{Category: "InvalidValue", Detail: "source origin is required"}
+	}
+	if module.profiles == nil {
+		return Library{}, &Diagnostic{Category: "InvalidValue", Detail: "admitted semantic module is required"}
+	}
+	return linkLibrary(origin, module.profiles, required)
+}
+
 func linkLibrary(origin string, local map[string]profileDefinition, required map[string]Library) (Library, error) {
 	result := Library{
 		profiles: make(map[string]profileDefinition), localProfiles: make(map[string]string, len(local)),

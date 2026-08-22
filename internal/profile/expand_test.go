@@ -72,7 +72,7 @@ func TestBindRootDerivesScalarKindsFromExactLibrary(t *testing.T) {
 }
 
 func TestExpandSelectsExactProfileFromProfileReference(t *testing.T) {
-	caller, err := Decode("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.workstation]
+	caller, err := admitInputs("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.workstation]
 parameters = { desktop = "profile_ref" }
 [[profiles.workstation.include]]
 profile = { parameter = "desktop" }
@@ -80,7 +80,7 @@ profile = { parameter = "desktop" }
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := Decode("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.sway]
+	selected, err := admitInputs("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.sway]
 packages = ["sway"]
 `)}}, nil)
 	if err != nil {
@@ -102,7 +102,7 @@ packages = ["sway"]
 }
 
 func TestBindRootResolvesProfileReferenceWithoutAliasLeakage(t *testing.T) {
-	caller, err := Decode("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.workstation]
+	caller, err := admitInputs("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.workstation]
 parameters = { desktop = "profile_ref" }
 [[profiles.workstation.include]]
 profile = { parameter = "desktop" }
@@ -110,7 +110,7 @@ profile = { parameter = "desktop" }
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := Decode("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.sway]
+	selected, err := admitInputs("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.sway]
 packages = ["sway"]
 `)}}, nil)
 	if err != nil {
@@ -128,14 +128,14 @@ packages = ["sway"]
 }
 
 func TestExpandChecksDynamicSignatureAndCycleAtomically(t *testing.T) {
-	selected, err := Decode("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.home]
+	selected, err := admitInputs("selected", []Member{{Path: "profiles/selected.toml", Data: []byte(`[profiles.home]
 parameters = { account = "account_ref" }
 homes = [{ account = { parameter = "account" } }]
 `)}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	caller, err := Decode("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.good]
+	caller, err := admitInputs("caller", []Member{{Path: "profiles/caller.toml", Data: []byte(`[profiles.good]
 parameters = { account = "account_ref", choice = "profile_ref" }
 [[profiles.good.include]]
 profile = { parameter = "choice" }
@@ -166,7 +166,7 @@ profile = { parameter = "choice" }
 		t.Fatalf("signature failure = %#v, %v", graph, err)
 	}
 
-	cycle, err := Decode("cycle", []Member{{Path: "profiles/cycle.toml", Data: []byte(`[profiles.loop]
+	cycle, err := admitInputs("cycle", []Member{{Path: "profiles/cycle.toml", Data: []byte(`[profiles.loop]
 parameters = { next = "profile_ref" }
 [[profiles.loop.include]]
 profile = { parameter = "next" }
@@ -181,7 +181,7 @@ next = { parameter = "next" }
 	if graph, err := Expand(base, cycle, []Root{cyclicRoot}); err == nil || !reflect.DeepEqual(graphProjection(graph), graphProjection(base)) {
 		t.Fatalf("cycle failure = %#v, %v", graph, err)
 	}
-	multi, err := Decode("multi", []Member{{Path: "profiles/multi.toml", Data: []byte(`[profiles.left]
+	multi, err := admitInputs("multi", []Member{{Path: "profiles/multi.toml", Data: []byte(`[profiles.left]
 parameters = { left = "profile_ref", right = "profile_ref" }
 [[profiles.left.include]]
 profile = { parameter = "right" }
@@ -277,7 +277,7 @@ func TestExpandRejectsRootMismatchAndMissingIdentityAtomically(t *testing.T) {
 
 func TestExpandLimitsAreAtomicAtPlusOne(t *testing.T) {
 	t.Parallel()
-	library, err := decodeTest([]Member{{
+	library, err := admitTest([]Member{{
 		Path: "profiles/limit.toml",
 		Data: []byte("[profiles.a]\npackages=[\"a\",\"b\"]\n"),
 	}})
@@ -300,7 +300,7 @@ func TestExpandLimitsAreAtomicAtPlusOne(t *testing.T) {
 
 func TestExpandUnifiesProvenanceAcrossDistinctProfiles(t *testing.T) {
 	t.Parallel()
-	library, err := decodeTest([]Member{{
+	library, err := admitTest([]Member{{
 		Path: "profiles/shared.toml",
 		Data: []byte("[profiles.a]\npackages=[\"shared\"]\n[profiles.b]\npackages=[\"shared\"]\n"),
 	}})
@@ -319,14 +319,14 @@ func TestExpandUnifiesProvenanceAcrossDistinctProfiles(t *testing.T) {
 
 func TestExpandUnifiesTypedResourcesAcrossIndependentLibraries(t *testing.T) {
 	t.Parallel()
-	first, err := decodeTest([]Member{{
+	first, err := admitTest([]Member{{
 		Path: "profiles/first.toml",
 		Data: []byte("[profiles.first]\npackages=[\"shared\"]\n"),
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := decodeTest([]Member{{
+	second, err := admitTest([]Member{{
 		Path: "profiles/second.toml",
 		Data: []byte("[profiles.second]\npackages=[\"shared\"]\n"),
 	}})
@@ -352,7 +352,7 @@ func TestExpandUnifiesTypedResourcesAcrossIndependentLibraries(t *testing.T) {
 
 func TestExpandConflictIsAtomic(t *testing.T) {
 	t.Parallel()
-	library, err := decodeTest([]Member{{
+	library, err := admitTest([]Member{{
 		Path: "profiles/conflict.toml",
 		Data: []byte("[profiles.a]\nhostname=\"one\"\n[profiles.b]\nhostname=\"two\"\n"),
 	}})
@@ -368,7 +368,7 @@ func TestExpandConflictIsAtomic(t *testing.T) {
 
 func TestExpandEachBudgetAxis(t *testing.T) {
 	t.Parallel()
-	library, err := decodeTest([]Member{{
+	library, err := admitTest([]Member{{
 		Path: "profiles/budgets.toml",
 		Data: []byte("[profiles.a]\npackages=[\"p\"]\n[profiles.a.services.s]\ntarget=\"system\"\npackages=[\"p\"]\nrunning=true\n[profiles.b]\npackages=[\"q\"]\n"),
 	}})
@@ -392,7 +392,7 @@ func TestExpandEachBudgetAxis(t *testing.T) {
 
 func decodeComplete(t *testing.T) Library {
 	t.Helper()
-	library, err := decodeTest([]Member{{
+	library, err := admitTest([]Member{{
 		Path: "profiles/complete.toml",
 		Data: readFixture(t, "valid", "complete.toml"),
 	}})

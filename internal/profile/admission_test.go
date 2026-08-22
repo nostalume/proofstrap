@@ -1,21 +1,84 @@
 package profile
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
-func decodeTest(members []Member) (Library, error) {
-	return Decode("test-origin", members, nil)
+func TestPackedAndEmbeddedAdmissionAgree(t *testing.T) {
+	t.Parallel()
+	body := readFixture(t, "valid", "complete.toml")
+	packed, err := Parse(Member{Path: "profiles/complete.toml", Data: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packedModule, err := Admit([]Input{packed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packedLibrary, err := Link("test-origin", packedModule, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var document struct {
+		Schema int `toml:"schema"`
+		Syntax
+	}
+	decoder := toml.NewDecoder(bytes.NewReader(append([]byte("schema=3\n"), body...))).DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		t.Fatal(err)
+	}
+	embedded, err := Embed("profiles/complete.toml", document.Syntax)
+	if err != nil {
+		t.Fatal(err)
+	}
+	embeddedModule, err := Admit([]Input{embedded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := document.Syntax.Profiles["desktop"]
+	mutated.Include[0].Arguments["account"] = "mallory"
+	embeddedLibrary, err := Link("test-origin", embeddedModule, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(packedLibrary, embeddedLibrary) {
+		t.Fatalf("packed and embedded libraries differ:\n%#v\n%#v", packedLibrary, embeddedLibrary)
+	}
 }
 
-func TestDecodeLanguageCompleteMember(t *testing.T) {
+func admitTest(members []Member) (Library, error) {
+	return admitInputs("test-origin", members, nil)
+}
+
+func admitInputs(origin string, members []Member, required map[string]Library) (Library, error) {
+	inputs := make([]Input, len(members))
+	for index, member := range members {
+		input, err := Parse(member)
+		if err != nil {
+			return Library{}, err
+		}
+		inputs[index] = input
+	}
+	module, err := Admit(inputs)
+	if err != nil {
+		return Library{}, err
+	}
+	return Link(origin, module, required)
+}
+
+func TestAdmissionLanguageCompleteMember(t *testing.T) {
 	t.Parallel()
 	data := readFixture(t, "valid", "complete.toml")
-	library, err := decodeTest([]Member{{Path: "profiles/complete.toml", Data: data}})
+	library, err := admitTest([]Member{{Path: "profiles/complete.toml", Data: data}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,25 +87,25 @@ func TestDecodeLanguageCompleteMember(t *testing.T) {
 	}
 }
 
-func TestDecodeAdmitsForwardedProfileTarget(t *testing.T) {
+func TestAdmissionAdmitsForwardedProfileTarget(t *testing.T) {
 	data := []byte(`[profiles.workstation]
 parameters = { desktop = "profile_ref" }
 [[profiles.workstation.include]]
 profile = { parameter = "desktop" }
 `)
-	if _, err := decodeTest([]Member{{Path: "profiles/dynamic.toml", Data: data}}); err != nil {
+	if _, err := admitTest([]Member{{Path: "profiles/dynamic.toml", Data: data}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestDecodeRejectsUnusedParameter(t *testing.T) {
+func TestAdmissionRejectsUnusedParameter(t *testing.T) {
 	data := []byte("[profiles.bad]\nparameters={desktop='profile_ref'}\npackages=['sway']\n")
-	if library, err := decodeTest([]Member{{Path: "profiles/bad.toml", Data: data}}); err == nil || len(library.ProfileIDs()) != 0 {
+	if library, err := admitTest([]Member{{Path: "profiles/bad.toml", Data: data}}); err == nil || len(library.ProfileIDs()) != 0 {
 		t.Fatalf("Decode = %#v, %v", library, err)
 	}
 }
 
-func TestDecodeLanguageInvalidFixtures(t *testing.T) {
+func TestAdmissionLanguageInvalidFixtures(t *testing.T) {
 	t.Parallel()
 	entries, err := os.ReadDir(filepath.Join("testdata", "invalid"))
 	if err != nil {
@@ -56,7 +119,7 @@ func TestDecodeLanguageInvalidFixtures(t *testing.T) {
 		t.Run(strings.TrimSuffix(entry.Name(), ".toml"), func(t *testing.T) {
 			t.Parallel()
 			data := readFixture(t, "invalid", entry.Name())
-			library, err := decodeTest([]Member{{Path: "profiles/" + entry.Name(), Data: data}})
+			library, err := admitTest([]Member{{Path: "profiles/" + entry.Name(), Data: data}})
 			if err == nil {
 				t.Fatalf("invalid fixture admitted with profiles %v", library.ProfileIDs())
 			}
@@ -67,15 +130,15 @@ func TestDecodeLanguageInvalidFixtures(t *testing.T) {
 	}
 }
 
-func TestDecodeLanguageAggregateIsAtomicAndOrderIndependent(t *testing.T) {
+func TestAdmissionLanguageAggregateIsAtomicAndOrderIndependent(t *testing.T) {
 	t.Parallel()
 	a := Member{Path: "profiles/a.toml", Data: []byte("[profiles.a]\npackages=[\"a\"]\n")}
 	b := Member{Path: "profiles/b.toml", Data: []byte("[profiles.b]\npackages=[\"b\"]\n")}
-	left, err := decodeTest([]Member{a, b})
+	left, err := admitTest([]Member{a, b})
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := decodeTest([]Member{b, a})
+	right, err := admitTest([]Member{b, a})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +147,7 @@ func TestDecodeLanguageAggregateIsAtomicAndOrderIndependent(t *testing.T) {
 	}
 
 	duplicate := Member{Path: "profiles/duplicate.toml", Data: []byte("[profiles.a]\npackages=[\"other\"]\n")}
-	failed, err := decodeTest([]Member{a, duplicate})
+	failed, err := admitTest([]Member{a, duplicate})
 	if err == nil {
 		t.Fatal("duplicate profile admitted")
 	}
@@ -93,25 +156,25 @@ func TestDecodeLanguageAggregateIsAtomicAndOrderIndependent(t *testing.T) {
 	}
 }
 
-func TestDecodeLanguageRawByteBoundary(t *testing.T) {
+func TestAdmissionLanguageRawByteBoundary(t *testing.T) {
 	t.Parallel()
 	base := []byte("[profiles.a]\npackages=[\"a\"]\n")
 	exact := append([]byte(nil), base...)
 	for len(exact) < MaxMemberBytes {
 		exact = append(exact, '#')
 	}
-	if _, err := decodeTest([]Member{{Path: "profiles/exact.toml", Data: exact}}); err != nil {
+	if _, err := admitTest([]Member{{Path: "profiles/exact.toml", Data: exact}}); err != nil {
 		t.Fatalf("exact byte limit rejected: %v", err)
 	}
 	tooLarge := append(exact, '#')
-	if _, err := decodeTest([]Member{{Path: "profiles/large.toml", Data: tooLarge}}); err == nil {
+	if _, err := admitTest([]Member{{Path: "profiles/large.toml", Data: tooLarge}}); err == nil {
 		t.Fatal("byte limit plus one admitted")
 	}
 }
 
-func TestDecodeLanguageLocatedSyntaxError(t *testing.T) {
+func TestAdmissionLanguageLocatedSyntaxError(t *testing.T) {
 	t.Parallel()
-	_, err := decodeTest([]Member{{
+	_, err := admitTest([]Member{{
 		Path: "profiles/broken.toml",
 		Data: []byte("[profiles.a]\npackages = [\n"),
 	}})
@@ -127,7 +190,7 @@ func TestDecodeLanguageLocatedSyntaxError(t *testing.T) {
 	}
 }
 
-func TestDecodeLanguageRejectsDuplicateKeysAndIncludeCycle(t *testing.T) {
+func TestAdmissionLanguageRejectsDuplicateKeysAndIncludeCycle(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
 		"duplicate-key.toml":       "[profiles.a]\\npackages=[\\\"a\\\"]\\npackages=[\\\"b\\\"]\\n",
@@ -139,16 +202,16 @@ func TestDecodeLanguageRejectsDuplicateKeysAndIncludeCycle(t *testing.T) {
 		name, source := name, source
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := decodeTest([]Member{{Path: "profiles/" + name, Data: []byte(source)}}); err == nil {
+			if _, err := admitTest([]Member{{Path: "profiles/" + name, Data: []byte(source)}}); err == nil {
 				t.Fatal("invalid semantic member admitted")
 			}
 		})
 	}
 }
 
-func TestDecodeLanguageRejectsInvalidUTF8AndCollectionLimits(t *testing.T) {
+func TestAdmissionLanguageRejectsInvalidUTF8AndCollectionLimits(t *testing.T) {
 	t.Parallel()
-	if _, err := decodeTest([]Member{{Path: "profiles/utf8.toml", Data: []byte{0xff}}}); err == nil {
+	if _, err := admitTest([]Member{{Path: "profiles/utf8.toml", Data: []byte{0xff}}}); err == nil {
 		t.Fatal("invalid UTF-8 admitted")
 	}
 	var source strings.Builder
@@ -162,7 +225,7 @@ func TestDecodeLanguageRejectsInvalidUTF8AndCollectionLimits(t *testing.T) {
 		source.WriteByte('"')
 	}
 	source.WriteString("]\\n")
-	if _, err := decodeTest([]Member{{
+	if _, err := admitTest([]Member{{
 		Path: "profiles/resources-limit.toml",
 		Data: []byte(source.String()),
 	}}); err == nil {
@@ -170,7 +233,7 @@ func TestDecodeLanguageRejectsInvalidUTF8AndCollectionLimits(t *testing.T) {
 	}
 }
 
-func TestDecodeLanguageStructuralDepth(t *testing.T) {
+func TestAdmissionLanguageStructuralDepth(t *testing.T) {
 	t.Parallel()
 	deep := "[profiles.a.services.agent]\ntarget={user="
 	for range maxDepth {
@@ -181,7 +244,7 @@ func TestDecodeLanguageStructuralDepth(t *testing.T) {
 		deep += "}"
 	}
 	deep += "}\nrunning=true\n"
-	_, err := decodeTest([]Member{{Path: "profiles/deep.toml", Data: []byte(deep)}})
+	_, err := admitTest([]Member{{Path: "profiles/deep.toml", Data: []byte(deep)}})
 	if err == nil {
 		t.Fatal("structural depth above limit admitted")
 	}
@@ -191,7 +254,7 @@ func TestDecodeLanguageStructuralDepth(t *testing.T) {
 	}
 }
 
-func TestDecodeLanguageDynamicDepthBoundary(t *testing.T) {
+func TestAdmissionLanguageDynamicDepthBoundary(t *testing.T) {
 	t.Parallel()
 	member := func(depth int) Member {
 		value := "\"alice\""
@@ -203,25 +266,25 @@ func TestDecodeLanguageDynamicDepthBoundary(t *testing.T) {
 				"[profiles.use]\n[[profiles.use.include]]\nprofile='base'\n[profiles.use.include.arguments]\naccount=" + value + "\n")}
 	}
 
-	_, exactErr := decodeTest([]Member{member(maxDepth)})
+	_, exactErr := admitTest([]Member{member(maxDepth)})
 	if diagnostic, ok := exactErr.(*Diagnostic); ok && diagnostic.Category == "Limit" {
 		t.Fatalf("exact dynamic depth rejected as Limit: %v", exactErr)
 	}
-	_, overflowErr := decodeTest([]Member{member(maxDepth + 1)})
+	_, overflowErr := admitTest([]Member{member(maxDepth + 1)})
 	diagnostic, ok := overflowErr.(*Diagnostic)
 	if !ok || diagnostic.Category != "Limit" {
 		t.Fatalf("dynamic depth overflow = %#v, want Limit", overflowErr)
 	}
 }
 
-func FuzzDecode(f *testing.F) {
+func FuzzAdmission(f *testing.F) {
 	f.Add([]byte("[profiles.a]\npackages=[\"a\"]\n"))
 	f.Add([]byte{0xff, 0xfe})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > MaxMemberBytes+1 {
 			data = data[:MaxMemberBytes+1]
 		}
-		library, err := decodeTest([]Member{{Path: "profiles/fuzz.toml", Data: data}})
+		library, err := admitTest([]Member{{Path: "profiles/fuzz.toml", Data: data}})
 		if err != nil && len(library.ProfileIDs()) != 0 {
 			t.Fatalf("Decode returned partial Library with %v", err)
 		}

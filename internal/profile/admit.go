@@ -17,48 +17,41 @@ const (
 	maxDepth      = 16
 )
 
-func Decode(origin string, members []Member, required map[string]Library) (Library, error) {
-	if origin == "" {
-		return Library{}, &Diagnostic{Category: "InvalidValue", Detail: "source origin is required"}
+// Module is an admitted semantic module whose external references are unlinked.
+type Module struct{ profiles map[string]profileDefinition }
+
+// Admit validates and combines profile-owned syntax units atomically.
+func Admit(inputs []Input) (Module, error) {
+	if len(inputs) == 0 {
+		return Module{}, &Diagnostic{Category: "InvalidValue", Detail: "at least one semantic input is required"}
 	}
-	if len(members) == 0 {
-		return Library{}, &Diagnostic{Category: "InvalidValue", Detail: "at least one semantic member is required"}
-	}
-	ordered := append([]Member(nil), members...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Path < ordered[j].Path })
+	ordered := append([]Input(nil), inputs...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].path < ordered[j].path })
 	profiles := make(map[string]profileDefinition)
 	previousPath := ""
-	for _, member := range ordered {
-		if member.Path == "" {
-			return Library{}, &Diagnostic{Category: "InvalidValue", Detail: "member path provenance is required"}
+	for _, input := range ordered {
+		if input.path == "" || input.syntax.Profiles == nil {
+			return Module{}, &Diagnostic{Category: "InvalidValue", Detail: "invalid semantic input"}
 		}
-		if member.Path == previousPath {
-			return Library{}, diagnostic(member.Path, "", "", "Duplicate", "duplicate member path")
+		if input.path == previousPath {
+			return Module{}, diagnostic(input.path, "", "", "Duplicate", "duplicate member path")
 		}
-		previousPath = member.Path
-		raw, err := decodeMember(member)
-		if err != nil {
-			return Library{}, err
+		previousPath = input.path
+		if len(profiles)+len(input.syntax.Profiles) > maxProfiles {
+			return Module{}, diagnostic(input.path, "", "profiles", "Limit", "profile limit exceeded")
 		}
-		if len(profiles)+len(raw.Profiles) > maxProfiles {
-			return Library{}, diagnostic(member.Path, "", "profiles", "Limit", "profile limit exceeded")
-		}
-		for _, id := range sortedKeys(raw.Profiles) {
+		for _, id := range sortedKeys(input.syntax.Profiles) {
 			if _, exists := profiles[id]; exists {
-				return Library{}, diagnostic(member.Path, id, "profiles."+id, "Duplicate", "duplicate profile ID")
+				return Module{}, diagnostic(input.path, id, "profiles."+id, "Duplicate", "duplicate profile ID")
 			}
-			definition, err := admitProfile(member.Path, id, raw.Profiles[id])
+			definition, err := admitProfile(input.path, id, input.syntax.Profiles[id])
 			if err != nil {
-				return Library{}, err
+				return Module{}, err
 			}
 			profiles[id] = definition
 		}
 	}
-	library, err := linkLibrary(origin, profiles, required)
-	if err != nil {
-		return Library{}, err
-	}
-	return library, nil
+	return Module{profiles: profiles}, nil
 }
 
 func profileKey(origin, id string) string { return origin + "#" + id }
@@ -106,7 +99,7 @@ func admitProfile(member, id string, raw rawProfile) (profileDefinition, error) 
 				return profileDefinition{}, diagnostic(member, id, fmt.Sprintf("include[%d].profile", index), "InvalidValue", err.Error())
 			}
 			definition.includes[index] = includeDefinition{profile: value.profile,
-				profileParameter: value.parameter, sourceArguments: include.Arguments}
+				profileParameter: value.parameter, sourceArguments: cloneDynamicMap(include.Arguments)}
 			for _, argument := range include.Arguments {
 				if object, ok := argument.(map[string]any); ok && len(object) == 1 {
 					if name, ok := object["parameter"].(string); ok && definition.parameters[name] != 0 {
@@ -180,6 +173,32 @@ func admitProfile(member, id string, raw rawProfile) (profileDefinition, error) 
 		definition.parameters[name] = kind &^ parameterUsed
 	}
 	return definition, nil
+}
+
+func cloneDynamicMap(values map[string]any) map[string]any {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(values))
+	for key, value := range values {
+		cloned[key] = cloneDynamicValue(value)
+	}
+	return cloned
+}
+
+func cloneDynamicValue(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		return cloneDynamicMap(value)
+	case []any:
+		cloned := make([]any, len(value))
+		for index := range value {
+			cloned[index] = cloneDynamicValue(value[index])
+		}
+		return cloned
+	default:
+		return value
+	}
 }
 
 func admitPackages(member, profile, field string, values []string) ([]semanticReference, error) {
