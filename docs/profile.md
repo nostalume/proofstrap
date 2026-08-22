@@ -6,7 +6,7 @@ This document specifies Proofstrap's profile and native-binding contract.
 Archive and manifest admission, semantic resolution and expansion, binding
 projection, deterministic pack building, local stores, explicit import,
 structural inspection, target configuration, Plan/Apply pack integration,
-official core/Linux packs, and executable-adjacent bundled acquisition are
+official core/Linux packs, and explicit local workspace acquisition are
 implemented.
 
 The authority, identity, digest, and failure laws below are the durable format
@@ -31,7 +31,7 @@ content, and implicit authority.
 | Authority | Config selects exact roots; semantic packs compose intent; binding packs map names; code owns behavior and effects. |
 | Identity | One Symbol grammar; semantic resource ID is domain kind plus global local name; exact digest selects source generation and provenance only. |
 | Pack | One schema-selected semantic or binding tar-gzip archive with exact requirements and bounded streaming admission. |
-| Acquisition | Fixed release/user/system content-addressed stores and create-exclusive atomic import. |
+| Acquisition | Config-sibling and explicitly named content-addressed stores or archives; create-exclusive atomic import. |
 | Profile | Map-keyed declarations, compact typed parameters, exact includes, and canonical bound-instance identity. |
 | Package | PackageRef set with direct-present intent only. |
 | Service | ServiceRef plus explicit System/User target, independent lifecycle axes, and explicit delivering PackageRefs. |
@@ -232,8 +232,8 @@ written beneath `DIR/packs/sha256`. The builder never overwrites an output.
 `proofstrap` is the user/runtime executable. It imports and structurally inspects
 exact archives but does not import the writer package. Plan uses the pack library
 for pure semantic and binding resolution.
-Release packs, store packs, explicit digest-pinned development archive paths,
-and local imports use the same reader.
+Config-sibling packs, explicit stores, explicit archive paths, and local imports
+use the same reader.
 
 Loose directories, individual TOML files, inline profiles, stdin packs, URLs,
 registry names, and unpinned archives are not runtime profile inputs. Direct
@@ -272,15 +272,13 @@ authoritative pack and possibly inert staging. Resolvers recognize canonical
 final names only. Cleanup is maintenance rather than recovery authority. Import
 does not modify its source and preserves primary and cleanup errors.
 
-No mutable index is authoritative. Plan derives exact paths without enumeration;
-explicit listing may enumerate for presentation. Parsed packs may be cached only
-within one process/run.
+No mutable index is authoritative. Plan opens only exact demanded paths and does
+not enumerate stores. Parsed packs may be cached only within one process/run.
 
-### Store scopes
+### Acquisition and import stores
 
 | Scope | Root | Writer |
 |---|---|---|
-| Release | `/usr/share/proofstrap/packs` | OS/distribution packaging |
 | System | `/var/lib/proofstrap/packs` | Explicit privileged import |
 | User | `$XDG_DATA_HOME/proofstrap/packs` | Current user |
 
@@ -288,21 +286,21 @@ If XDG_DATA_HOME is absent or relative, user scope falls back to
 `$HOME/.local/share/proofstrap/packs`. Without an absolute HOME, user scope is
 unavailable. Every root uses the same content-addressed layout.
 
-The release store is read-only to Proofstrap. Import defaults to user scope;
-`--system` explicitly selects system scope and requires authority to be already
-available without prompting. There is no release-scope import.
+Import defaults to user scope; `--system` explicitly selects system scope and
+requires authority to be already available without prompting. Import does not
+make either store implicit.
 
-Config pins content, never store scope or filesystem path. Resolution derives the
-exact digest path in every available scope. Valid duplicate copies deduplicate.
-Any corrupt candidate is reported even if another scope contains valid bytes;
-scope order never hides corruption or changes truth.
+Config pins content, never store scope or filesystem path. For one Plan request,
+the CLI admits an existing `packs` directory beside the selected config,
+grouped or repeated `--pack-store` directories, and grouped or repeated
+`--pack-file` archives. Duplicate explicit paths or archive identities fail.
+No executable-adjacent, release, ambient user/system, current-directory, or
+remote store is searched.
 
-The runtime inventory interface is:
+The runtime archive interface is:
 
 ~~~text
 proofstrap import [--digest DIGEST] [--system] ARCHIVE
-proofstrap inspect
-proofstrap inspect DIGEST
 proofstrap inspect ARCHIVE
 proofstrap inspect --digest DIGEST ARCHIVE
 ~~~
@@ -313,13 +311,11 @@ invokes privilege escalation or prompts. `--digest` asserts an expected
 whole-archive identity; omission derives it from the same admitted staged bytes.
 Import never activates profiles or bindings.
 
-Bare `inspect` enumerates admitted stored sources. `inspect DIGEST` performs
-non-enumerating exact lookup in every available scope. An archive path admits
-one local regular archive read-only and reports its computed identity;
+An archive path admits one local regular archive read-only and reports its computed identity;
 `--digest` additionally requires an exact match. Inspection never imports it,
 and the path remains only a locator rather than config identity.
 Relative archive paths are resolved once against the process working directory
-and passed to inventory as clean absolute paths without probing during parsing.
+and passed to exact archive admission as clean absolute paths.
 
 All inspect forms output one deterministic JSON array containing only digest,
 kind, sorted direct requirements, canonical member paths, and observed scopes.
@@ -327,15 +323,8 @@ This is a structural projection, not a TOML conversion: raw authored content,
 decoded resources, and transitive closure are not exposed. JSON is completely
 validated and bounded before stdout is written.
 
-Enumeration is fail-closed. Only canonical digest object names and exact inert
-`.import-<32-lower-hex>` crash-left staging are recognized; every other entry or
-corrupt candidate fails inspection. Inspection observes each scope once. Each
-returned object describes exact admitted bytes, but the combined multi-store
-view is not claimed to be an atomic filesystem snapshot.
-
-Bare `inspect` is the only inventory enumeration. Removal, update, registry,
-automatic acquisition, repair, staging cleanup, and garbage collection are not
-implemented.
+Removal, update, registry, automatic acquisition, store enumeration, repair,
+staging cleanup, and garbage collection are not implemented.
 
 ## Engine budgets
 
@@ -970,7 +959,7 @@ atomic projection, pure target-configuration admission, bounded deterministic
 archive construction, content-addressed local stores, explicit user/system
 import, and structural JSON inspection. Tests cover complete language and target
 fixtures, archive and parser rejection matrices, deterministic bytes, store
-containment, runtime inventory, and the composed build-to-projection path.
+containment, explicit archive operations, and the composed build-to-projection path.
 
 Production target-config acquisition, Plan/Apply pack integration, and native
 host package-backend resolution are implemented. Official pack contents, a

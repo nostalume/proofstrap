@@ -25,9 +25,10 @@ profile, binding, or configuration value supplies an executable path or command.
 
 - `cmd/proofstrap` owns exact CLI grammar, process environment, signals, streams,
   help, and exit mapping.
-- `internal/config`, `internal/profile`, `internal/pack`, `internal/model`, and
+- `internal/document`, `internal/profile`, `internal/pack`, `internal/model`, and
   `internal/binding` own pure admission and composition.
-- `internal/inventory` owns explicit content-addressed archive acquisition.
+- `internal/pack` owns exact archive admission, closure, stores, and import;
+  `cmd/proofstrap` owns the paths selected for one process request.
 - Package, identity, host, and service domains own their typed evidence,
   reconciliation, reviewed operations, and guarded effects.
 - `internal/app` composes domains, seals and publishes Plans, reconstructs Apply
@@ -42,7 +43,7 @@ is no compatibility execution owner or alternate grammar.
 ## Plan
 
 Plan reads one explicitly named absolute configuration file and optional exact
-pack-file paths. Configuration pins archive digests and selects roots; it contains
+pack-file/store paths. Configuration pins archive digests and selects roots; it contains
 no store paths or behavior overrides. Acquisition resolves the complete pinned
 closure, profile expansion produces backend-neutral resources, activated
 bindings map native identities, and the app lowers the graph into typed reviewed

@@ -43,47 +43,29 @@ include that authoring command.
 
 ## Acquisition and quick start
 
-### 1. Use or copy the starter config
+### 1. Obtain a workspace
 
-Run the installed starter directly:
-
-```sh
-proofstrap plan --config /immutable/path/printed/by/installer/bootstrap.toml \
-  --output ./plan.json
-```
-
-Or copy it into an ordinary workspace and customize it:
+The installer publishes only the runtime and documentation. Configurations and
+packs are ordinary distributable workspaces, whether maintained officially or
+authored locally. For the official profiles, download and verify one fixed
+[catalogue release](https://github.com/nostalume/proofstrap-core-profiles/releases):
 
 ```sh
-cp /exact/path/printed/by/installer/bootstrap.toml ./proofstrap.toml
-$EDITOR ./proofstrap.toml
+tag=CATALOGUE_TAG
+base=https://github.com/nostalume/proofstrap-core-profiles/releases/download/$tag
+curl -fLO "$base/proofstrap-core-profiles.tar.gz"
+curl -fLO "$base/checksums.txt"
+sha256sum --check checksums.txt
+tar -xzf proofstrap-core-profiles.tar.gz
+cd proofstrap-core-profiles
+sha256sum --check checksums.txt
 ```
 
-The launcher targets the same immutable generation as its adjacent `packs`
-tree, so either installed path needs no pack flags or import. Inspect visible
-exact objects when needed:
+The extracted `proofstrap.toml` and sibling `packs/` directory are movable as
+one unit. Edit the config directly or copy the whole workspace before editing.
+There is no runtime-specific distinction between an official and custom pack.
 
-```sh
-proofstrap inspect
-```
-
-`inspect` emits bounded structural JSON with exact digests, archive kinds,
-requirements, members, and storage scopes.
-
-### 2. Understand config and byte resolution
-
-The starter has this shape, with release-specific digests filled in:
-
-```toml
-schema = 2
-
-bindings = ["linux"]
-profiles = [{ profile = "core:bootstrap-cli" }]
-
-[sources]
-core = "sha256:..."
-linux = "sha256:..."
-```
+### 2. Understand exact byte resolution
 
 Config aliases such as `core` and `linux` are local names. Desired truth is the
 exact digest, not a repository, release tag, path, or mutable latest version.
@@ -91,14 +73,13 @@ exact digest, not a repository, release tag, path, or mutable latest version.
 For each digest demanded by config closure, resolution uses the first admitted
 source below. A corrupt exact object is an error, not permission to fall back.
 
-| Order | Source |
-|---:|---|
-| 1 | Explicit loose files from `--pack-file` |
-| 2 | One request-local content-addressed root from `--pack-store` |
-| 3 | Packs adjacent to the running installed generation |
-| 4 | Read-only release store `/usr/share/proofstrap/packs` |
-| 5 | System store `/var/lib/proofstrap/packs` |
-| 6 | User store under `$XDG_DATA_HOME` or `$HOME/.local/share` |
+- Explicit archives supplied by `--pack-file` satisfy matching digests.
+- An existing `packs/` directory beside the selected config is admitted.
+- Every directory supplied by grouped or repeated `--pack-store` is admitted.
+
+No executable-adjacent, release, system, user, current-directory, or remote
+store is searched implicitly. Duplicate paths or duplicate explicit archive
+identities fail before planning.
 
 Loose files may be grouped or repeated; each must be used by the exact closure:
 
@@ -106,31 +87,16 @@ Loose files may be grouped or repeated; each must be used by the exact closure:
 proofstrap plan --pack-file core.pstrap linux.pstrap
 ```
 
-An explicit store must contain `sha256/DIGEST.pstrap`. Proofstrap opens only
+Each store must contain `sha256/DIGEST.pstrap`. Proofstrap opens only
 objects demanded by the closure; it does not enumerate or persist that store:
 
 ```sh
 proofstrap plan --pack-store ./packs
 ```
 
-For standalone bootstrap, download one fixed release of
-[the official profile catalogue](https://github.com/nostalume/proofstrap-core-profiles/releases):
-
-```sh
-tag=CATALOGUE_TAG
-base=https://github.com/nostalume/proofstrap-core-profiles/releases/download/$tag
-curl --fail --location --remote-name "$base/proofstrap-core-profiles.tar.gz"
-curl --fail --location --remote-name "$base/checksums.txt"
-sha256sum --check checksums.txt
-tar -xzf proofstrap-core-profiles.tar.gz
-cd proofstrap-core-profiles
-sha256sum --check checksums.txt
-$EDITOR proofstrap.toml
-proofstrap plan --pack-store ./packs
-```
-
 `import` is optional persistence into the user or system store. It does not
-select a source alias, activate a binding/profile, or edit config.
+select a source alias, activate a binding/profile, or edit config. Name that
+store explicitly with `--pack-store` when a later Plan should use it.
 
 ### 3. Build and review a Plan
 
@@ -189,11 +155,10 @@ config must select its source alias in `bindings`.
 ### `proofstrap inspect`
 
 ```text
-proofstrap inspect [DIGEST | ARCHIVE | --digest DIGEST ARCHIVE]
+proofstrap inspect ARCHIVE
+proofstrap inspect --digest DIGEST ARCHIVE
 ```
 
-- No argument lists visible stored and release-bundled packs.
-- `DIGEST` selects one visible stored pack.
 - `ARCHIVE` inspects one local archive and reports its computed identity.
 - `--digest DIGEST ARCHIVE` verifies and inspects an archive without
   importing it.
@@ -205,7 +170,7 @@ state.
 
 ```text
 proofstrap plan [--config FILE] [--output PLAN] \
-  [--pack-store DIR] \
+  [--pack-store DIR [DIR ...]] \
   [--pack-file FILE [FILE ...]]
 ```
 
@@ -215,10 +180,11 @@ host mutation. With no path flags, the command reads only `./proofstrap.toml`
 and creates `./plan.json`; it never searches for another config. Exact explicit
 flags replace those defaults. Relative artifact paths are resolved once against
 the process working directory and passed onward as clean absolute paths. With
-no pack-file flags, resolution uses only known content-addressed stores. Every
+no pack-file flags, resolution uses only the config-sibling and explicitly
+named content-addressed stores. Every
 pack-file value is one explicit archive file—not a directory, glob, URL, or
 discovered neighbor. `--pack-store DIR` adds one read-only content-addressed
-root for this Plan request and does not persist it.
+root for this Plan request and does not persist it. Store groups may be repeated.
 
 ### `proofstrap apply`
 

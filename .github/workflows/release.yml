@@ -37,9 +37,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Build reproducible Linux archives
-        run: |
-          release/fetch.sh "$RUNNER_TEMP/packs"
-          release/build.sh dist "$RUNNER_TEMP/packs"
+        run: release/build.sh dist
       - name: Verify Linux release access
         run: test/release.sh dist
 

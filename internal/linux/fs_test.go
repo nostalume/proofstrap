@@ -202,6 +202,26 @@ func TestCreateStageAtPropagatesEntropyFailure(t *testing.T) {
 	}
 }
 
+func TestCreateDirsCreatesOnlyBeneathAnchor(t *testing.T) {
+	root := t.TempDir()
+	if err := linux.CreateDirs(root, []string{"one", "two", "three"}, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(root, "one", "two", "three")); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("created directory = %v, %v", info, err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := linux.CreateDirs(root, []string{"link", "escaped"}, 0o700); err == nil {
+		t.Fatal("CreateDirs followed symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escaped")); !os.IsNotExist(err) {
+		t.Fatalf("created outside anchor: %v", err)
+	}
+}
+
 type errorReader struct{ err error }
 
 func (reader errorReader) Read([]byte) (int, error) { return 0, reader.err }

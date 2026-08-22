@@ -51,7 +51,7 @@ jobs:
           test -f docs/config.md
           test -f docs/profile.md
           test ! -d test/official
-          test -x release/fetch.sh
+          test ! -e release/fetch.sh
           test -x release/build.sh
           test -x test/release.sh
           test -x test/managers.sh
@@ -60,8 +60,9 @@ jobs:
           test ! -d test/release
           test ! -d test/acceptance
           test ! -d test/performance
-          test -f release/catalogue-version
-          test -f release/catalogue.sha256
+          test ! -e release/catalogue-version
+          test ! -e release/catalogue.sha256
+          test ! -d internal/inventory
           test ! -e internal/pack/official_test.go
           test ! -e cmd/proofstrap/executable_linux.go
           test ! -e cmd/proofstrap/executable_linux_test.go
@@ -80,6 +81,9 @@ jobs:
             echo "retired documentation or acceptance path found" >&2
             exit 1
           fi
+          test "$(go list ./internal/... | wc -l)" -le 14
+          test "$(find cmd internal -type f -name '*.go' ! -name '*_test.go' | wc -l)" -le 71
+          test "$(awk 'NF { lines++ } END { print lines+0 }' install.sh release/build.sh)" -le 150
           if rg -l 'golang.org/x/sys/unix' internal --glob '*.go' \
             | grep -Ev '^internal/linux/|_linux(_test)?\.go$'; then
             echo "Unix mechanism escaped a Linux owner leaf" >&2
@@ -139,8 +143,7 @@ jobs:
 
       - name: Verify Linux release access
         run: |
-          release/fetch.sh "$RUNNER_TEMP/packs"
-          release/build.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/packs"
+          release/build.sh "$RUNNER_TEMP/dist"
           test/release.sh "$RUNNER_TEMP/dist"
 
   managers:

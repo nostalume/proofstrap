@@ -51,6 +51,47 @@ func OpenDirAt(directory int, name string) (int, error) {
 	return unix.Openat(directory, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 }
 
+// CreateDirs creates missing directory components beneath an existing anchor
+// without following symlinks.
+func CreateDirs(anchor string, names []string, mode uint32) (err error) {
+	fd, err := OpenDir(anchor)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := unix.Close(fd); err == nil {
+			err = closeErr
+		}
+	}()
+	for _, name := range names {
+		if !component(name) {
+			return fmt.Errorf("directory name must be one clean path component")
+		}
+		next, openErr := OpenDirAt(fd, name)
+		if errors.Is(openErr, unix.ENOENT) {
+			created := false
+			if makeErr := unix.Mkdirat(fd, name, mode); makeErr == nil {
+				created = true
+			} else if !errors.Is(makeErr, unix.EEXIST) {
+				return makeErr
+			}
+			next, openErr = OpenDirAt(fd, name)
+			if openErr == nil && created {
+				openErr = unix.Fchmod(next, mode)
+			}
+		}
+		if openErr != nil {
+			if next >= 0 {
+				_ = unix.Close(next)
+			}
+			return openErr
+		}
+		_ = unix.Close(fd)
+		fd = next
+	}
+	return nil
+}
+
 // OpenRegular opens a clean absolute regular-file leaf without following it.
 // The caller owns the returned descriptor.
 func OpenRegular(path string) (int, error) {

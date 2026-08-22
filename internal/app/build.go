@@ -8,7 +8,6 @@ import (
 
 	"github.com/nostalume/proofstrap/internal/binding"
 	"github.com/nostalume/proofstrap/internal/document"
-	"github.com/nostalume/proofstrap/internal/inventory"
 	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/pack"
 	"github.com/nostalume/proofstrap/internal/packages"
@@ -16,10 +15,8 @@ import (
 )
 
 type Request struct {
-	Origin      string
-	Config      []byte
-	Environment inventory.Environment
-	PackFiles   []string
+	Document document.Document
+	Sources  []pack.Source
 }
 
 func BuildPlan(ctx context.Context, request Request) (Plan, error) {
@@ -33,31 +30,22 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 	if ctx == nil || !bounded || !deadline.After(time.Now()) {
 		return Plan{}, fmt.Errorf("active bounded planning context is required")
 	}
-	target, err := document.Decode(request.Origin, request.Config)
-	if err != nil {
-		return Plan{}, err
-	}
+	target := request.Document
 	view := target.View()
+	if view.Origin == "" {
+		return Plan{}, fmt.Errorf("admitted document is required")
+	}
 	declared := view.Sources
-	var sources []pack.Source
 	if len(declared) == 0 {
-		if len(request.PackFiles) != 0 {
-			return Plan{}, fmt.Errorf("pack files require declared source roots")
-		}
-	} else {
-		roots := make([]pack.Digest, len(declared))
-		for index, source := range declared {
-			roots[index] = source.Digest
-		}
-		sources, err = inventory.AcquireClosure(ctx, request.Environment, roots, request.PackFiles)
-		if err != nil {
-			return Plan{}, err
+		if len(request.Sources) != 0 {
+			return Plan{}, fmt.Errorf("pack sources require declared source roots")
 		}
 	}
 
 	projected := binding.Graph{}
+	var err error
 	if len(view.Include) != 0 || len(view.Direct.Nodes()) != 0 {
-		semantic, catalogues, resolveErr := document.Resolve(ctx, target, sources)
+		semantic, catalogues, resolveErr := document.Resolve(ctx, target, request.Sources)
 		if resolveErr != nil {
 			return Plan{}, resolveErr
 		}

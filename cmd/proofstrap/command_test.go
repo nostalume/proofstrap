@@ -14,8 +14,8 @@ import (
 
 	"github.com/nostalume/proofstrap/internal/app"
 	"github.com/nostalume/proofstrap/internal/engine"
-	"github.com/nostalume/proofstrap/internal/inventory"
 	"github.com/nostalume/proofstrap/internal/pack"
+	"github.com/nostalume/proofstrap/internal/packbuild"
 )
 
 const commandBlockedDocument = `schema = 3
@@ -32,7 +32,7 @@ func TestPlanAndApplyParsersCanonicalizeRelativeArtifactPaths(t *testing.T) {
 		"--config", "config/../target.toml", "--output", "plan.json", "--pack-store", "packs", "--pack-file", "packs/core.pstrap",
 	})
 	if !ok || configPath != filepath.Join(directory, "target.toml") || outputPath != filepath.Join(directory, "plan.json") ||
-		store != filepath.Join(directory, "packs") || !reflect.DeepEqual(packFiles, []string{filepath.Join(directory, "packs", "core.pstrap")}) {
+		!reflect.DeepEqual(store, []string{filepath.Join(directory, "packs")}) || !reflect.DeepEqual(packFiles, []string{filepath.Join(directory, "packs", "core.pstrap")}) {
 		t.Fatalf("parsePlan = %q, %q, %v, %t", configPath, outputPath, packFiles, ok)
 	}
 	planPath, accepted, journalPath, receiptPath, ok := parseApply([]string{
@@ -68,6 +68,20 @@ func TestPlanParserAggregatesGroupedAndRepeatedPackFiles(t *testing.T) {
 	}
 }
 
+func TestPlanParserAggregatesRepeatedPackStores(t *testing.T) {
+	directory := t.TempDir()
+	t.Chdir(directory)
+	_, _, stores, _, ok := parsePlan([]string{
+		"--pack-store", "first", "second", "--pack-store", "third",
+	})
+	want := []string{
+		filepath.Join(directory, "first"), filepath.Join(directory, "second"), filepath.Join(directory, "third"),
+	}
+	if !ok || !reflect.DeepEqual(stores, want) {
+		t.Fatalf("pack stores = %v, ok = %t; want %v, true", stores, ok, want)
+	}
+}
+
 const commandEmptyPlanJSON = `{"schema":1,"digest":"sha256:6e798e7de28e940a0eecede9ff1e10d4b479db250a983744d5311354a80ffb64","plan":{"operations":[],"blockers":[]}}`
 const commandBlockedPlanJSON = `{"schema":1,"digest":"sha256:a11e921054be7aab1654009effd14a75305787cfff2f3f7cc32bf501bd38afb9","plan":{"operations":[],"blockers":[{"kind":"unsupported","resource":"test","detail":"fixture"}]}}`
 
@@ -88,7 +102,7 @@ func TestPlanAndApplyUseWorkingDirectoryDefaults(t *testing.T) {
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	if code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"plan"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), filepath.Join(directory, "proofstrap.toml")) {
+	if code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applications, []string{"plan"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), filepath.Join(directory, "proofstrap.toml")) {
 		t.Fatalf("missing default: code=%d stderr=%q", code, stderr.String())
 	}
 	if err := os.WriteFile("proofstrap.toml", []byte(commandBlockedDocument), 0o600); err != nil {
@@ -96,28 +110,17 @@ func TestPlanAndApplyUseWorkingDirectoryDefaults(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"plan"}, &stdout, &stderr); code != 0 {
+	if code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applications, []string{"plan"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("plan: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	digest := "sha256:" + strings.Repeat("1", 64)
 	stdout.Reset()
 	stderr.Reset()
-	if code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"apply", "--accept", digest}, &stdout, &stderr); code != 0 {
+	if code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applications, []string{"apply", "--accept", digest}, &stdout, &stderr); code != 0 {
 		t.Fatalf("apply: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if planned.Origin != filepath.Join(directory, "proofstrap.toml") || applied.PlanPath != filepath.Join(directory, "plan.json") || applied.JournalPath != filepath.Join(directory, "apply.journal") {
+	if planned.Document.View().Origin != filepath.Join(directory, "proofstrap.toml") || applied.PlanPath != filepath.Join(directory, "plan.json") || applied.JournalPath != filepath.Join(directory, "apply.journal") {
 		t.Fatalf("planned=%#v applied=%#v", planned, applied)
-	}
-}
-
-func TestAdjacentReleaseRootUsesKernelResolvedPath(t *testing.T) {
-	if got := adjacentReleaseRoot("/opt/proofstrap/releases/generation/proofstrap"); got != "/opt/proofstrap/releases/generation/packs" {
-		t.Fatalf("adjacent release root = %q", got)
-	}
-	for _, path := range []string{"", "relative", "/opt/proofstrap/releases/generation/proofstrap (deleted)"} {
-		if got := adjacentReleaseRoot(path); got != "" {
-			t.Fatalf("invalid executable %q produced release root %q", path, got)
-		}
 	}
 }
 
@@ -130,18 +133,17 @@ func TestCutoverGrammarRejectsLegacyAndForbiddenInputs(t *testing.T) {
 			return app.ApplyResult{}, nil
 		},
 	}
-	environment := processEnvironment{inventory: inventory.Environment{Home: "/home/test"}, effectiveUID: 0}
+	environment := processEnvironment{home: "/home/test", effectiveUID: 0}
 	for _, arguments := range [][]string{
 		nil, {"modules"}, {"_create-home"}, {"plan", "module"}, {"plan", "--profile-bundle", "old.pstrap"},
 		{"plan", "--config=x"}, {"plan", "-c", "x"}, {"plan", "--conf", "x"}, {"plan", "--output", ""}, {"plan", "--pack-store", ""}, {"plan", "--pack-store=x"},
-		{"plan", "--pack-store", "/tmp/a", "--pack-store", "/tmp/b"},
 		{"plan", "--config", "/tmp/config", "--config", "/tmp/other", "--output", "/tmp/plan"},
 		{"apply"}, {"apply", "--accept=" + strings.Repeat("1", 64)}, {"apply", "-a", "sha256:" + strings.Repeat("1", 64)}, {"apply", "--accept", ""}, {"apply", "--accept", "sha256:" + strings.Repeat("1", 64), "--journal", ""},
 		{"apply", "--config", "/tmp/config"}, {"apply", "--plan", "/tmp/plan", "--accept", "bad"},
 		{"apply", "--plan", "/tmp/plan", "--plan", "/tmp/other", "--accept", "sha256:" + strings.Repeat("1", 64)},
 	} {
 		var stdout, stderr bytes.Buffer
-		if code := runCommand(context.Background(), environment, inventoryCommands{}, applications, arguments, &stdout, &stderr); code != 2 || stdout.Len() != 0 || stderr.Len() == 0 {
+		if code := runCommand(context.Background(), environment, archiveCommands{}, applications, arguments, &stdout, &stderr); code != 2 || stdout.Len() != 0 || stderr.Len() == 0 {
 			t.Fatalf("%v: code=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
 		}
 	}
@@ -158,9 +160,6 @@ func TestPlanPublishesArtifactAndRendersReview(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
 	outputPath := filepath.Join(root, "plan.json")
-	packFileOne := filepath.Join(root, "one.pstrap")
-	packFileTwo := filepath.Join(root, "two.pstrap")
-	store := filepath.Join(root, "packs")
 	config := []byte(commandBlockedDocument)
 	if err := os.WriteFile(configPath, config, 0o600); err != nil {
 		t.Fatal(err)
@@ -171,14 +170,80 @@ func TestPlanPublishesArtifactAndRendersReview(t *testing.T) {
 		return plan, nil
 	}}
 	var stdout, stderr bytes.Buffer
-	arguments := []string{"plan", "--pack-file", packFileOne, "--output", outputPath, "--pack-store", store, "--config", configPath, "--pack-file", packFileTwo}
-	code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, arguments, &stdout, &stderr)
-	if code != 0 || stderr.Len() != 0 || got.Origin != configPath || got.Environment.PackStore != store || !bytes.Equal(got.Config, config) || strings.Join(got.PackFiles, ",") != packFileOne+","+packFileTwo {
+	arguments := []string{"plan", "--output", outputPath, "--config", configPath}
+	code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applications, arguments, &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 || got.Document.View().Origin != configPath || len(got.Sources) != 0 {
 		t.Fatalf("code=%d request=%#v stdout=%q stderr=%q", code, got, stdout.String(), stderr.String())
 	}
 	published, err := os.ReadFile(outputPath)
 	if err != nil || string(published) != commandEmptyPlanJSON || !strings.Contains(stdout.String(), "status: applicable") || !strings.Contains(stdout.String(), plan.Digest().String()) {
 		t.Fatalf("published=%q err=%v stdout=%q", published, err, stdout.String())
+	}
+}
+
+func TestPlanAcquiresConfigSiblingAndMultipleExplicitStores(t *testing.T) {
+	root := t.TempDir()
+	input := filepath.Join(root, "author.toml")
+	if err := os.WriteFile(input, []byte("schema=3\ninclude=[{profile='base'}]\n[profiles.base]\npackages=['base']\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "workspace")
+	configPath, err := packbuild.Build(context.Background(), input, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := app.DecodePlan([]byte(commandEmptyPlanJSON))
+	assertPlan := func(arguments ...string) {
+		t.Helper()
+		called := false
+		application := applicationCommands{buildPlan: func(_ context.Context, request app.Request) (app.Plan, error) {
+			called = true
+			if request.Document.View().Origin != configPath || len(request.Sources) != 1 {
+				t.Fatalf("request = %#v", request)
+			}
+			return plan, nil
+		}}
+		output := filepath.Join(root, fmt.Sprintf("plan-%d.json", len(arguments)))
+		arguments = append([]string{"plan", "--config", configPath, "--output", output}, arguments...)
+		var stdout, stderr bytes.Buffer
+		if code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, application, arguments, &stdout, &stderr); code != 0 || !called {
+			t.Fatalf("arguments=%v code=%d called=%t stderr=%q", arguments, code, called, stderr.String())
+		}
+	}
+
+	elsewhere := t.TempDir()
+	t.Chdir(elsewhere)
+	assertPlan()
+	external := filepath.Join(root, "external")
+	if err := os.Rename(filepath.Join(workspace, "packs"), external); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(root, "empty")
+	if err := os.MkdirAll(filepath.Join(empty, "sha256"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	assertPlan("--pack-store", empty, external)
+	objects, err := filepath.Glob(filepath.Join(external, "sha256", "*.pstrap"))
+	if err != nil || len(objects) != 1 {
+		t.Fatalf("objects = %v, %v", objects, err)
+	}
+	assertPlan("--pack-file", objects[0])
+}
+
+func TestPlanDoesNotSearchAmbientImportStores(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "proofstrap.toml")
+	data := "schema=3\ninclude=[{profile='core:base'}]\n[sources]\ncore='sha256:" + strings.Repeat("1", 64) + "'\n"
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	application := applicationCommands{buildPlan: func(context.Context, app.Request) (app.Plan, error) { called = true; return app.Plan{}, nil }}
+	var stdout, stderr bytes.Buffer
+	code := runCommand(context.Background(), processEnvironment{xdgDataHome: filepath.Join(root, "ambient")}, archiveCommands{}, application,
+		[]string{"plan", "--config", configPath, "--output", filepath.Join(root, "plan.json")}, &stdout, &stderr)
+	if code != 1 || called || !strings.Contains(stderr.String(), "MissingRequirement") {
+		t.Fatalf("code=%d called=%t stderr=%q", code, called, stderr.String())
 	}
 }
 
@@ -195,7 +260,7 @@ func TestPlanPublishesBlockedArtifactAndReturnsOne(t *testing.T) {
 	}
 	applications := applicationCommands{buildPlan: func(context.Context, app.Request) (app.Plan, error) { return blocked, nil }}
 	var stdout, stderr bytes.Buffer
-	code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"plan", "--config", configPath, "--output", outputPath}, &stdout, &stderr)
+	code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applications, []string{"plan", "--config", configPath, "--output", outputPath}, &stdout, &stderr)
 	if code != 1 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "status: blocked") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -235,7 +300,7 @@ func TestApplyMapsTerminalStatusAndPassesExactRequest(t *testing.T) {
 			}}
 			var stdout, stderr bytes.Buffer
 			arguments := []string{"apply", "--receipt", receiptPath, "--accept", digest.String(), "--journal", journalPath, "--plan", planPath}
-			code := runCommand(context.Background(), processEnvironment{effectiveUID: 42}, inventoryCommands{}, applications, arguments, &stdout, &stderr)
+			code := runCommand(context.Background(), processEnvironment{effectiveUID: 42}, archiveCommands{}, applications, arguments, &stdout, &stderr)
 			if code != test.want || stdout.String() != test.wantOutput || got.PlanPath != planPath || got.Accept != digest || got.JournalPath != journalPath || got.ReceiptPath != receiptPath || got.EffectiveUID != 42 {
 				t.Fatalf("code=%d request=%#v stdout=%q stderr=%q", code, got, stdout.String(), stderr.String())
 			}
@@ -263,7 +328,7 @@ func TestApplyDefaultsJournalAndMapsSchemaErrors(t *testing.T) {
 				return app.ApplyResult{}, test.err
 			}}
 			var stdout, stderr bytes.Buffer
-			code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"apply", "--plan", planPath, "--accept", digest}, &stdout, &stderr)
+			code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applications, []string{"apply", "--plan", planPath, "--accept", digest}, &stdout, &stderr)
 			if code != 2 || !called || stdout.Len() != 0 || stderr.Len() == 0 {
 				t.Fatalf("code=%d called=%t stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
 			}
@@ -278,7 +343,7 @@ func TestProductionApplyMapsInvalidPlanSchemaToUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code := runCommand(context.Background(), processEnvironment{effectiveUID: uint32(os.Geteuid())}, inventoryCommands{}, productionApplication,
+	code := runCommand(context.Background(), processEnvironment{effectiveUID: uint32(os.Geteuid())}, archiveCommands{}, productionApplication,
 		[]string{"apply", "--plan", planPath, "--accept", "sha256:" + strings.Repeat("1", 64)}, &stdout, &stderr)
 	if code != 2 || stdout.Len() != 0 || stderr.Len() == 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -294,7 +359,7 @@ func TestPlanOversizeConfigIsSchemaFailureBeforeBuild(t *testing.T) {
 	called := false
 	applications := applicationCommands{buildPlan: func(context.Context, app.Request) (app.Plan, error) { called = true; return app.Plan{}, nil }}
 	var stdout, stderr bytes.Buffer
-	code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications,
+	code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applications,
 		[]string{"plan", "--config", configPath, "--output", filepath.Join(root, "plan.json")}, &stdout, &stderr)
 	if code != 2 || called || stdout.Len() != 0 || !strings.Contains(stderr.String(), "Limit") {
 		t.Fatalf("code=%d called=%t stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
@@ -309,7 +374,7 @@ func TestHelpStatesExactCommandGrammar(t *testing.T) {
 		{[]string{"--help"}, rootUsage}, {[]string{"plan", "--help"}, planUsage}, {[]string{"apply", "--help"}, applyUsage},
 	} {
 		var stdout, stderr bytes.Buffer
-		code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applicationCommands{}, test.arguments, &stdout, &stderr)
+		code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applicationCommands{}, test.arguments, &stdout, &stderr)
 		if code != 0 || stderr.Len() != 0 || stdout.String() != test.usage+"\n" || strings.Contains(stdout.String(), "_create-home") {
 			t.Fatalf("%v: code=%d stdout=%q stderr=%q", test.arguments, code, stdout.String(), stderr.String())
 		}
@@ -330,7 +395,7 @@ func TestPlanBrokenOutputIsFailureAfterPublication(t *testing.T) {
 	}
 	applications := applicationCommands{buildPlan: func(context.Context, app.Request) (app.Plan, error) { return plan, nil }}
 	var stderr bytes.Buffer
-	code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"plan", "--config", configPath, "--output", outputPath}, cutoverFailWriter{io.ErrClosedPipe}, &stderr)
+	code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applications, []string{"plan", "--config", configPath, "--output", outputPath}, cutoverFailWriter{io.ErrClosedPipe}, &stderr)
 	if code != 1 {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}

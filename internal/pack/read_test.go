@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -190,6 +192,32 @@ func TestReadAdmitsExactSemanticAndBindingSources(t *testing.T) {
 				t.Fatalf("Digest() = %s, want %s", source.Digest(), wantDigest)
 			}
 		})
+	}
+}
+
+func TestReadFileAdmitsOneRegularArchiveWithoutFollowingLeaf(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "source.pstrap")
+	data := testArchive(t,
+		archiveMember{name: "manifest.toml", data: "schema=1\nkind='semantic'\n"},
+		archiveMember{name: "profiles/base.toml", data: "[profiles.base]\npackages=['base']\n"},
+	)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := ReadFile(context.Background(), path)
+	if err != nil || source.Kind() != Semantic {
+		t.Fatalf("ReadFile = %#v, %v", source, err)
+	}
+	link := filepath.Join(root, "link.pstrap")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFile(context.Background(), link); err == nil {
+		t.Fatal("ReadFile followed symlink")
+	}
+	if _, err := ReadFile(context.Background(), root); errorCategory(t, err) != InvalidValue {
+		t.Fatalf("directory category = %v", err)
 	}
 }
 

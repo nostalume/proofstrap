@@ -26,6 +26,28 @@ func openStore(root string) (int, error) {
 	return sha, err
 }
 
+// ReadFile admits one exact regular archive without following its leaf.
+func ReadFile(ctx context.Context, path string) (Source, error) {
+	if !linux.CleanAbsoluteNonRoot(path) {
+		return Source{}, storeDiagnostic(Digest{}, InvalidValue, path, "archive path must be clean, absolute, and non-root", nil)
+	}
+	fd, err := linux.OpenRegular(path)
+	if err != nil {
+		category, detail := IO, "open archive"
+		if errors.Is(err, linux.ErrNotRegular) {
+			category, detail = InvalidValue, "archive is not a regular file"
+		}
+		return Source{}, storeDiagnostic(Digest{}, category, path, detail, err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	source, err := Read(ctx, file)
+	if err != nil {
+		return Source{}, err
+	}
+	return source, nil
+}
+
 func Import(ctx context.Context, root, sourcePath string, expected *Digest) (Source, error) {
 	identity := Digest{}
 	if expected != nil {

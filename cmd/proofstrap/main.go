@@ -15,21 +15,20 @@ import (
 	"github.com/nostalume/proofstrap/internal/app"
 	"github.com/nostalume/proofstrap/internal/document"
 	"github.com/nostalume/proofstrap/internal/engine"
-	"github.com/nostalume/proofstrap/internal/inventory"
-	"github.com/nostalume/proofstrap/internal/linux"
 	"github.com/nostalume/proofstrap/internal/pack"
 )
 
 const (
 	rootUsage       = "usage: proofstrap <import|inspect|plan|apply> [OPTIONS]"
-	planUsage       = "usage: proofstrap plan [--config FILE] [--output PLAN] [--pack-store DIR] [--pack-file FILE [FILE ...]]"
+	planUsage       = "usage: proofstrap plan [--config FILE] [--output PLAN] [--pack-store DIR [DIR ...]] [--pack-file FILE [FILE ...]]"
 	applyUsage      = "usage: proofstrap apply [--plan PLAN] --accept sha256:DIGEST [--journal FILE] [--receipt FILE]"
 	maxConfigBytes  = 1 << 20
 	planningTimeout = 30 * time.Minute
 )
 
 type processEnvironment struct {
-	inventory    inventory.Environment
+	xdgDataHome  string
+	home         string
 	effectiveUID uint32
 }
 
@@ -43,22 +42,15 @@ var productionApplication = applicationCommands{buildPlan: app.BuildPlan, apply:
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	executable, _ := os.Readlink("/proc/self/exe")
 	environment := processEnvironment{
-		inventory:    inventory.Environment{ReleaseRoot: adjacentReleaseRoot(executable), XDGDataHome: os.Getenv("XDG_DATA_HOME"), Home: os.Getenv("HOME")},
+		xdgDataHome:  os.Getenv("XDG_DATA_HOME"),
+		home:         os.Getenv("HOME"),
 		effectiveUID: uint32(os.Geteuid()),
 	}
-	os.Exit(runCommand(ctx, environment, productionInventory, productionApplication, os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(runCommand(ctx, environment, productionArchives, productionApplication, os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func adjacentReleaseRoot(executable string) string {
-	if strings.HasSuffix(executable, " (deleted)") || !linux.CleanAbsoluteNonRoot(executable) {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(executable), "packs")
-}
-
-func runCommand(ctx context.Context, environment processEnvironment, inventoryCommands inventoryCommands, application applicationCommands, arguments []string, stdout, stderr io.Writer) int {
+func runCommand(ctx context.Context, environment processEnvironment, archives archiveCommands, application applicationCommands, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 1 && arguments[0] == "--help" {
 		return writeHelp(stdout, stderr, rootUsage)
 	}
@@ -67,11 +59,11 @@ func runCommand(ctx context.Context, environment processEnvironment, inventoryCo
 	}
 	switch arguments[0] {
 	case "import":
-		return runImport(ctx, environment.inventory, inventoryCommands, arguments[1:], stdout, stderr)
+		return runImport(ctx, environment, archives, arguments[1:], stdout, stderr)
 	case "inspect":
-		return runInspect(ctx, environment.inventory, inventoryCommands, arguments[1:], stdout, stderr)
+		return runInspect(ctx, archives, arguments[1:], stdout, stderr)
 	case "plan":
-		return runPlan(ctx, environment.inventory, application, arguments[1:], stdout, stderr)
+		return runPlan(ctx, application, arguments[1:], stdout, stderr)
 	case "apply":
 		return runApply(ctx, environment.effectiveUID, application, arguments[1:], stdout, stderr)
 	default:
@@ -79,22 +71,29 @@ func runCommand(ctx context.Context, environment processEnvironment, inventoryCo
 	}
 }
 
-func runPlan(ctx context.Context, environment inventory.Environment, application applicationCommands, arguments []string, stdout, stderr io.Writer) int {
+func runPlan(ctx context.Context, application applicationCommands, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 1 && arguments[0] == "--help" {
 		return writeHelp(stdout, stderr, planUsage)
 	}
-	configPath, outputPath, store, packFiles, ok := parsePlan(arguments)
+	configPath, outputPath, stores, packFiles, ok := parsePlan(arguments)
 	if !ok || application.buildPlan == nil {
 		return grammarError(stderr, planUsage)
 	}
-	environment.PackStore = store
 	data, err := readConfig(configPath)
 	if err != nil {
 		return planFailure(err, stderr)
 	}
 	planCtx, cancel := context.WithTimeout(ctx, planningTimeout)
 	defer cancel()
-	plan, err := application.buildPlan(planCtx, app.Request{Origin: configPath, Config: data, Environment: environment, PackFiles: packFiles})
+	target, err := document.Decode(configPath, data)
+	if err != nil {
+		return planFailure(err, stderr)
+	}
+	sources, err := acquireSources(planCtx, configPath, target, stores, packFiles)
+	if err != nil {
+		return planFailure(err, stderr)
+	}
+	plan, err := application.buildPlan(planCtx, app.Request{Document: target, Sources: sources})
 	if err != nil {
 		return planFailure(err, stderr)
 	}
@@ -143,43 +142,101 @@ func runApply(ctx context.Context, effectiveUID uint32, application applicationC
 	return statusCode(result.Status)
 }
 
-func parsePlan(arguments []string) (configPath, outputPath, store string, packFiles []string, ok bool) {
+func parsePlan(arguments []string) (configPath, outputPath string, stores, packFiles []string, ok bool) {
 	configPath, outputPath = "proofstrap.toml", "plan.json"
-	seen := make(map[string]bool, 3)
-	values := map[string]*string{"--config": &configPath, "--output": &outputPath, "--pack-store": &store}
+	seen := make(map[string]bool, 2)
+	values := map[string]*string{"--config": &configPath, "--output": &outputPath}
 	for index := 0; index < len(arguments); index++ {
 		switch arguments[index] {
-		case "--config", "--output", "--pack-store":
+		case "--config", "--output":
 			target := values[arguments[index]]
 			if seen[arguments[index]] || index+1 >= len(arguments) {
-				return "", "", "", nil, false
+				return "", "", nil, nil, false
 			}
 			seen[arguments[index]], index = true, index+1
 			*target = arguments[index]
-		case "--pack-file":
-			before := len(packFiles)
+		case "--pack-store", "--pack-file":
+			target := &packFiles
+			if arguments[index] == "--pack-store" {
+				target = &stores
+			}
+			before := len(*target)
 			for index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1], "--") {
 				index++
 				if arguments[index] == "" {
-					return "", "", "", nil, false
+					return "", "", nil, nil, false
 				}
-				packFiles = append(packFiles, arguments[index])
+				*target = append(*target, arguments[index])
 			}
-			if len(packFiles) == before {
-				return "", "", "", nil, false
+			if len(*target) == before {
+				return "", "", nil, nil, false
 			}
 		default:
-			return "", "", "", nil, false
+			return "", "", nil, nil, false
 		}
 	}
-	paths := []*string{&configPath, &outputPath, &store}
+	paths := []*string{&configPath, &outputPath}
+	for index := range stores {
+		paths = append(paths, &stores[index])
+	}
 	for index := range packFiles {
 		paths = append(paths, &packFiles[index])
 	}
-	if configPath == "" || outputPath == "" || seen["--pack-store"] && store == "" || !canonicalCLIPaths(paths...) {
-		return "", "", "", nil, false
+	if configPath == "" || outputPath == "" || !canonicalCLIPaths(paths...) || duplicatePaths(stores) || duplicatePaths(packFiles) {
+		return "", "", nil, nil, false
 	}
-	return configPath, outputPath, store, packFiles, true
+	return configPath, outputPath, stores, packFiles, true
+}
+
+func duplicatePaths(paths []string) bool {
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if _, exists := seen[path]; exists {
+			return true
+		}
+		seen[path] = struct{}{}
+	}
+	return false
+}
+
+func acquireSources(ctx context.Context, configPath string, target document.Document, stores, files []string) ([]pack.Source, error) {
+	view := target.View()
+	if len(view.Sources) == 0 {
+		if len(stores)+len(files) != 0 {
+			return nil, fmt.Errorf("pack inputs require declared source roots")
+		}
+		return nil, nil
+	}
+	if len(stores) > 64 || len(files) > 64 {
+		return nil, fmt.Errorf("at most 64 pack stores and files are admitted")
+	}
+	provided := make([]pack.Source, 0, len(files))
+	for _, path := range files {
+		source, err := pack.ReadFile(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		provided = append(provided, source)
+	}
+	sibling := filepath.Join(filepath.Dir(configPath), "packs")
+	if _, err := os.Lstat(sibling); err == nil {
+		stores = append([]string{sibling}, stores...)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if duplicatePaths(stores) {
+		return nil, fmt.Errorf("duplicate pack store")
+	}
+	roots := make([]pack.Digest, len(view.Sources))
+	for index, source := range view.Sources {
+		roots[index] = source.Digest
+	}
+	return pack.ResolveClosure(ctx, roots, provided, func(ctx context.Context, digest pack.Digest) (pack.Source, error) {
+		if len(stores) == 0 {
+			return pack.Source{}, &pack.Diagnostic{Source: digest.String(), Category: pack.MissingRequirement, Detail: "exact source is unavailable"}
+		}
+		return pack.LoadExact(ctx, stores, digest)
+	})
 }
 
 func parseApply(arguments []string) (planPath, accepted, journalPath, receiptPath string, ok bool) {

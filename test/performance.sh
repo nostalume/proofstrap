@@ -16,8 +16,7 @@ done
 printf 'runtime_amd64_bytes=%s\nauthor_amd64_bytes=%s\n' \
   "$(wc -c < "$temporary/proofstrap" | tr -d ' ')" "$(wc -c < "$temporary/proofstrap-pack" | tr -d ' ')" >> "$metrics"
 
-"$root/release/fetch.sh" "$temporary/assets"
-"$root/release/build.sh" "$temporary/dist" "$temporary/assets"
+"$root/release/build.sh" "$temporary/dist"
 for archive in "$temporary/dist"/proofstrap_linux_*.tar.gz; do
   name=$(basename "$archive" .tar.gz)
   printf 'archive_%s_bytes=%s\n' "${name#proofstrap_linux_}" "$(wc -c < "$archive" | tr -d ' ')" >> "$metrics"
