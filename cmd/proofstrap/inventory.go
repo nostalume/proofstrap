@@ -15,16 +15,16 @@ import (
 )
 
 const (
-	importUsage    = "usage: proofstrap import --digest DIGEST [--system] ARCHIVE"
-	inspectUsage   = "usage: proofstrap inspect [DIGEST | --digest DIGEST ARCHIVE]"
+	importUsage    = "usage: proofstrap import [--digest DIGEST] [--system] ARCHIVE"
+	inspectUsage   = "usage: proofstrap inspect [DIGEST | ARCHIVE | --digest DIGEST ARCHIVE]"
 	maxInspectJSON = 8 << 20
 )
 
 type inventoryCommands struct {
-	importUser     func(context.Context, inventory.Environment, string, pack.Digest) error
-	importSystem   func(context.Context, string, pack.Digest) error
+	importUser     func(context.Context, inventory.Environment, string, *pack.Digest) (inventory.Record, error)
+	importSystem   func(context.Context, string, *pack.Digest) (inventory.Record, error)
 	inspectStored  func(context.Context, inventory.Environment, *pack.Digest) ([]inventory.Record, error)
-	inspectArchive func(context.Context, string, pack.Digest) (inventory.Record, error)
+	inspectArchive func(context.Context, string, *pack.Digest) (inventory.Record, error)
 }
 
 var productionInventory = inventoryCommands{
@@ -37,20 +37,21 @@ func runImport(ctx context.Context, environment inventory.Environment, commands 
 		fmt.Fprintln(stdout, importUsage)
 		return 0
 	}
-	digestText, archive, system, ok := parseImport(arguments)
+	expected, archive, system, ok := parseImport(arguments)
 	if !ok {
 		return grammarError(stderr, importUsage)
 	}
-	digest, err := pack.ParseDigest(digestText)
-	if err != nil || archive == "" || !canonicalCLIPaths(&archive) {
+	if !canonicalCLIPaths(&archive) {
 		return grammarError(stderr, importUsage)
 	}
+	var record inventory.Record
+	var err error
 	if system {
-		err = commands.importSystem(ctx, archive, digest)
+		record, err = commands.importSystem(ctx, archive, expected)
 	} else {
-		err = commands.importUser(ctx, environment, archive, digest)
+		record, err = commands.importUser(ctx, environment, archive, expected)
 	}
-	return operationResult(err, stderr)
+	return writeRecords([]inventory.Record{record}, err, stdout, stderr)
 }
 
 func runInspect(ctx context.Context, environment inventory.Environment, commands inventoryCommands, arguments []string, stdout, stderr io.Writer) int {
@@ -60,32 +61,42 @@ func runInspect(ctx context.Context, environment inventory.Environment, commands
 	}
 	var records []inventory.Record
 	var err error
-	grammarValid := true
 	switch {
 	case len(arguments) == 0:
 		records, err = commands.inspectStored(ctx, environment, nil)
 	case len(arguments) == 1 && !strings.HasPrefix(arguments[0], "-"):
-		var digest pack.Digest
-		digest, err = pack.ParseDigest(arguments[0])
-		if err == nil {
+		if strings.HasPrefix(arguments[0], "sha256:") {
+			var digest pack.Digest
+			digest, err = pack.ParseDigest(arguments[0])
+			if err != nil {
+				return grammarError(stderr, inspectUsage)
+			}
 			records, err = commands.inspectStored(ctx, environment, &digest)
+		} else if canonicalCLIPaths(&arguments[0]) {
+			var record inventory.Record
+			record, err = commands.inspectArchive(ctx, arguments[0], nil)
+			records = []inventory.Record{record}
+		} else {
+			return grammarError(stderr, inspectUsage)
 		}
 	case len(arguments) == 3 && arguments[0] == "--digest" && arguments[2] != "" && canonicalCLIPaths(&arguments[2]):
 		var digest pack.Digest
 		digest, err = pack.ParseDigest(arguments[1])
-		if err == nil {
-			var record inventory.Record
-			record, err = commands.inspectArchive(ctx, arguments[2], digest)
-			records = []inventory.Record{record}
+		if err != nil {
+			return grammarError(stderr, inspectUsage)
 		}
+		var record inventory.Record
+		record, err = commands.inspectArchive(ctx, arguments[2], &digest)
+		records = []inventory.Record{record}
 	default:
-		grammarValid = false
-	}
-	if !grammarValid || err != nil && digestSyntaxInvalid(arguments) {
 		return grammarError(stderr, inspectUsage)
 	}
-	if err != nil {
-		return operationResult(err, stderr)
+	return writeRecords(records, err, stdout, stderr)
+}
+
+func writeRecords(records []inventory.Record, result error, stdout io.Writer, stderr io.Writer) int {
+	if result != nil {
+		return operationResult(result, stderr)
 	}
 	encoded, err := encodeRecords(records)
 	if err != nil {
@@ -98,12 +109,16 @@ func runInspect(ctx context.Context, environment inventory.Environment, commands
 	return 0
 }
 
-func parseImport(arguments []string) (digest, archive string, system, ok bool) {
-	seenDigest, seenSystem, positional := false, false, false
+func parseImport(arguments []string) (expected *pack.Digest, archive string, system, ok bool) {
+	seenSystem, positional := false, false
 	for index := 0; index < len(arguments); index++ {
 		argument := arguments[index]
-		if !positional && argument == "--digest" && !seenDigest && index+1 < len(arguments) {
-			seenDigest, index, digest = true, index+1, arguments[index+1]
+		if !positional && argument == "--digest" && expected == nil && index+1 < len(arguments) {
+			digest, err := pack.ParseDigest(arguments[index+1])
+			if err != nil {
+				return nil, "", false, false
+			}
+			expected, index = &digest, index+1
 			continue
 		}
 		if !positional && argument == "--system" && !seenSystem {
@@ -111,11 +126,11 @@ func parseImport(arguments []string) (digest, archive string, system, ok bool) {
 			continue
 		}
 		if strings.HasPrefix(argument, "-") || positional {
-			return "", "", false, false
+			return nil, "", false, false
 		}
 		positional, archive = true, argument
 	}
-	return digest, archive, system, seenDigest && positional && digest != "" && archive != ""
+	return expected, archive, system, positional && archive != ""
 }
 
 func encodeRecords(records []inventory.Record) ([]byte, error) {
@@ -194,19 +209,4 @@ func operationResult(err error, stderr io.Writer) int {
 		return 130
 	}
 	return 1
-}
-
-func digestSyntaxInvalid(arguments []string) bool {
-	text := ""
-	if len(arguments) == 1 {
-		text = arguments[0]
-	}
-	if len(arguments) >= 2 && arguments[0] == "--digest" {
-		text = arguments[1]
-	}
-	if text == "" {
-		return false
-	}
-	_, err := pack.ParseDigest(text)
-	return err != nil
 }

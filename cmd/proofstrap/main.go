@@ -22,8 +22,8 @@ import (
 
 const (
 	rootUsage       = "usage: proofstrap <import|inspect|plan|apply> [OPTIONS]"
-	planUsage       = "usage: proofstrap plan --config FILE --output PLAN [--profile-bundle ARCHIVE [ARCHIVE ...]]"
-	applyUsage      = "usage: proofstrap apply --plan PLAN --accept sha256:DIGEST [--journal FILE] [--receipt FILE]"
+	planUsage       = "usage: proofstrap plan [--config FILE] [--output PLAN] [--pack-store DIR] [--pack-file FILE [FILE ...]]"
+	applyUsage      = "usage: proofstrap apply [--plan PLAN] --accept sha256:DIGEST [--journal FILE] [--receipt FILE]"
 	maxConfigBytes  = 1 << 20
 	planningTimeout = 30 * time.Minute
 )
@@ -83,17 +83,18 @@ func runPlan(ctx context.Context, environment inventory.Environment, application
 	if len(arguments) == 1 && arguments[0] == "--help" {
 		return writeHelp(stdout, stderr, planUsage)
 	}
-	configPath, outputPath, bundles, ok := parsePlan(arguments)
+	configPath, outputPath, store, packFiles, ok := parsePlan(arguments)
 	if !ok || application.buildPlan == nil {
 		return grammarError(stderr, planUsage)
 	}
+	environment.PackStore = store
 	data, err := readConfig(configPath)
 	if err != nil {
 		return planFailure(err, stderr)
 	}
 	planCtx, cancel := context.WithTimeout(ctx, planningTimeout)
 	defer cancel()
-	plan, err := application.buildPlan(planCtx, app.Request{Origin: configPath, Config: data, Environment: environment, Bundles: bundles})
+	plan, err := application.buildPlan(planCtx, app.Request{Origin: configPath, Config: data, Environment: environment, PackFiles: packFiles})
 	if err != nil {
 		return planFailure(err, stderr)
 	}
@@ -142,44 +143,47 @@ func runApply(ctx context.Context, effectiveUID uint32, application applicationC
 	return statusCode(result.Status)
 }
 
-func parsePlan(arguments []string) (configPath, outputPath string, bundles []string, ok bool) {
-	seenConfig, seenOutput := false, false
+func parsePlan(arguments []string) (configPath, outputPath, store string, packFiles []string, ok bool) {
+	configPath, outputPath = "proofstrap.toml", "plan.json"
+	seen := make(map[string]bool, 3)
+	values := map[string]*string{"--config": &configPath, "--output": &outputPath, "--pack-store": &store}
 	for index := 0; index < len(arguments); index++ {
 		switch arguments[index] {
-		case "--config":
-			if seenConfig || index+1 >= len(arguments) {
-				return "", "", nil, false
+		case "--config", "--output", "--pack-store":
+			target := values[arguments[index]]
+			if seen[arguments[index]] || index+1 >= len(arguments) {
+				return "", "", "", nil, false
 			}
-			seenConfig, index, configPath = true, index+1, arguments[index+1]
-		case "--output":
-			if seenOutput || index+1 >= len(arguments) {
-				return "", "", nil, false
-			}
-			seenOutput, index, outputPath = true, index+1, arguments[index+1]
-		case "--profile-bundle":
-			before := len(bundles)
+			seen[arguments[index]], index = true, index+1
+			*target = arguments[index]
+		case "--pack-file":
+			before := len(packFiles)
 			for index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1], "--") {
 				index++
-				bundles = append(bundles, arguments[index])
+				if arguments[index] == "" {
+					return "", "", "", nil, false
+				}
+				packFiles = append(packFiles, arguments[index])
 			}
-			if len(bundles) == before {
-				return "", "", nil, false
+			if len(packFiles) == before {
+				return "", "", "", nil, false
 			}
 		default:
-			return "", "", nil, false
+			return "", "", "", nil, false
 		}
 	}
-	paths := []*string{&configPath, &outputPath}
-	for index := range bundles {
-		paths = append(paths, &bundles[index])
+	paths := []*string{&configPath, &outputPath, &store}
+	for index := range packFiles {
+		paths = append(paths, &packFiles[index])
 	}
-	if !seenConfig || !seenOutput || configPath == "" || outputPath == "" || !canonicalCLIPaths(paths...) {
-		return "", "", nil, false
+	if configPath == "" || outputPath == "" || seen["--pack-store"] && store == "" || !canonicalCLIPaths(paths...) {
+		return "", "", "", nil, false
 	}
-	return configPath, outputPath, bundles, true
+	return configPath, outputPath, store, packFiles, true
 }
 
 func parseApply(arguments []string) (planPath, accepted, journalPath, receiptPath string, ok bool) {
+	planPath, journalPath = "plan.json", "apply.journal"
 	seen := make(map[string]bool, 4)
 	values := map[string]*string{"--plan": &planPath, "--accept": &accepted, "--journal": &journalPath, "--receipt": &receiptPath}
 	for index := 0; index < len(arguments); index++ {
@@ -190,7 +194,7 @@ func parseApply(arguments []string) (planPath, accepted, journalPath, receiptPat
 		seen[arguments[index]], index = true, index+1
 		*target = arguments[index]
 	}
-	if !seen["--plan"] || !seen["--accept"] || planPath == "" || !canonicalCLIPaths(&planPath, &journalPath, &receiptPath) {
+	if !seen["--accept"] || accepted == "" || planPath == "" || journalPath == "" || seen["--receipt"] && receiptPath == "" || !canonicalCLIPaths(&planPath, &journalPath, &receiptPath) {
 		return "", "", "", "", false
 	}
 	return planPath, accepted, journalPath, receiptPath, true

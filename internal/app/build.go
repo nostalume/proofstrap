@@ -19,7 +19,7 @@ type Request struct {
 	Origin      string
 	Config      []byte
 	Environment inventory.Environment
-	Bundles     []string
+	PackFiles   []string
 }
 
 func BuildPlan(ctx context.Context, request Request) (Plan, error) {
@@ -40,15 +40,15 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 	declared := target.Sources()
 	var sources []pack.Source
 	if len(declared) == 0 {
-		if len(request.Bundles) != 0 {
-			return Plan{}, fmt.Errorf("bundles require declared source roots")
+		if len(request.PackFiles) != 0 {
+			return Plan{}, fmt.Errorf("pack files require declared source roots")
 		}
 	} else {
 		roots := make([]pack.Digest, len(declared))
 		for index, source := range declared {
 			roots[index] = source.Digest
 		}
-		sources, err = inventory.AcquireClosure(ctx, request.Environment, roots, request.Bundles)
+		sources, err = inventory.AcquireClosure(ctx, request.Environment, roots, request.PackFiles)
 		if err != nil {
 			return Plan{}, err
 		}

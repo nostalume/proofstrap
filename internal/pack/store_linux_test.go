@@ -30,8 +30,12 @@ func TestImportAndLoadExact(t *testing.T) {
 	if err := os.WriteFile(sourcePath, archive, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Import(context.Background(), root, sourcePath, source.Digest()); err != nil {
+	imported, err := Import(context.Background(), root, sourcePath, nil)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if imported.Digest() != source.Digest() || imported.Kind() != Semantic {
+		t.Fatalf("Import = %#v", imported.Description())
 	}
 	final := filepath.Join(root, "sha256", source.Digest().String()[len(digestPrefix):]+".pstrap")
 	info, err := os.Lstat(final)
@@ -93,11 +97,12 @@ func TestImportDeduplicatesAndLoadRejectsCorruptDuplicate(t *testing.T) {
 	archive, digest := semanticArchive(t)
 	sourcePath := writeSource(t, archive)
 	left, right := newStoreRoot(t), newStoreRoot(t)
-	if err := Import(context.Background(), left, sourcePath, digest); err != nil {
+	if err := importExpected(context.Background(), left, sourcePath, digest); err != nil {
 		t.Fatal(err)
 	}
-	if err := Import(context.Background(), left, sourcePath, digest); err != nil {
-		t.Fatalf("deduplicated Import failed: %v", err)
+	again, err := Import(context.Background(), left, sourcePath, nil)
+	if err != nil || again.Digest() != digest {
+		t.Fatalf("deduplicated Import = %#v, %v", again.Description(), err)
 	}
 	corruptPath := filepath.Join(right, "sha256", objectName(digest))
 	if err := os.WriteFile(corruptPath, []byte("corrupt"), 0o444); err != nil {
@@ -109,7 +114,7 @@ func TestImportDeduplicatesAndLoadRejectsCorruptDuplicate(t *testing.T) {
 		}
 	}
 	before, _ := os.ReadFile(corruptPath)
-	if err := Import(context.Background(), right, sourcePath, digest); errorCategory(t, err) != CorruptStore {
+	if err := importExpected(context.Background(), right, sourcePath, digest); errorCategory(t, err) != CorruptStore {
 		t.Fatalf("Import over corruption = %v", err)
 	}
 	after, _ := os.ReadFile(corruptPath)
@@ -131,10 +136,10 @@ func TestImportRejectsUnsafeSourcesAndPreservesReadCategory(t *testing.T) {
 	if err := os.Symlink(realSource, symlink); err != nil {
 		t.Fatal(err)
 	}
-	if err := Import(context.Background(), root, symlink, digest); errorCategory(t, err) != IO {
+	if err := importExpected(context.Background(), root, symlink, digest); errorCategory(t, err) != IO {
 		t.Fatalf("symlink source = %v", err)
 	}
-	if err := Import(context.Background(), root, directory, digest); errorCategory(t, err) != InvalidValue {
+	if err := importExpected(context.Background(), root, directory, digest); errorCategory(t, err) != InvalidValue {
 		t.Fatalf("directory source = %v", err)
 	}
 	bad := []byte("not gzip")
@@ -142,8 +147,12 @@ func TestImportRejectsUnsafeSourcesAndPreservesReadCategory(t *testing.T) {
 	badSource, _ := Read(context.Background(), bytes.NewReader(bad))
 	_ = badSource
 	observed := digestBytes(bad)
-	if err := Import(context.Background(), root, badPath, observed); errorCategory(t, err) != Syntax {
+	if err := importExpected(context.Background(), root, badPath, observed); errorCategory(t, err) != Syntax {
 		t.Fatalf("invalid archive category = %v", err)
+	}
+	var diagnostic *Diagnostic
+	if source, err := Import(context.Background(), root, badPath, nil); source != (Source{}) || !errors.As(err, &diagnostic) || diagnostic.Category != Syntax || diagnostic.Source != "" {
+		t.Fatalf("digest-free invalid archive = %#v, %v", source, err)
 	}
 }
 
@@ -154,7 +163,7 @@ func TestImportCancellation(t *testing.T) {
 	root := newStoreRoot(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := Import(ctx, root, sourcePath, digest); !errors.Is(err, context.Canceled) || errorCategory(t, err) != Canceled {
+	if err := importExpected(ctx, root, sourcePath, digest); !errors.Is(err, context.Canceled) || errorCategory(t, err) != Canceled {
 		t.Fatalf("canceled Import = %v", err)
 	}
 }
@@ -172,7 +181,7 @@ func TestImportConcurrentConvergence(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			errorsByWorker <- Import(context.Background(), root, sourcePath, digest)
+			errorsByWorker <- importExpected(context.Background(), root, sourcePath, digest)
 		}()
 	}
 	close(start)
@@ -264,7 +273,7 @@ func TestImportRejectsDigestMismatchAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected, _ := ParseDigest("sha256:" + "2222222222222222222222222222222222222222222222222222222222222222")
-	if err := Import(context.Background(), root, sourcePath, expected); errorCategory(t, err) != Integrity {
+	if err := importExpected(context.Background(), root, sourcePath, expected); errorCategory(t, err) != Integrity {
 		t.Fatalf("Import mismatch = %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "sha256"))
@@ -273,12 +282,27 @@ func TestImportRejectsDigestMismatchAtomically(t *testing.T) {
 	}
 }
 
+func TestImportDirectorySyncFailureEmitsNoSource(t *testing.T) {
+	archive, digest := semanticArchive(t)
+	root, path := newStoreRoot(t), writeSource(t, archive)
+	previous := syncStore
+	syncStore = func(int) error { return errors.New("sync failed") }
+	defer func() { syncStore = previous }()
+	source, err := Import(context.Background(), root, path, nil)
+	if source != (Source{}) || errorCategory(t, err) != IO {
+		t.Fatalf("sync failure = %#v, %v", source, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "sha256", objectName(digest))); err != nil {
+		t.Fatalf("published object after sync failure: %v", err)
+	}
+}
+
 func TestImportCompressedSizeBoundary(t *testing.T) {
 	t.Parallel()
 	root := newStoreRoot(t)
 	data := make([]byte, maxCompressedBytes+1)
 	path := writeSource(t, data)
-	if err := Import(context.Background(), root, path, digestBytes(data)); errorCategory(t, err) != Limit {
+	if err := importExpected(context.Background(), root, path, digestBytes(data)); errorCategory(t, err) != Limit {
 		t.Fatalf("oversized Import = %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "sha256"))
@@ -320,6 +344,11 @@ func writeSource(t *testing.T, data []byte) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func importExpected(ctx context.Context, root, path string, digest Digest) error {
+	_, err := Import(ctx, root, path, &digest)
+	return err
 }
 
 func digestBytes(data []byte) Digest {

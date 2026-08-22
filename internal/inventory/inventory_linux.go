@@ -25,6 +25,7 @@ const (
 
 type Environment struct {
 	ReleaseRoot string
+	PackStore   string
 	XDGDataHome string
 	Home        string
 }
@@ -39,13 +40,36 @@ type scope struct {
 	root string
 }
 
-func ImportUser(ctx context.Context, environment Environment, archive string, digest pack.Digest) error {
-	if err := validateOperation(ctx, archive, digest); err != nil {
-		return err
+type Diagnostic struct {
+	Category pack.Category
+	Path     string
+	Detail   string
+	cause    error
+}
+
+func (d *Diagnostic) Error() string {
+	if d.Path != "" {
+		return d.Path + ": " + string(d.Category) + ": " + d.Detail
+	}
+	return string(d.Category) + ": " + d.Detail
+}
+
+func (d *Diagnostic) Unwrap() error { return d.cause }
+
+func diagnostic(category pack.Category, path, detail string, cause error) *Diagnostic {
+	if detail == "" && cause != nil {
+		detail = cause.Error()
+	}
+	return &Diagnostic{Category: category, Path: path, Detail: detail, cause: cause}
+}
+
+func ImportUser(ctx context.Context, environment Environment, archive string, expected *pack.Digest) (Record, error) {
+	if err := validateArchive(ctx, archive, expected); err != nil {
+		return Record{}, err
 	}
 	base, suffix, ok := userBase(environment)
 	if !ok {
-		return diagnostic(pack.InvalidValue, "", "user scope is unavailable", nil)
+		return Record{}, diagnostic(pack.InvalidValue, "", "user scope is unavailable", nil)
 	}
 	var err error
 	if suffix == nil {
@@ -54,37 +78,41 @@ func ImportUser(ctx context.Context, environment Environment, archive string, di
 		err = createBeneath(base, append(suffix, "proofstrap", "packs", "sha256"), 0o700)
 	}
 	if err != nil {
-		return diagnostic(pack.IO, base, "initialize user store", err)
+		return Record{}, diagnostic(pack.IO, base, "initialize user store", err)
 	}
-	return pack.Import(ctx, userRoot(environment), archive, digest)
+	return importArchive(ctx, userRoot(environment), archive, expected, "user")
 }
 
-func ImportSystem(ctx context.Context, archive string, digest pack.Digest) error {
-	if err := validateOperation(ctx, archive, digest); err != nil {
-		return err
+func ImportSystem(ctx context.Context, archive string, expected *pack.Digest) (Record, error) {
+	if err := validateArchive(ctx, archive, expected); err != nil {
+		return Record{}, err
 	}
 	if err := createBeneath("/var/lib", []string{"proofstrap", "packs", "sha256"}, 0o755); err != nil {
-		return diagnostic(pack.IO, systemRoot, "initialize system store", err)
+		return Record{}, diagnostic(pack.IO, systemRoot, "initialize system store", err)
 	}
-	return pack.Import(ctx, systemRoot, archive, digest)
+	return importArchive(ctx, systemRoot, archive, expected, "system")
 }
 
-func InspectArchive(ctx context.Context, archive string, expected pack.Digest) (Record, error) {
-	if err := validateOperation(ctx, archive, expected); err != nil {
+func importArchive(ctx context.Context, root, archive string, expected *pack.Digest, scope string) (Record, error) {
+	source, err := pack.Import(ctx, root, archive, expected)
+	if err != nil {
+		return Record{}, err
+	}
+	return Record{Description: source.Description(), Scopes: []string{scope}}, nil
+}
+
+func InspectArchive(ctx context.Context, archive string, expected *pack.Digest) (Record, error) {
+	if err := validateArchive(ctx, archive, expected); err != nil {
 		return Record{}, err
 	}
 	source, err := readSource(ctx, archive, "archive")
 	if err != nil {
 		return Record{}, err
 	}
-	if source.Digest() != expected {
+	if expected != nil && source.Digest() != *expected {
 		return Record{}, diagnostic(pack.Integrity, archive, "archive digest does not match expected digest", nil)
 	}
-	record := Record{Description: source.Description(), Scopes: []string{}}
-	if err := checkRecordBudget([]Record{record}); err != nil {
-		return Record{}, err
-	}
-	return record, nil
+	return Record{Description: source.Description(), Scopes: []string{}}, nil
 }
 
 func readSource(ctx context.Context, path, noun string) (pack.Source, error) {
@@ -102,7 +130,7 @@ func readSource(ctx context.Context, path, noun string) (pack.Source, error) {
 	defer file.Close()
 	source, err := pack.Read(ctx, file)
 	if err != nil {
-		return pack.Source{}, diagnosticFromPack(path, err)
+		return pack.Source{}, diagnostic(packCategory(err), path, "pack admission failed", err)
 	}
 	return source, nil
 }
@@ -265,13 +293,14 @@ func inspectScope(ctx context.Context, fd int, item scope, byDigest map[pack.Dig
 }
 
 func userBase(environment Environment) (string, []string, bool) {
-	if linux.CleanAbsoluteNonRoot(environment.XDGDataHome) {
+	switch {
+	case linux.CleanAbsoluteNonRoot(environment.XDGDataHome):
 		return environment.XDGDataHome, nil, true
-	}
-	if linux.CleanAbsoluteNonRoot(environment.Home) {
+	case linux.CleanAbsoluteNonRoot(environment.Home):
 		return environment.Home, []string{".local", "share"}, true
+	default:
+		return "", nil, false
 	}
-	return "", nil, false
 }
 
 func userRoot(environment Environment) string {
@@ -279,8 +308,7 @@ func userRoot(environment Environment) string {
 	if !ok {
 		return ""
 	}
-	parts := append(append([]string(nil), suffix...), "proofstrap", "packs")
-	return filepath.Join(append([]string{base}, parts...)...)
+	return filepath.Join(append(append([]string{base}, suffix...), "proofstrap", "packs")...)
 }
 
 func availableScopes(environment Environment) ([]scope, error) {
@@ -298,15 +326,15 @@ func availableScopes(environment Environment) ([]scope, error) {
 	return result, nil
 }
 
-func validateOperation(ctx context.Context, path string, digest pack.Digest) error {
+func validateArchive(ctx context.Context, path string, expected *pack.Digest) error {
 	if err := canceled(ctx); err != nil {
 		return err
 	}
 	if !linux.CleanAbsoluteNonRoot(path) {
 		return diagnostic(pack.InvalidValue, path, "archive path must be clean absolute and non-root", nil)
 	}
-	if digest == (pack.Digest{}) {
-		return diagnostic(pack.InvalidValue, path, "digest is required", nil)
+	if expected != nil && *expected == (pack.Digest{}) {
+		return diagnostic(pack.InvalidValue, path, "expected digest is invalid", nil)
 	}
 	return nil
 }
@@ -353,10 +381,6 @@ func canceled(ctx context.Context) error {
 		return diagnostic(pack.Canceled, "", "inventory operation canceled", err)
 	}
 	return nil
-}
-
-func diagnosticFromPack(path string, err error) error {
-	return diagnostic(packCategory(err), path, "pack admission failed", err)
 }
 
 func packCategory(err error) pack.Category {

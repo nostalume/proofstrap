@@ -3,7 +3,6 @@ package pack
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"io"
 	"os"
@@ -15,35 +14,51 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func Import(ctx context.Context, root, sourcePath string, expected Digest) error {
-	if err := storeCanceled(ctx, expected); err != nil {
-		return err
+var syncStore = unix.Fsync
+
+func openStore(root string) (int, error) {
+	fd, err := linux.OpenDir(root)
+	if err != nil {
+		return -1, err
 	}
-	if expected == (Digest{}) {
-		return storeDiagnostic(expected, InvalidValue, sourcePath, "expected digest is required", nil)
+	sha, err := linux.OpenDirAt(fd, "sha256")
+	_ = unix.Close(fd)
+	return sha, err
+}
+
+func Import(ctx context.Context, root, sourcePath string, expected *Digest) (Source, error) {
+	identity := Digest{}
+	if expected != nil {
+		identity = *expected
+	}
+	if err := storeCanceled(ctx, identity); err != nil {
+		return Source{}, err
+	}
+	if expected != nil && identity == (Digest{}) {
+		return Source{}, storeDiagnostic(identity, InvalidValue, sourcePath, "expected digest is invalid", nil)
 	}
 	if !linux.CleanAbsoluteNonRoot(root) || !linux.CleanAbsoluteNonRoot(sourcePath) {
-		return storeDiagnostic(expected, InvalidValue, sourcePath, "store root and source path must be clean absolute non-root paths", nil)
+		return Source{}, storeDiagnostic(identity, InvalidValue, sourcePath, "store root and source path must be clean absolute non-root paths", nil)
 	}
 	directory, err := openStore(root)
 	if err != nil {
-		return storeDiagnostic(expected, CorruptStore, root, "store root is unavailable or unsafe", err)
+		return Source{}, storeDiagnostic(identity, CorruptStore, root, "store root is unavailable or unsafe", err)
 	}
 	defer unix.Close(directory)
 
 	sourceFD, err := linux.OpenRegular(sourcePath)
 	if err != nil {
 		if errors.Is(err, linux.ErrNotRegular) {
-			return storeDiagnostic(expected, InvalidValue, sourcePath, "import source is not a regular file", nil)
+			return Source{}, storeDiagnostic(identity, InvalidValue, sourcePath, "import source is not a regular file", nil)
 		}
-		return storeDiagnostic(expected, IO, sourcePath, "open import source", err)
+		return Source{}, storeDiagnostic(identity, IO, sourcePath, "open import source", err)
 	}
 	source := os.NewFile(uintptr(sourceFD), sourcePath)
 	defer source.Close()
 
 	stageFD, stageName, err := linux.CreateStageAt(directory, rand.Reader, ".import-")
 	if err != nil {
-		return storeDiagnostic(expected, IO, root, "create import staging file", err)
+		return Source{}, storeDiagnostic(identity, IO, root, "create import staging file", err)
 	}
 	stage := os.NewFile(uintptr(stageFD), stageName)
 	cleanup := true
@@ -54,59 +69,54 @@ func Import(ctx context.Context, root, sourcePath string, expected Digest) error
 		}
 	}()
 
-	hasher := sha256.New()
-	written, err := io.Copy(io.MultiWriter(stage, hasher), io.LimitReader(&contextReader{ctx: ctx, source: source}, maxCompressedBytes+1))
+	written, err := io.Copy(stage, io.LimitReader(&contextReader{ctx: ctx, source: source}, maxCompressedBytes+1))
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil {
-			return storeCanceled(ctx, expected)
+			return Source{}, storeCanceled(ctx, identity)
 		}
-		return storeDiagnostic(expected, IO, sourcePath, "copy import source", err)
+		return Source{}, storeDiagnostic(identity, IO, sourcePath, "copy import source", err)
 	}
 	if written > maxCompressedBytes {
-		return storeDiagnostic(expected, Limit, sourcePath, "compressed archive exceeds 8 MiB", nil)
-	}
-	var observed Digest
-	copy(observed.sum[:], hasher.Sum(nil))
-	if observed != expected {
-		return storeDiagnostic(expected, Integrity, sourcePath, "source digest does not match expected digest", nil)
+		return Source{}, storeDiagnostic(identity, Limit, sourcePath, "compressed archive exceeds 8 MiB", nil)
 	}
 	if _, err := stage.Seek(0, io.SeekStart); err != nil {
-		return storeDiagnostic(expected, IO, sourcePath, "rewind staged archive", err)
+		return Source{}, storeDiagnostic(identity, IO, sourcePath, "rewind staged archive", err)
 	}
 	admitted, err := Read(ctx, stage)
 	if err != nil {
-		return locateImportDiagnostic(expected, err)
+		return Source{}, locateImportDiagnostic(identity, err)
 	}
-	if admitted.Digest() != expected {
-		return storeDiagnostic(expected, Integrity, sourcePath, "admitted digest does not match expected digest", nil)
+	observed := admitted.Digest()
+	if expected != nil && observed != identity {
+		return Source{}, storeDiagnostic(identity, Integrity, sourcePath, "source digest does not match expected digest", nil)
 	}
-	if err := storeCanceled(ctx, expected); err != nil {
-		return err
+	if err := storeCanceled(ctx, observed); err != nil {
+		return Source{}, err
 	}
 	if err := stage.Chmod(0o444); err != nil {
-		return storeDiagnostic(expected, IO, root, "set staged object mode", err)
+		return Source{}, storeDiagnostic(observed, IO, root, "set staged object mode", err)
 	}
 	if err := stage.Sync(); err != nil {
-		return storeDiagnostic(expected, IO, root, "flush staged object", err)
+		return Source{}, storeDiagnostic(observed, IO, root, "flush staged object", err)
 	}
-	if err := storeCanceled(ctx, expected); err != nil {
-		return err
+	if err := storeCanceled(ctx, observed); err != nil {
+		return Source{}, err
 	}
-	finalName := objectName(expected)
+	finalName := objectName(observed)
 	if err := unix.Linkat(directory, stageName, directory, finalName, 0); err != nil {
 		if err != unix.EEXIST {
-			return storeDiagnostic(expected, IO, filepath.Join(root, "sha256", finalName), "publish store object", err)
+			return Source{}, storeDiagnostic(observed, IO, filepath.Join(root, "sha256", finalName), "publish store object", err)
 		}
-		if _, err := loadCandidate(ctx, directory, filepath.Join(root, "sha256", finalName), finalName, expected); err != nil {
-			return err
+		if _, err := loadCandidate(ctx, directory, filepath.Join(root, "sha256", finalName), finalName, observed); err != nil {
+			return Source{}, err
 		}
 	}
-	if err := unix.Fsync(directory); err != nil {
-		return storeDiagnostic(expected, IO, filepath.Join(root, "sha256"), "flush store directory", err)
+	if err := syncStore(directory); err != nil {
+		return Source{}, storeDiagnostic(observed, IO, filepath.Join(root, "sha256"), "flush store directory", err)
 	}
 	_ = unix.Unlinkat(directory, stageName, 0)
 	cleanup = false
-	return nil
+	return admitted, nil
 }
 
 func LoadExact(ctx context.Context, roots []string, digest Digest) (Source, error) {
@@ -203,16 +213,13 @@ func (r *contextReader) Read(buffer []byte) (int, error) {
 }
 
 func storeCanceled(ctx context.Context, digest Digest) error {
-	var cause error
 	if ctx == nil {
-		cause = context.Canceled
-	} else {
-		cause = ctx.Err()
+		return storeDiagnostic(digest, Canceled, "", "store operation canceled", context.Canceled)
 	}
-	if cause == nil {
-		return nil
+	if err := ctx.Err(); err != nil {
+		return storeDiagnostic(digest, Canceled, "", "store operation canceled", err)
 	}
-	return storeDiagnostic(digest, Canceled, "", "store operation canceled", cause)
+	return nil
 }
 
 func storeDiagnostic(digest Digest, category Category, member, detail string, cause error) *Diagnostic {
@@ -224,6 +231,9 @@ func storeDiagnostic(digest Digest, category Category, member, detail string, ca
 }
 
 func locateImportDiagnostic(digest Digest, err error) error {
+	if digest == (Digest{}) {
+		return err
+	}
 	var source *Diagnostic
 	if !errors.As(err, &source) {
 		return storeDiagnostic(digest, InvalidValue, "", err.Error(), err)

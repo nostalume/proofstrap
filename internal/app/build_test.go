@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -53,9 +54,20 @@ extra=%q
 [accounts.alice]
 `, core.Digest(), extra.Digest()))
 	plan, err := BuildPlan(buildContext(t), Request{Origin: "test", Config: config,
-		Environment: inventory.Environment{}, Bundles: []string{corePath, extraPath}})
+		Environment: inventory.Environment{}, PackFiles: []string{corePath, extraPath}})
 	if err != nil || len(plan.Bytes()) == 0 {
 		t.Fatalf("BuildPlan = %#v, %v", plan, err)
+	}
+	storage := inventory.Environment{XDGDataHome: filepath.Join(root, "xdg")}
+	for _, path := range []string{corePath, extraPath} {
+		if _, err := inventory.ImportUser(buildContext(t), storage, path, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stored, err := BuildPlan(buildContext(t), Request{Origin: "test", Config: config,
+		Environment: inventory.Environment{PackStore: filepath.Join(storage.XDGDataHome, "proofstrap", "packs")}})
+	if err != nil || !bytes.Equal(stored.Bytes(), plan.Bytes()) {
+		t.Fatalf("stored Plan differs: %v", err)
 	}
 }
 

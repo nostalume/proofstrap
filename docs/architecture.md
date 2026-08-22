@@ -42,7 +42,7 @@ is no compatibility execution owner or alternate grammar.
 ## Plan
 
 Plan reads one explicitly named absolute configuration file and optional exact
-bundle paths. Configuration pins archive digests and selects roots; it contains
+pack-file paths. Configuration pins archive digests and selects roots; it contains
 no store paths or behavior overrides. Acquisition resolves the complete pinned
 closure, profile expansion produces backend-neutral resources, activated
 bindings map native identities, and the app lowers the graph into typed reviewed

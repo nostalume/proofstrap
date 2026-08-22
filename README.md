@@ -33,29 +33,38 @@ The default destination is `$HOME/.local/bin`. Set
 PROOFSTRAP_INSTALL_DIR=/absolute/bin sh install.sh
 ```
 
-The installer verifies the release archive, its two bundled pack objects, and
-their digest-pinned starter config. It stages a content-addressed generation
-under `.proofstrap-releases`, atomically switches the `proofstrap` launcher,
-and prints the exact starter path. It does not copy that config into your
-working directory or apply it. Older generations remain available for manual
-recovery.
+The installer verifies the release archive, 1–64 digest-named pack objects,
+and structural pack admission. It publishes an immutable content-addressed
+generation under `.proofstrap-releases`, then atomically switches the
+`proofstrap` launcher last. It prints the read-only starter path but never
+writes user config or runs Plan or Apply. Older generations remain available
+for manual recovery.
 
 The user release contains the `proofstrap` runtime. Profile authors use the
 separate `proofstrap-pack` release archive; the runtime installation does not
 include that authoring command.
 
-## Quick start
+## Acquisition and quick start
 
-### 1. Copy and review the starter config
+### 1. Use or copy the starter config
+
+Run the installed starter directly:
+
+```sh
+proofstrap plan --config /immutable/path/printed/by/installer/bootstrap.toml \
+  --output ./plan.json
+```
+
+Or copy it into an ordinary workspace and customize it:
 
 ```sh
 cp /exact/path/printed/by/installer/bootstrap.toml ./proofstrap.toml
 $EDITOR ./proofstrap.toml
 ```
 
-The installed runtime automatically sees packs beside its release generation,
-so this official-install path needs no bundle flags and no import. Inspect the
-visible exact objects when needed:
+The launcher targets the same immutable generation as its adjacent `packs`
+tree, so either installed path needs no pack flags or import. Inspect visible
+exact objects when needed:
 
 ```sh
 proofstrap inspect
@@ -64,7 +73,7 @@ proofstrap inspect
 `inspect` emits bounded structural JSON with exact digests, archive kinds,
 requirements, members, and storage scopes.
 
-### 2. Understand config truth
+### 2. Understand config and byte resolution
 
 The starter has this shape, with release-specific digests filled in:
 
@@ -82,15 +91,58 @@ linux = "sha256:..."
 Config aliases such as `core` and `linux` are local names. Desired truth is the
 exact digest, not a repository, release tag, path, or mutable latest version.
 
+For each digest demanded by config closure, resolution uses the first admitted
+source below. A corrupt exact object is an error, not permission to fall back.
+
+| Order | Source |
+|---:|---|
+| 1 | Explicit loose files from `--pack-file` |
+| 2 | One request-local content-addressed root from `--pack-store` |
+| 3 | Packs adjacent to the running installed generation |
+| 4 | Read-only release store `/usr/share/proofstrap/packs` |
+| 5 | System store `/var/lib/proofstrap/packs` |
+| 6 | User store under `$XDG_DATA_HOME` or `$HOME/.local/share` |
+
+Loose files may be grouped or repeated; each must be used by the exact closure:
+
+```sh
+proofstrap plan --pack-file core.pstrap linux.pstrap
+```
+
+An explicit store must contain `sha256/DIGEST.pstrap`. Proofstrap opens only
+objects demanded by the closure; it does not enumerate or persist that store:
+
+```sh
+proofstrap plan --pack-store ./packs
+```
+
+For standalone bootstrap, download one fixed release of
+[the official profile catalogue](https://github.com/nostalume/proofstrap-core-profiles/releases):
+
+```sh
+tag=CATALOGUE_TAG
+base=https://github.com/nostalume/proofstrap-core-profiles/releases/download/$tag
+curl --fail --location --remote-name "$base/proofstrap-core-profiles.tar.gz"
+curl --fail --location --remote-name "$base/checksums.txt"
+sha256sum --check checksums.txt
+tar -xzf proofstrap-core-profiles.tar.gz
+cd proofstrap-core-profiles
+sha256sum --check checksums.txt
+$EDITOR proofstrap.toml
+proofstrap plan --pack-store ./packs
+```
+
+`import` is optional persistence into the user or system store. It does not
+select a source alias, activate a binding/profile, or edit config.
+
 ### 3. Build and review a Plan
 
 ```sh
-proofstrap plan \
-  --config proofstrap.toml \
-  --output plan.json
+proofstrap plan
 ```
 
-The command creates `plan.json` exclusively and prints a review like:
+The command reads only `./proofstrap.toml`, creates `./plan.json` exclusively,
+and prints a review like:
 
 ```text
 status: applicable
@@ -104,54 +156,21 @@ digest. `progressable` means the Plan contains a verified barrier and may
 intentionally stop after partial progress so the next invocation can replan
 from fresh host state.
 
-An archive path only transports bytes for a digest already pinned by config.
-One flag accepts one or more paths, and the flag may also be repeated:
-
-```sh
-proofstrap plan \
-  --config proofstrap.toml \
-  --output plan.json \
-  --profile-bundle core.pstrap linux.pstrap
-```
-
-The equivalent repeated spelling is
-`--profile-bundle core.pstrap --profile-bundle linux.pstrap`. Input order is
-preserved. Unused, duplicate, malformed, or digest-mismatched bundles fail;
-supplying bytes never changes config truth.
-
-For bootstrap without an installed release, download one fixed release of
-[the official profile catalogue](https://github.com/nostalume/proofstrap-core-profiles/releases),
-including all four sibling assets:
-
-```sh
-tag=CATALOGUE_TAG
-base=https://github.com/nostalume/proofstrap-core-profiles/releases/download/$tag
-for asset in core.pstrap linux.pstrap bootstrap.toml checksums.txt; do
-  curl --fail --location --remote-name "$base/$asset"
-done
-sha256sum --check checksums.txt
-```
-
-Copy `bootstrap.toml` for review and use the two archives with
-`--profile-bundle` as above. Import is optional: it only publishes verified
-bytes into a content-addressed store for later plans.
-
 ### 4. Apply the accepted Plan
 
 A mutating Plan requires effective UID 0 and a new journal path:
 
 ```sh
 sudo "$HOME/.local/bin/proofstrap" apply \
-  --plan plan.json \
   --accept sha256:REVIEWED_PLAN_DIGEST \
-  --journal apply.journal \
   --receipt receipt.json
 ```
 
-Apply reopens and validates the sealed Plan, checks the acceptance digest,
-reconstructs executable and host authority, then performs ordered effects.
-Canonical receipt JSON is always written to standard output; `--receipt`
-optionally creates the same bytes as a file. A no-op Plan may omit `--journal`.
+Apply reads `./plan.json`, creates `./apply.journal`, reopens and validates the
+sealed Plan, checks the acceptance digest, reconstructs executable and host
+authority, then performs ordered effects. Canonical receipt JSON is always
+written to standard output; `--receipt` optionally creates the same bytes as a
+file. A no-op Plan records a generation-zero journal.
 
 Plan, journal, and receipt paths must be distinct. Output files are
 create-exclusive and are never silently replaced.
@@ -161,22 +180,24 @@ create-exclusive and are never silently replaced.
 ### `proofstrap import`
 
 ```text
-proofstrap import --digest DIGEST [--system] ARCHIVE
+proofstrap import [--digest DIGEST] [--system] ARCHIVE
 ```
 
-Verify an archive against `DIGEST`, admit its structure, and publish it into the
-content-addressed user store. `--system` selects the system store. Importing a
-binding does not activate it; config must select its source alias in
-`bindings`.
+Admit an archive once and publish its computed identity into the
+content-addressed user store. `--digest` optionally asserts the expected bytes;
+`--system` selects the system store. Success emits the same structural JSON as
+inspection with the persisted scope. Importing a binding does not activate it;
+config must select its source alias in `bindings`.
 
 ### `proofstrap inspect`
 
 ```text
-proofstrap inspect [DIGEST | --digest DIGEST ARCHIVE]
+proofstrap inspect [DIGEST | ARCHIVE | --digest DIGEST ARCHIVE]
 ```
 
 - No argument lists visible stored and release-bundled packs.
 - `DIGEST` selects one visible stored pack.
+- `ARCHIVE` inspects one local archive and reports its computed identity.
 - `--digest DIGEST ARCHIVE` verifies and inspects an archive without
   importing it.
 
@@ -186,42 +207,51 @@ state.
 ### `proofstrap plan`
 
 ```text
-proofstrap plan --config FILE --output PLAN \
-  [--profile-bundle ARCHIVE [ARCHIVE ...]]
+proofstrap plan [--config FILE] [--output PLAN] \
+  [--pack-store DIR] \
+  [--pack-file FILE [FILE ...]]
 ```
 
 Read one regular config file once, resolve exact pack inputs, observe required
 host capabilities, and create a sealed canonical Plan. Planning performs no
-host mutation. Relative artifact paths are resolved once against the process
-working directory and passed onward as clean absolute paths. With no bundle
-flags, resolution uses only known content-addressed stores. Every bundle value
-is one explicit archive file—not a directory, glob, URL, or discovered neighbor.
+host mutation. With no path flags, the command reads only `./proofstrap.toml`
+and creates `./plan.json`; it never searches for another config. Exact explicit
+flags replace those defaults. Relative artifact paths are resolved once against
+the process working directory and passed onward as clean absolute paths. With
+no pack-file flags, resolution uses only known content-addressed stores. Every
+pack-file value is one explicit archive file—not a directory, glob, URL, or
+discovered neighbor. `--pack-store DIR` adds one read-only content-addressed
+root for this Plan request and does not persist it.
 
 ### `proofstrap apply`
 
 ```text
-proofstrap apply --plan PLAN --accept sha256:DIGEST \
+proofstrap apply [--plan PLAN] --accept sha256:DIGEST \
   [--journal FILE] [--receipt FILE]
 ```
 
-Apply only the accepted Plan. A Plan containing effects requires root and a new
-journal. Blocked, stale, malformed, or digest-mismatched Plans fail before
+Apply only the accepted Plan. The defaults are `./plan.json` and the new
+`./apply.journal`; exact explicit flags replace them. A Plan containing effects
+requires root. Blocked, stale, malformed, or digest-mismatched Plans fail before
 mutation.
 
 ### `proofstrap-pack build`
 
 ```text
-proofstrap-pack build --input ABSOLUTE_DIR --output ABSOLUTE_FILE
+proofstrap-pack build --input DIR --output FILE
 ```
 
 Build one deterministic semantic or binding `.pstrap` archive from a strict
-source directory. This command belongs to the separately distributed author
-tool.
+source directory. Relative paths resolve once against the working directory;
+the output is create-exclusive. Success prints only the canonical pack digest.
+This command belongs to the separately distributed author tool.
 
 ## Configuration
 
-Proofstrap accepts one TOML schema and performs no config discovery, merging,
-includes, interpolation, URL loading, or environment substitution:
+Proofstrap accepts one TOML schema. The Plan command uses the literal cwd file
+`./proofstrap.toml` unless `--config FILE` replaces it; there is no search,
+fallback, merging, includes, interpolation, URL loading, or environment
+substitution:
 
 ```toml
 schema = 2
@@ -358,29 +388,11 @@ repository owns the official non-executable catalogue. Proofstrap releases pin
 and bundle exact published pack bytes; runtime config still selects them only by
 digest.
 
-The current semantic pack contains:
-
-| Profile | Desired intent |
-|---|---|
-| `ca-certificates` | Install the CA certificate package. |
-| `curl` | Install curl. |
-| `git` | Install Git. |
-| `gzip` | Install gzip. |
-| `tar` | Install tar. |
-| `vim` | Install Vim. |
-| `bootstrap-cli` | Compose the six package profiles above. |
-| `ssh-server` | Install the SSH server package and enable/start its system service. |
-| `system-bus` | Install the system D-Bus implementation. |
-| `wayland` / `x11` | Install alternative display substrates. |
-| `network-manager` / `connman` | Install and activate alternative network managers. |
-| `bluetooth` | Install Bluetooth support. |
-| `desktop-base` | Compose caller-selected display and network profiles. |
-
-The current Linux binding pack maps these semantic IDs for Zypper, APK,
-systemd, and OpenRC. Distribution names do not select behavior. A profile
-becomes realizable only when the runtime admits the observed backend and the
-active exact binding contains its mapping; runtime support for an adapter alone
-does not invent a missing catalogue mapping.
+The catalogue release documents its exact core, desktop, binding, example, and
+backend-coverage inventory. Distribution names never select behavior. A root
+is realizable only when the runtime admits the observed backend and the active
+exact binding maps its complete expanded closure; an adapter alone does not
+invent a missing mapping.
 
 Use the catalogue's immutable
 [v0.2.0 release](https://github.com/nostalume/proofstrap-core-profiles/releases/tag/v0.2.0)

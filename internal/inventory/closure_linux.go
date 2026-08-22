@@ -11,14 +11,14 @@ import (
 
 const maxClosureInputs = 64
 
-// AcquireClosure reads explicit bundles once, loads missing digests from exact
+// AcquireClosure reads explicit pack files once, loads missing digests from exact
 // store locations, and returns only the closure reachable from roots.
-func AcquireClosure(ctx context.Context, environment Environment, roots []pack.Digest, bundles []string) ([]pack.Source, error) {
+func AcquireClosure(ctx context.Context, environment Environment, roots []pack.Digest, packFiles []string) ([]pack.Source, error) {
 	if err := canceled(ctx); err != nil {
 		return nil, err
 	}
-	if len(roots) == 0 || len(roots) > maxClosureInputs || len(bundles) > maxClosureInputs {
-		return nil, diagnostic(pack.Limit, "", "closure requires 1..64 roots and at most 64 bundles", nil)
+	if len(roots) == 0 || len(roots) > maxClosureInputs || len(packFiles) > maxClosureInputs {
+		return nil, diagnostic(pack.Limit, "", "closure requires 1..64 roots and at most 64 pack files", nil)
 	}
 	queue := append([]pack.Digest(nil), roots...)
 	sort.Slice(queue, func(i, j int) bool { return queue[i].String() < queue[j].String() })
@@ -31,19 +31,19 @@ func AcquireClosure(ctx context.Context, environment Environment, roots []pack.D
 		}
 	}
 
-	provided := make(map[pack.Digest]pack.Source, len(bundles))
-	paths := make(map[string]struct{}, len(bundles))
-	for _, path := range bundles {
+	provided := make(map[pack.Digest]pack.Source, len(packFiles))
+	paths := make(map[string]struct{}, len(packFiles))
+	for _, path := range packFiles {
 		if _, exists := paths[path]; exists {
-			return nil, diagnostic(pack.Duplicate, path, "duplicate bundle path", nil)
+			return nil, diagnostic(pack.Duplicate, path, "duplicate pack file path", nil)
 		}
 		paths[path] = struct{}{}
-		source, err := readSource(ctx, path, "bundle")
+		source, err := readSource(ctx, path, "pack file")
 		if err != nil {
 			return nil, err
 		}
 		if _, exists := provided[source.Digest()]; exists {
-			return nil, diagnostic(pack.Duplicate, path, "duplicate bundle digest", nil)
+			return nil, diagnostic(pack.Duplicate, path, "duplicate pack file digest", nil)
 		}
 		provided[source.Digest()] = source
 	}
@@ -57,7 +57,7 @@ func AcquireClosure(ctx context.Context, environment Environment, roots []pack.D
 		rootSet[digest] = struct{}{}
 	}
 	loaded := make(map[pack.Digest]pack.Source)
-	usedBundles := make(map[pack.Digest]struct{})
+	usedPackFiles := make(map[pack.Digest]struct{})
 	for len(queue) > 0 {
 		if err := canceled(ctx); err != nil {
 			return nil, err
@@ -69,7 +69,7 @@ func AcquireClosure(ctx context.Context, environment Environment, roots []pack.D
 		}
 		source, supplied := provided[digest]
 		if supplied {
-			usedBundles[digest] = struct{}{}
+			usedPackFiles[digest] = struct{}{}
 		} else {
 			if len(stores) == 0 {
 				return nil, diagnostic(pack.MissingRequirement, digest.String(), "exact source is unavailable", nil)
@@ -92,8 +92,8 @@ func AcquireClosure(ctx context.Context, environment Environment, roots []pack.D
 		}
 	}
 	for digest := range provided {
-		if _, used := usedBundles[digest]; !used {
-			return nil, diagnostic(pack.UnusedRequirement, digest.String(), "bundle is outside requested closure", nil)
+		if _, used := usedPackFiles[digest]; !used {
+			return nil, diagnostic(pack.UnusedRequirement, digest.String(), "pack file is outside requested closure", nil)
 		}
 	}
 	result := make([]pack.Source, 0, len(loaded))
@@ -105,7 +105,10 @@ func AcquireClosure(ctx context.Context, environment Environment, roots []pack.D
 }
 
 func closureStores(environment Environment) ([]string, error) {
-	var roots []string
+	roots := []string{environment.PackStore}
+	if environment.PackStore == "" {
+		roots = nil
+	}
 	scopes, err := availableScopes(environment)
 	if err != nil {
 		return nil, err

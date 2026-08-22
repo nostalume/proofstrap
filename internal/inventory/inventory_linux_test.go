@@ -28,15 +28,19 @@ func TestImportUserAndInspectRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	environment := Environment{XDGDataHome: base}
-	local, err := InspectArchive(context.Background(), path, digest)
+	local, err := InspectArchive(context.Background(), path, &digest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(local.Scopes) != 0 || local.Description.Digest != digest {
 		t.Fatalf("local record = %#v", local)
 	}
-	if err := ImportUser(context.Background(), environment, path, digest); err != nil {
+	imported, err := ImportUser(context.Background(), environment, path, nil)
+	if err != nil {
 		t.Fatal(err, errors.Unwrap(err))
+	}
+	if !reflect.DeepEqual(imported.Description, local.Description) || !reflect.DeepEqual(imported.Scopes, []string{"user"}) {
+		t.Fatalf("imported record = %#v", imported)
 	}
 	records, err := InspectStored(context.Background(), environment, &digest)
 	if err != nil {
@@ -66,15 +70,24 @@ func TestExecutableAdjacentStoreIsExactAndFailClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sha, name), archive, 0o444); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(sha, strings.Repeat("f", 64)+".pstrap"), []byte("invalid"), 0o444); err != nil {
+		t.Fatal(err)
+	}
 
 	environment := Environment{ReleaseRoot: root}
 	records, err := InspectStored(context.Background(), environment, &digest)
 	if err != nil || len(records) != 1 || !reflect.DeepEqual(records[0].Scopes, []string{"adjacent"}) {
 		t.Fatalf("adjacent records = %#v, %v", records, err)
 	}
-	sources, err := AcquireClosure(context.Background(), environment, []pack.Digest{digest}, nil)
-	if err != nil || len(sources) != 1 || sources[0].Digest() != digest {
-		t.Fatalf("adjacent closure = %#v, %v", sources, err)
+	for _, closureEnvironment := range []Environment{environment, {PackStore: root}} {
+		sources, err := AcquireClosure(context.Background(), closureEnvironment, []pack.Digest{digest}, nil)
+		if err != nil || len(sources) != 1 || sources[0].Digest() != digest {
+			t.Fatalf("exact closure = %#v, %v", sources, err)
+		}
+	}
+	missing, _ := pack.ParseDigest("sha256:" + strings.Repeat("1", 64))
+	if _, err := AcquireClosure(context.Background(), Environment{PackStore: root}, []pack.Digest{missing}, nil); category(t, err) != pack.MissingRequirement {
+		t.Fatalf("missing exact object = %v", err)
 	}
 
 	link := filepath.Join(t.TempDir(), "packs")
@@ -83,6 +96,9 @@ func TestExecutableAdjacentStoreIsExactAndFailClosed(t *testing.T) {
 	}
 	if records, err := InspectStored(context.Background(), Environment{ReleaseRoot: link}, &digest); records != nil || category(t, err) != pack.CorruptStore {
 		t.Fatalf("symlinked adjacent store = %#v, %v", records, err)
+	}
+	if _, err := AcquireClosure(context.Background(), Environment{PackStore: link}, []pack.Digest{digest}, nil); category(t, err) != pack.CorruptStore {
+		t.Fatalf("symlinked explicit store = %v", err)
 	}
 	if records, err := InspectStored(context.Background(), Environment{ReleaseRoot: "relative"}, &digest); records != nil || category(t, err) != pack.InvalidValue {
 		t.Fatalf("invalid adjacent store = %#v, %v", records, err)
@@ -109,7 +125,7 @@ func TestUserDerivationAndInitializationLaws(t *testing.T) {
 	if err := os.WriteFile(path, archive, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ImportUser(context.Background(), Environment{XDGDataHome: base}, path, digest); err != nil {
+	if _, err := ImportUser(context.Background(), Environment{XDGDataHome: base}, path, &digest); err != nil {
 		t.Fatal(err)
 	}
 	baseInfo, _ := os.Stat(base)
@@ -132,7 +148,7 @@ func TestInspectStoredIsFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	environment := Environment{XDGDataHome: base}
-	if err := ImportUser(context.Background(), environment, path, digest); err != nil {
+	if _, err := ImportUser(context.Background(), environment, path, &digest); err != nil {
 		t.Fatal(err)
 	}
 	sha := filepath.Join(base, "proofstrap", "packs", "sha256")
@@ -157,10 +173,10 @@ func TestInspectArchiveRejectsMismatchAndNonRegular(t *testing.T) {
 		t.Fatal(err)
 	}
 	wrong, _ := pack.ParseDigest("sha256:" + strings.Repeat("2", 64))
-	if record, err := InspectArchive(context.Background(), path, wrong); record.Description.Digest != (pack.Digest{}) || category(t, err) != pack.Integrity {
+	if record, err := InspectArchive(context.Background(), path, &wrong); record.Description.Digest != (pack.Digest{}) || category(t, err) != pack.Integrity {
 		t.Fatalf("mismatch = %#v, %v", record, err)
 	}
-	if record, err := InspectArchive(context.Background(), t.TempDir(), wrong); record.Description.Digest != (pack.Digest{}) || category(t, err) != pack.InvalidValue {
+	if record, err := InspectArchive(context.Background(), t.TempDir(), &wrong); record.Description.Digest != (pack.Digest{}) || category(t, err) != pack.InvalidValue {
 		t.Fatalf("directory = %#v, %v", record, err)
 	}
 }
@@ -172,9 +188,12 @@ func TestInventoryCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || category(t, err) != pack.Canceled {
 		t.Fatalf("cancellation = %v", err)
 	}
+	if _, err = AcquireClosure(ctx, Environment{PackStore: "/unused"}, []pack.Digest{{}}, nil); !errors.Is(err, context.Canceled) || category(t, err) != pack.Canceled {
+		t.Fatalf("closure cancellation = %v", err)
+	}
 }
 
-func TestAcquireClosureReadsExactBundlesAndRejectsUnusedInputs(t *testing.T) {
+func TestAcquireClosureReadsExactPackFilesAndRejectsUnusedInputs(t *testing.T) {
 	dependencyBytes, dependencyDigest := sourceArchive(t,
 		"schema=1\nkind='semantic'\n",
 		"[profiles.base]\npackages=['base']\n")
@@ -217,11 +236,25 @@ func TestAcquireClosureReadsExactBundlesAndRejectsUnusedInputs(t *testing.T) {
 	if _, err := AcquireClosure(context.Background(), Environment{}, []pack.Digest{rootDigest}, []string{rootPath, rootPath, dependencyPath}); category(t, err) != pack.Duplicate {
 		t.Fatalf("duplicate bundle = %v", err)
 	}
+	store := testStore(t, rootBytes, rootDigest)
+	object := filepath.Join(store, "sha256", strings.TrimPrefix(rootDigest.String(), "sha256:")+".pstrap")
+	if err := os.Chmod(object, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(object, []byte("invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireClosure(context.Background(), Environment{PackStore: store}, []pack.Digest{rootDigest}, nil); category(t, err) != pack.CorruptStore {
+		t.Fatalf("corrupt exact object = %v", err)
+	}
+	if sources, err := AcquireClosure(context.Background(), Environment{PackStore: store}, []pack.Digest{rootDigest}, []string{rootPath, dependencyPath}); err != nil || len(sources) != 2 {
+		t.Fatalf("loose precedence = %#v, %v", sources, err)
+	}
 }
 
-func TestAcquireClosureRejectsMoreThanSixtyFourBundlesBeforeIO(t *testing.T) {
+func TestAcquireClosureRejectsMoreThanSixtyFourPackFilesBeforeIO(t *testing.T) {
 	if _, err := AcquireClosure(context.Background(), Environment{}, []pack.Digest{{}}, make([]string, maxClosureInputs+1)); category(t, err) != pack.Limit {
-		t.Fatalf("bundle overflow = %v", err)
+		t.Fatalf("pack file overflow = %v", err)
 	}
 }
 
@@ -307,7 +340,8 @@ func TestImportConcurrentInitializersConverge(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			errorsByWorker <- ImportUser(context.Background(), environment, path, digest)
+			_, err := ImportUser(context.Background(), environment, path, &digest)
+			errorsByWorker <- err
 		}()
 	}
 	close(start)

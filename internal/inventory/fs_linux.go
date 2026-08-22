@@ -7,34 +7,35 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func createBeneath(anchor string, components []string, mode uint32) error {
+func createBeneath(anchor string, components []string, mode uint32) (err error) {
 	fd, err := linux.OpenDir(anchor)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := unix.Close(fd); err == nil {
+			err = closeErr
+		}
+	}()
 	for _, component := range components {
 		next, openErr := linux.OpenDirAt(fd, component)
 		if openErr != nil {
 			if !errors.Is(openErr, unix.ENOENT) {
-				_ = unix.Close(fd)
 				return openErr
 			}
 			created := false
 			if err := unix.Mkdirat(fd, component, mode); err == nil {
 				created = true
 			} else if !errors.Is(err, unix.EEXIST) {
-				_ = unix.Close(fd)
 				return err
 			}
 			next, openErr = linux.OpenDirAt(fd, component)
 			if openErr != nil {
-				_ = unix.Close(fd)
 				return openErr
 			}
 			if created {
 				if err := unix.Fchmod(next, mode); err != nil {
 					_ = unix.Close(next)
-					_ = unix.Close(fd)
 					return err
 				}
 			}
@@ -42,7 +43,7 @@ func createBeneath(anchor string, components []string, mode uint32) error {
 		_ = unix.Close(fd)
 		fd = next
 	}
-	return unix.Close(fd)
+	return nil
 }
 
 func openScope(root string) (int, bool, error) {

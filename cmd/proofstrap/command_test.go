@@ -22,12 +22,12 @@ import (
 func TestPlanAndApplyParsersCanonicalizeRelativeArtifactPaths(t *testing.T) {
 	directory := t.TempDir()
 	t.Chdir(directory)
-	configPath, outputPath, bundles, ok := parsePlan([]string{
-		"--config", "config/../target.toml", "--output", "plan.json", "--profile-bundle", "packs/core.pstrap",
+	configPath, outputPath, store, packFiles, ok := parsePlan([]string{
+		"--config", "config/../target.toml", "--output", "plan.json", "--pack-store", "packs", "--pack-file", "packs/core.pstrap",
 	})
 	if !ok || configPath != filepath.Join(directory, "target.toml") || outputPath != filepath.Join(directory, "plan.json") ||
-		!reflect.DeepEqual(bundles, []string{filepath.Join(directory, "packs", "core.pstrap")}) {
-		t.Fatalf("parsePlan = %q, %q, %v, %t", configPath, outputPath, bundles, ok)
+		store != filepath.Join(directory, "packs") || !reflect.DeepEqual(packFiles, []string{filepath.Join(directory, "packs", "core.pstrap")}) {
+		t.Fatalf("parsePlan = %q, %q, %v, %t", configPath, outputPath, packFiles, ok)
 	}
 	planPath, accepted, journalPath, receiptPath, ok := parseApply([]string{
 		"--plan", "plan.json", "--accept", "sha256:" + strings.Repeat("1", 64), "--journal", "state/journal", "--receipt", "receipt.json",
@@ -38,30 +38,70 @@ func TestPlanAndApplyParsersCanonicalizeRelativeArtifactPaths(t *testing.T) {
 	}
 }
 
-func TestPlanParserAggregatesGroupedAndRepeatedBundles(t *testing.T) {
+func TestPlanParserAggregatesGroupedAndRepeatedPackFiles(t *testing.T) {
 	directory := t.TempDir()
 	t.Chdir(directory)
-	_, _, bundles, ok := parsePlan([]string{
-		"--profile-bundle", "one.pstrap", "two.pstrap", "--config", "config.toml",
-		"--profile-bundle", "three.pstrap", "--output", "plan.json",
+	_, _, _, packFiles, ok := parsePlan([]string{
+		"--pack-file", "one.pstrap", "two.pstrap", "--config", "config.toml",
+		"--pack-file", "three.pstrap", "--output", "plan.json",
 	})
 	want := []string{
 		filepath.Join(directory, "one.pstrap"), filepath.Join(directory, "two.pstrap"), filepath.Join(directory, "three.pstrap"),
 	}
-	if !ok || !reflect.DeepEqual(bundles, want) {
-		t.Fatalf("bundles = %v, ok = %t; want %v, true", bundles, ok, want)
+	if !ok || !reflect.DeepEqual(packFiles, want) {
+		t.Fatalf("pack files = %v, ok = %t; want %v, true", packFiles, ok, want)
 	}
 	for _, arguments := range [][]string{
-		{"--config", "config.toml", "--output", "plan.json", "--profile-bundle"},
-		{"--config", "config.toml", "--output", "plan.json", "--profile-bundle", "--unknown"},
+		{"--config", "config.toml", "--output", "plan.json", "--pack-file"},
+		{"--config", "config.toml", "--output", "plan.json", "--pack-file", "--unknown"},
+		{"--pack-file", ""},
 	} {
-		if _, _, _, ok := parsePlan(arguments); ok {
-			t.Fatalf("empty --profile-bundle group accepted: %v", arguments)
+		if _, _, _, _, ok := parsePlan(arguments); ok {
+			t.Fatalf("empty --pack-file group accepted: %v", arguments)
 		}
 	}
 }
 
 const commandEmptyPlanJSON = `{"schema":1,"digest":"sha256:6e798e7de28e940a0eecede9ff1e10d4b479db250a983744d5311354a80ffb64","plan":{"operations":[],"blockers":[]}}`
+
+func TestPlanAndApplyUseWorkingDirectoryDefaults(t *testing.T) {
+	directory := t.TempDir()
+	t.Chdir(directory)
+	plan, _ := app.DecodePlan([]byte(commandEmptyPlanJSON))
+	var planned app.Request
+	var applied app.ApplyRequest
+	applications := applicationCommands{
+		buildPlan: func(_ context.Context, request app.Request) (app.Plan, error) {
+			planned = request
+			return plan, nil
+		},
+		apply: func(_ context.Context, request app.ApplyRequest) (app.ApplyResult, error) {
+			applied = request
+			return app.ApplyResult{Status: engine.Converged}, nil
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"plan"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), filepath.Join(directory, "proofstrap.toml")) {
+		t.Fatalf("missing default: code=%d stderr=%q", code, stderr.String())
+	}
+	if err := os.WriteFile("proofstrap.toml", []byte("schema = 2\npackages = [\"flatpak:x\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"plan"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("plan: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	digest := "sha256:" + strings.Repeat("1", 64)
+	stdout.Reset()
+	stderr.Reset()
+	if code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"apply", "--accept", digest}, &stdout, &stderr); code != 0 {
+		t.Fatalf("apply: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if planned.Origin != filepath.Join(directory, "proofstrap.toml") || applied.PlanPath != filepath.Join(directory, "plan.json") || applied.JournalPath != filepath.Join(directory, "apply.journal") {
+		t.Fatalf("planned=%#v applied=%#v", planned, applied)
+	}
+}
 
 func TestAdjacentReleaseRootUsesKernelResolvedPath(t *testing.T) {
 	if got := adjacentReleaseRoot("/opt/proofstrap/releases/generation/proofstrap"); got != "/opt/proofstrap/releases/generation/packs" {
@@ -85,8 +125,11 @@ func TestCutoverGrammarRejectsLegacyAndForbiddenInputs(t *testing.T) {
 	}
 	environment := processEnvironment{inventory: inventory.Environment{Home: "/home/test"}, effectiveUID: 0}
 	for _, arguments := range [][]string{
-		nil, {"modules"}, {"_create-home"}, {"plan", "module"},
+		nil, {"modules"}, {"_create-home"}, {"plan", "module"}, {"plan", "--profile-bundle", "old.pstrap"},
+		{"plan", "--config=x"}, {"plan", "-c", "x"}, {"plan", "--conf", "x"}, {"plan", "--output", ""}, {"plan", "--pack-store", ""}, {"plan", "--pack-store=x"},
+		{"plan", "--pack-store", "/tmp/a", "--pack-store", "/tmp/b"},
 		{"plan", "--config", "/tmp/config", "--config", "/tmp/other", "--output", "/tmp/plan"},
+		{"apply"}, {"apply", "--accept=" + strings.Repeat("1", 64)}, {"apply", "-a", "sha256:" + strings.Repeat("1", 64)}, {"apply", "--accept", ""}, {"apply", "--accept", "sha256:" + strings.Repeat("1", 64), "--journal", ""},
 		{"apply", "--config", "/tmp/config"}, {"apply", "--plan", "/tmp/plan", "--accept", "bad"},
 		{"apply", "--plan", "/tmp/plan", "--plan", "/tmp/other", "--accept", "sha256:" + strings.Repeat("1", 64)},
 	} {
@@ -108,8 +151,9 @@ func TestPlanPublishesArtifactAndRendersReview(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
 	outputPath := filepath.Join(root, "plan.json")
-	bundleOne := filepath.Join(root, "one.pstrap")
-	bundleTwo := filepath.Join(root, "two.pstrap")
+	packFileOne := filepath.Join(root, "one.pstrap")
+	packFileTwo := filepath.Join(root, "two.pstrap")
+	store := filepath.Join(root, "packs")
 	config := []byte("schema = 2\npackages = [\"flatpak:x\"]\n")
 	if err := os.WriteFile(configPath, config, 0o600); err != nil {
 		t.Fatal(err)
@@ -120,9 +164,9 @@ func TestPlanPublishesArtifactAndRendersReview(t *testing.T) {
 		return plan, nil
 	}}
 	var stdout, stderr bytes.Buffer
-	arguments := []string{"plan", "--profile-bundle", bundleOne, "--output", outputPath, "--config", configPath, "--profile-bundle", bundleTwo}
+	arguments := []string{"plan", "--pack-file", packFileOne, "--output", outputPath, "--pack-store", store, "--config", configPath, "--pack-file", packFileTwo}
 	code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, arguments, &stdout, &stderr)
-	if code != 0 || stderr.Len() != 0 || got.Origin != configPath || !bytes.Equal(got.Config, config) || strings.Join(got.Bundles, ",") != bundleOne+","+bundleTwo {
+	if code != 0 || stderr.Len() != 0 || got.Origin != configPath || got.Environment.PackStore != store || !bytes.Equal(got.Config, config) || strings.Join(got.PackFiles, ",") != packFileOne+","+packFileTwo {
 		t.Fatalf("code=%d request=%#v stdout=%q stderr=%q", code, got, stdout.String(), stderr.String())
 	}
 	published, err := os.ReadFile(outputPath)
@@ -194,22 +238,22 @@ func TestApplyMapsTerminalStatusAndPassesExactRequest(t *testing.T) {
 	}
 }
 
-func TestApplyLetsDecodedPlanDecideJournalRequirementAndMapsSchemaErrors(t *testing.T) {
+func TestApplyDefaultsJournalAndMapsSchemaErrors(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("1", 64)
 	planPath := filepath.Join(t.TempDir(), "plan.json")
 	for _, test := range []struct {
 		name string
 		err  error
 	}{
-		{"journal required after decode", fmt.Errorf("%w: journal path is required", app.ErrInvalidRequest)},
+		{"invalid Apply request", fmt.Errorf("%w: request", app.ErrInvalidRequest)},
 		{"invalid Plan schema", fmt.Errorf("%w: schema", app.ErrInvalidPlan)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			called := false
 			applications := applicationCommands{apply: func(_ context.Context, request app.ApplyRequest) (app.ApplyResult, error) {
 				called = true
-				if request.JournalPath != "" {
-					t.Fatal("CLI synthesized a journal path")
+				if filepath.Base(request.JournalPath) != "apply.journal" {
+					t.Fatalf("default journal = %q", request.JournalPath)
 				}
 				return app.ApplyResult{}, test.err
 			}}
@@ -252,11 +296,18 @@ func TestPlanOversizeConfigIsSchemaFailureBeforeBuild(t *testing.T) {
 	}
 }
 
-func TestRootHelpListsOnlyCutoverCommands(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applicationCommands{}, []string{"--help"}, &stdout, &stderr)
-	if code != 0 || stderr.Len() != 0 || stdout.String() != rootUsage+"\n" || strings.Contains(stdout.String(), "modules") || strings.Contains(stdout.String(), "_create-home") {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+func TestHelpStatesExactCommandGrammar(t *testing.T) {
+	for _, test := range []struct {
+		arguments []string
+		usage     string
+	}{
+		{[]string{"--help"}, rootUsage}, {[]string{"plan", "--help"}, planUsage}, {[]string{"apply", "--help"}, applyUsage},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applicationCommands{}, test.arguments, &stdout, &stderr)
+		if code != 0 || stderr.Len() != 0 || stdout.String() != test.usage+"\n" || strings.Contains(stdout.String(), "_create-home") {
+			t.Fatalf("%v: code=%d stdout=%q stderr=%q", test.arguments, code, stdout.String(), stderr.String())
+		}
 	}
 }
 

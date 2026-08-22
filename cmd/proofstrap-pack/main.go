@@ -3,18 +3,19 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/nostalume/proofstrap/internal/pack"
 	"github.com/nostalume/proofstrap/internal/packbuild"
 )
 
-const usage = "usage: proofstrap-pack build --input ABSOLUTE_DIR --output ABSOLUTE_FILE"
+const usage = "usage: proofstrap-pack build --input DIR --output FILE"
 
 type buildFunc func(context.Context, string, string) (pack.Digest, error)
 
@@ -25,42 +26,21 @@ func main() {
 }
 
 func run(ctx context.Context, build buildFunc, arguments []string, stdout, stderr io.Writer) int {
-	if len(arguments) == 1 && (arguments[0] == "--help" || arguments[0] == "-h") {
+	if len(arguments) == 1 && arguments[0] == "--help" {
 		fmt.Fprintln(stdout, usage)
 		return 0
 	}
-	if len(arguments) == 0 || arguments[0] != "build" {
-		fmt.Fprintln(stderr, usage)
-		return 2
-	}
-	if len(arguments) == 2 && (arguments[1] == "--help" || arguments[1] == "-h") {
+	if len(arguments) == 2 && arguments[0] == "build" && arguments[1] == "--help" {
 		fmt.Fprintln(stdout, usage)
 		return 0
 	}
-	if countFlag(arguments[1:], "--input") != 1 || countFlag(arguments[1:], "--output") != 1 {
-		fmt.Fprintln(stderr, "input and output are required exactly once")
-		fmt.Fprintln(stderr, usage)
-		return 2
-	}
-	flags := flag.NewFlagSet("build", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	input := flags.String("input", "", "absolute authoring directory")
-	output := flags.String("output", "", "absolute output archive")
-	if err := flags.Parse(arguments[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, usage)
-			return 0
-		}
+	input, output, ok := parseBuild(arguments)
+	if !ok {
 		fmt.Fprintln(stderr, "invalid arguments")
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	if *input == "" || *output == "" || len(flags.Args()) != 0 {
-		fmt.Fprintln(stderr, "input and output are required exactly once")
-		fmt.Fprintln(stderr, usage)
-		return 2
-	}
-	digest, err := build(ctx, *input, *output)
+	digest, err := build(ctx, input, output)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -75,12 +55,26 @@ func run(ctx context.Context, build buildFunc, arguments []string, stdout, stder
 	return 0
 }
 
-func countFlag(arguments []string, name string) int {
-	count := 0
-	for _, argument := range arguments {
-		if argument == name || len(argument) > len(name) && argument[:len(name)+1] == name+"=" {
-			count++
+func parseBuild(arguments []string) (input, output string, ok bool) {
+	if len(arguments) != 5 || arguments[0] != "build" {
+		return "", "", false
+	}
+	for index := 1; index < len(arguments); index += 2 {
+		switch arguments[index] {
+		case "--input":
+			input = arguments[index+1]
+		case "--output":
+			output = arguments[index+1]
+		default:
+			return "", "", false
 		}
 	}
-	return count
+	for _, target := range []*string{&input, &output} {
+		absolute, err := filepath.Abs(*target)
+		if *target == "" || strings.ContainsRune(*target, 0) || err != nil || absolute == string(filepath.Separator) {
+			return "", "", false
+		}
+		*target = absolute
+	}
+	return input, output, true
 }

@@ -220,9 +220,11 @@ before publishing it.
 Its implemented interface is exact and absent-only:
 
 ~~~text
-proofstrap-pack build --input ABSOLUTE_DIR --output ABSOLUTE_FILE
+proofstrap-pack build --input DIR --output FILE
 ~~~
 
+The CLI resolves relative input and output paths once against its working
+directory before calling the absolute-path builder.
 Success prints only the completed archive's `sha256:<64-lower-hex>` identity.
 The builder never overwrites an output or imports it into a runtime store.
 
@@ -244,14 +246,15 @@ The sole authoritative stored name is:
 <store>/sha256/<64-lower-hex>.pstrap
 ~~~
 
-Import requires the expected digest:
+Import computes identity from admitted staged bytes. An expected digest is an
+optional assertion:
 
 ~~~text
 open source once as a regular file
 -> create-exclusive random staging file in the final directory
--> bounded copy while hashing exact bytes
--> compare expected digest
--> rewind and completely validate staged archive
+-> bounded copy of exact bytes
+-> rewind, completely validate, and hash the staged archive
+-> compare an expected digest when supplied
 -> flush staged file
 -> atomically hard-link staging to final digest path
 -> flush store directory
@@ -296,21 +299,24 @@ scope order never hides corruption or changes truth.
 The runtime inventory interface is:
 
 ~~~text
-proofstrap import --digest DIGEST [--system] ARCHIVE
+proofstrap import [--digest DIGEST] [--system] ARCHIVE
 proofstrap inspect
 proofstrap inspect DIGEST
+proofstrap inspect ARCHIVE
 proofstrap inspect --digest DIGEST ARCHIVE
 ~~~
 
-Import defaults to the user store and writes no success output. `--system`
-selects the system store but never invokes privilege escalation or prompts.
-Every import requires the expected whole-archive byte digest and never activates
-profiles or bindings.
+Import defaults to the user store. Success writes the bounded structural JSON
+record with its persisted scope. `--system` selects the system store but never
+invokes privilege escalation or prompts. `--digest` asserts an expected
+whole-archive identity; omission derives it from the same admitted staged bytes.
+Import never activates profiles or bindings.
 
 Bare `inspect` enumerates admitted stored sources. `inspect DIGEST` performs
-non-enumerating exact lookup in every available scope. The path form admits one
-local regular archive read-only and requires its observed digest to match the
-explicit digest; it does not import it. A path alone is never identity.
+non-enumerating exact lookup in every available scope. An archive path admits
+one local regular archive read-only and reports its computed identity;
+`--digest` additionally requires an exact match. Inspection never imports it,
+and the path remains only a locator rather than config identity.
 Relative archive paths are resolved once against the process working directory
 and passed to inventory as clean absolute paths without probing during parsing.
 

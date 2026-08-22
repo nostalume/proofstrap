@@ -7,19 +7,21 @@ admit_assets() {
   assets=$1
   work=$2
   [ -d "$assets" ] && [ ! -L "$assets" ] || { printf 'invalid pack asset directory\n' >&2; return 1; }
-  [ "$(find "$assets" -mindepth 1 -maxdepth 1 | wc -l)" -eq 3 ] || {
-    printf 'pack asset directory must contain exactly three files\n' >&2
-    return 1
-  }
-  for file in core.pstrap linux.pstrap checksums.txt; do
-    [ -f "$assets/$file" ] && [ ! -L "$assets/$file" ] || {
-      printf 'invalid pack asset: %s\n' "$file" >&2
-      return 1
-    }
+  for file in proofstrap.toml checksums.txt; do [ -f "$assets/$file" ] && [ ! -L "$assets/$file" ] || return 1; done
+  [ -d "$assets/packs/sha256" ] && [ ! -L "$assets/packs" ] && [ ! -L "$assets/packs/sha256" ] || return 1
+  count=$(find "$assets/packs/sha256" -mindepth 1 -maxdepth 1 -type f | wc -l)
+  [ "$count" -ge 1 ] && [ "$count" -le 64 ] || return 1
+  [ "$(find "$assets" -type f | wc -l)" -eq $((count + 2)) ] || return 1
+  [ -z "$(find "$assets" -mindepth 1 ! -type d ! -type f -print -quit)" ] || return 1
+  for object in "$assets"/packs/sha256/*.pstrap; do
+    name=$(basename "$object" .pstrap)
+    case "$name" in ""|*[!0-9a-f]*) return 1 ;; esac
+    [ "${#name}" -eq 64 ] && [ "$(sha256sum "$object" | cut -d ' ' -f 1)" = "$name" ] || return 1
   done
-  (cd "$assets" && sha256sum core.pstrap linux.pstrap) > "$work/observed.sha256"
-  cmp "$assets/checksums.txt" "$work/observed.sha256"
-  cp "$assets/core.pstrap" "$assets/linux.pstrap" "$work/"
+  (cd "$assets" && sha256sum --check --status checksums.txt)
+  cp "$assets/proofstrap.toml" "$work/bootstrap.toml"
+  mkdir -p "$work/packs/sha256"
+  cp "$assets"/packs/sha256/*.pstrap "$work/packs/sha256/"
 }
 
 build_once() {
@@ -28,11 +30,6 @@ build_once() {
   assets=$3
   mkdir -p "$output" "$work"
   admit_assets "$assets" "$work"
-  core=$(sed -n '1s/  core\.pstrap$//p' "$work/observed.sha256")
-  linux=$(sed -n '2s/  linux\.pstrap$//p' "$work/observed.sha256")
-  [ "${#core}" -eq 64 ] && [ "${#linux}" -eq 64 ]
-  printf 'schema = 2\n\nbindings = ["linux"]\nprofiles = [{ profile = "core:bootstrap-cli" }]\n\n[sources]\ncore = "sha256:%s"\nlinux = "sha256:%s"\n' \
-    "$core" "$linux" > "$work/bootstrap.toml"
   epoch=$(git -C "$root" show -s --format=%ct HEAD)
 
   for arch in amd64 arm64; do
@@ -51,17 +48,16 @@ build_once() {
     cp "$work/bootstrap.toml" "$stage/examples/"
     cp "$root/README.md" "$root/LICENSE" "$author_stage/"
     cp "$root/docs/profile.md" "$author_stage/docs/"
-    cp "$work/core.pstrap" "$stage/packs/sha256/$core.pstrap"
-    cp "$work/linux.pstrap" "$stage/packs/sha256/$linux.pstrap"
+    cp "$work"/packs/sha256/*.pstrap "$stage/packs/sha256/"
     chmod 0444 "$stage/examples/bootstrap.toml" "$stage/packs/sha256/"*.pstrap
   done
 
-  "$work/proofstrap_linux_amd64/proofstrap" inspect --digest "sha256:$core" "$work/core.pstrap" > "$work/core.json"
-  "$work/proofstrap_linux_amd64/proofstrap" inspect --digest "sha256:$linux" "$work/linux.pstrap" > "$work/linux.json"
-  grep -F '"kind": "semantic"' "$work/core.json" >/dev/null
-  grep -F '"kind": "binding"' "$work/linux.json" >/dev/null
-  [ "$(grep -c '"handle"' "$work/linux.json")" -eq 1 ]
-  grep -F "\"digest\": \"sha256:$core\"" "$work/linux.json" >/dev/null
+  runtime="$work/proofstrap_linux_amd64/proofstrap"
+  for object in "$work"/packs/sha256/*.pstrap; do
+    "$runtime" inspect "$object" >/dev/null
+  done
+  "$runtime" plan --config "$work/bootstrap.toml" --output "$work/bootstrap.plan" > "$work/bootstrap.out" || [ "$?" -eq 1 ]
+  [ -f "$work/bootstrap.plan" ]
 
   for arch in amd64 arm64; do
     for artifact in "proofstrap_linux_$arch" "proofstrap-pack_linux_$arch"; do
