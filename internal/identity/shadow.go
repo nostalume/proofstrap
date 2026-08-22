@@ -503,7 +503,7 @@ func (operation Operation) applyLock(effectCtx context.Context, freshPost func()
 	}
 	tool, _ := fresh.tool("passwd")
 	result, runErr := fresh.effects.run(effectCtx, tool, []string{"-l", operation.lockAccount}, nil)
-	runErr = commandFailure("lock account", result, runErr)
+	runErr = linux.CommandFailure("lock account", result, runErr)
 	return finishIdentity(result.Started, runErr, freshPost, "lock postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
 		after, err := fresh.observeLock(ctx, operation.lockAccount)
 		return exactIdentity(after, "account is locked"), after, err
@@ -520,7 +520,7 @@ func (operation Operation) applyShell(effectCtx context.Context, freshPost func(
 	}
 	tool, _ := fresh.tool("usermod")
 	result, runErr := fresh.effects.run(effectCtx, tool, []string{"--shell", operation.shellValue, "--", operation.shellAccount}, nil)
-	runErr = commandFailure("set account shell", result, runErr)
+	runErr = linux.CommandFailure("set account shell", result, runErr)
 	return finishIdentity(result.Started, runErr, freshPost, "shell postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
 		after, err := fresh.observeNamedAccount(ctx, operation.shellAccount)
 		exact := after.shell == operation.shellValue
@@ -542,7 +542,7 @@ func (operation Operation) applyMembership(effectCtx context.Context, freshPost 
 	}
 	tool, _ := fresh.tool("gpasswd")
 	result, runErr := fresh.effects.run(effectCtx, tool, []string{verb, operation.membershipAccount, operation.membershipGroup}, nil)
-	runErr = commandFailure("set group membership", result, runErr)
+	runErr = linux.CommandFailure("set group membership", result, runErr)
 	return finishIdentity(result.Started, runErr, freshPost, "membership postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
 		after, err := fresh.observeNamedGroup(ctx, operation.membershipGroup)
 		exact := operation.membershipPresent == slices.Contains(after.members, operation.membershipAccount) && slices.Equal(withoutMember(before.members, operation.membershipAccount), withoutMember(after.members, operation.membershipAccount))
@@ -604,7 +604,7 @@ func (operation Operation) applyGroup(effectCtx context.Context, freshPost func(
 	}
 	tool, _ := fresh.tool("groupadd")
 	result, runErr := fresh.effects.run(effectCtx, tool, []string{"--gid", strconv.FormatUint(uint64(operation.group.gid), 10), "--", operation.group.name}, nil)
-	runErr = commandFailure("create group", result, runErr)
+	runErr = linux.CommandFailure("create group", result, runErr)
 	return finishIdentity(result.Started, runErr, freshPost, "group postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
 		after, err := fresh.observeGroupIntent(ctx, operation.group)
 		decision := Decision{}
@@ -631,7 +631,7 @@ func (operation Operation) applyAccount(effectCtx context.Context, freshPost fun
 	tool, _ := fresh.tool("useradd")
 	args := []string{"--uid", strconv.FormatUint(uint64(operation.account.uid), 10), "--gid", strconv.FormatUint(uint64(operation.primary.GID), 10), "--home-dir", operation.account.home, "--no-create-home", "--no-user-group", "--", operation.account.name}
 	result, runErr := fresh.effects.run(effectCtx, tool, args, nil)
-	runErr = commandFailure("create account", result, runErr)
+	runErr = linux.CommandFailure("create account", result, runErr)
 	return finishIdentity(result.Started, runErr, freshPost, "account or lock postcondition is not exact", func(ctx context.Context) (Decision, bool, error) {
 		after, observeErr := fresh.observeAccountIntent(ctx, operation.account)
 		decision := Decision{}
@@ -716,11 +716,4 @@ func oneRecord(data []byte) (string, error) {
 func nativeFailure(action string, result linux.Result, err error) error {
 	detail := fmt.Errorf("%s failed: started=%t exit=%d stderr=%q", action, result.Started, result.ExitCode, result.Stderr)
 	return errors.Join(detail, err)
-}
-
-func commandFailure(action string, result linux.Result, err error) error {
-	if err == nil && result.Started && result.ExitCode == 0 && len(result.Stderr) == 0 {
-		return nil
-	}
-	return nativeFailure(action, result, err)
 }

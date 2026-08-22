@@ -57,7 +57,7 @@ func (operation Operation) Apply(effectCtx context.Context, freshPost func() (co
 	}
 	tool, args := fresh.effectCommand(operation)
 	result, runErr := fresh.effects.run(effectCtx, tool, args, nil)
-	runErr = commandFailure(operation.verb()+" service", result, runErr)
+	runErr = linux.CommandFailure(operation.verb()+" service", result, runErr)
 	postCtx, cancelPost := freshPost()
 	if cancelPost == nil || !linux.FutureContext(postCtx) {
 		if cancelPost != nil {

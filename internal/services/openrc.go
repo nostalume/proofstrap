@@ -65,7 +65,7 @@ func selectOpenRCSystem(ctx context.Context, effects systemEffects, openrc openR
 	}
 	result, err := effects.run(ctx, status, []string{"--runlevel"}, nil)
 	if err != nil || !result.Started {
-		return nil, fmt.Errorf("%w: %v", ErrIndeterminate, commandFailure("OpenRC control probe", result, err))
+		return nil, fmt.Errorf("%w: %v", ErrIndeterminate, linux.CommandFailure("OpenRC control probe", result, err))
 	}
 	control := strings.TrimSuffix(string(result.Stdout), "\n")
 	if result.ExitCode != 0 || len(result.Stderr) != 0 || !validText(control, 63) || strings.Contains(control, "\n") {
@@ -86,7 +86,7 @@ func identifyOpenRCTool(effects systemEffects, name string) (linux.Identity, err
 func probeOpenRCVersion(ctx context.Context, effects systemEffects, tool linux.Identity) (string, error) {
 	result, err := effects.run(ctx, tool, []string{"--version"}, nil)
 	if err != nil || !result.Started {
-		return "", fmt.Errorf("%w: %v", ErrIndeterminate, commandFailure("OpenRC version probe", result, err))
+		return "", fmt.Errorf("%w: %v", ErrIndeterminate, linux.CommandFailure("OpenRC version probe", result, err))
 	}
 	line := strings.TrimSuffix(string(result.Stdout), "\n")
 	fields := strings.Fields(line)
@@ -99,7 +99,7 @@ func probeOpenRCVersion(ctx context.Context, effects systemEffects, tool linux.I
 func (selected *Selected) observeOpenRC(ctx context.Context, desired []Demand) (map[string]unitRecord, error) {
 	result, err := selected.effects.run(ctx, selected.evidence.status, []string{"--format", "ini", "--servicelist"}, nil)
 	if err != nil || !result.Started {
-		return nil, commandFailure("observe OpenRC services", result, err)
+		return nil, linux.CommandFailure("observe OpenRC services", result, err)
 	}
 	if result.ExitCode != 0 || len(result.Stderr) != 0 || len(result.Stdout) > maxObservationBytes {
 		return nil, fmt.Errorf("OpenRC status output is invalid: started=%t exit=%d stdout-bytes=%d stderr=%q", result.Started, result.ExitCode, len(result.Stdout), result.Stderr)
@@ -129,7 +129,7 @@ func (selected *Selected) observeOpenRC(ctx context.Context, desired []Demand) (
 			states := map[int]string{0: "started", 3: "stopped", 4: "stopping", 8: "starting", 16: "inactive", 32: "crashed"}
 			state = states[status.ExitCode]
 			if runErr != nil || !status.Started || len(status.Stdout)+len(status.Stderr) > maxObservationBytes || state == "" {
-				return nil, commandFailure("observe OpenRC service "+unit, status, runErr)
+				return nil, linux.CommandFailure("observe OpenRC service "+unit, status, runErr)
 			}
 		}
 		persistence := "disabled"

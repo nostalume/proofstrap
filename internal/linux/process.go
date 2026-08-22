@@ -41,6 +41,13 @@ type Result struct {
 	Stderr   []byte
 }
 
+func CommandFailure(action string, result Result, err error) error {
+	if err == nil && result.Started && result.ExitCode == 0 && len(result.Stderr) == 0 {
+		return nil
+	}
+	return errors.Join(fmt.Errorf("%s failed: started=%t exit=%d stderr=%q", action, result.Started, result.ExitCode, result.Stderr), err)
+}
+
 func Identify(candidate string) (Identity, error) {
 	if !filepath.IsAbs(candidate) {
 		return Identity{}, fmt.Errorf("linuxexec: executable path %q is not absolute", candidate)

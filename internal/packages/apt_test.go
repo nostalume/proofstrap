@@ -6,7 +6,6 @@ import (
 	"os"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/nostalume/proofstrap/internal/linux"
 )
@@ -126,8 +125,7 @@ func TestAptAdmissionBindsEveryCompanionVersionAndArchitecture(t *testing.T) {
 		{proof.dpkg, []string{"--print-architecture"}, started("amd64\n"), nil},
 	}
 	script := newAptScript(t, identities, runs)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	got := probeApt(ctx, script.effects())
 	if got.evidence.state != candidateAdmitted || !got.evidence.proof.equal(proof) {
 		t.Fatalf("candidate = %#v", got.evidence)
@@ -182,8 +180,7 @@ func TestAptAdapterObservesPreviewsAndCommitsThroughNativeEvidence(t *testing.T)
 	}
 	script := newAptScript(t, nil, runs)
 	behavior := aptBehavior{effects: script.effects()}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	observation, err := behavior.Observe(ctx, proof, []string{"newpkg", "bash", "dep"})
 	if err != nil {
 		t.Fatal(err)
@@ -239,9 +236,8 @@ func TestAptObservationRejectsPartialOrPendingDpkgState(t *testing.T) {
 		script := newAptScript(t, nil, []aptRun{
 			{proof.query, aptInventoryArgs(), startedBytes(inventory), nil},
 		})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx := packageContext(t)
 		_, err := (aptBehavior{effects: script.effects()}).Observe(ctx, proof, []string{"pkg"})
-		cancel()
 		if err == nil {
 			t.Fatalf("accepted dpkg status %q", status)
 		}
@@ -251,8 +247,7 @@ func TestAptObservationRejectsPartialOrPendingDpkgState(t *testing.T) {
 
 func TestAptObservationRejectsDuplicateNormalizedDemandAndRoots(t *testing.T) {
 	proof := testAptProof()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	if got, err := (aptBehavior{}).Observe(ctx, proof, []string{"bash", "bash:amd64"}); err == nil || got.valid() {
 		t.Fatalf("normalized duplicate = %#v, %v", got, err)
 	}
@@ -275,8 +270,7 @@ func TestAptExactVersionMismatchIsMissing(t *testing.T) {
 		{proof.query, aptInventoryArgs(), started("bash\tamd64\tii \t1.0\n"), nil},
 		{proof.mark, []string{"showmanual"}, started("bash\n"), nil},
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	got, err := (aptBehavior{effects: script.effects()}).Observe(ctx, proof, []string{"bash=2.0"})
 	if err != nil || !reflect.DeepEqual(got.demands(), []demand{{Name: "bash=2.0", State: demandMissing}}) {
 		t.Fatalf("observation = %#v, %v", got.demands(), err)
@@ -290,8 +284,7 @@ func TestAptUnqualifiedDemandAndRootAcceptArchitectureAll(t *testing.T) {
 		{proof.query, aptInventoryArgs(), started("docs\tall\tii \t1.0\n"), nil},
 		{proof.mark, []string{"showmanual"}, started("docs\n"), nil},
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	got, err := (aptBehavior{effects: script.effects()}).Observe(ctx, proof, []string{"docs"})
 	if err != nil || !reflect.DeepEqual(got.demands(), []demand{{Name: "docs", State: demandDirect}}) ||
 		!reflect.DeepEqual(got.inventory().roots(), []string{"docs\tall"}) {
@@ -308,8 +301,7 @@ func TestAptPreviewRetainsResolvedArchitectureAll(t *testing.T) {
 	script := newAptScript(t, nil, []aptRun{{
 		proof.get, aptTransactionArgs(true, aptRefs(t, "amd64", "docs")), started(preview), nil,
 	}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	offer, err := (aptBehavior{effects: script.effects()}).Preview(ctx, proof, observation)
 	if err != nil {
 		t.Fatal(err)
@@ -341,8 +333,7 @@ func TestAptPreviewFailsClosedForHeldRemovalBrokenAndMalformedEvidence(t *testin
 				proof.get, aptTransactionArgs(true, aptRefs(t, "amd64", "held")),
 				linux.Result{Started: true, Stdout: []byte(test.output), Stderr: []byte(test.stderr)}, nil,
 			}})
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
+			ctx := packageContext(t)
 			if offer, err := (aptBehavior{effects: script.effects()}).Preview(ctx, proof, observation); err == nil || offer.valid() {
 				t.Fatalf("offer = %#v, %v", offer, err)
 			}
@@ -358,8 +349,7 @@ func TestAptPreviewClassifiesRemovalAsBlockedEvidence(t *testing.T) {
 		proof.get, aptTransactionArgs(true, aptRefs(t, "amd64", "held")),
 		started("Remv held [3.0-1]\n"), nil,
 	}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	offer, err := (aptBehavior{effects: script.effects()}).Preview(ctx, proof, observation)
 	if err != nil || len(offer.Deltas()) != 1 || offer.Deltas()[0].Kind() != Remove {
 		t.Fatalf("offer = %#v, %v", offer.Deltas(), err)
@@ -379,8 +369,7 @@ func TestAptPreviewUsesNativeEqualityForReplacement(t *testing.T) {
 		{proof.get, aptTransactionArgs(true, aptRefs(t, "amd64", "pkg")), started(output), nil},
 		{proof.dpkg, []string{"--compare-versions", "1.0", "eq", "1.00"}, started(""), nil},
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	offer, err := (aptBehavior{effects: script.effects()}).Preview(ctx, proof, observation)
 	if err != nil || len(offer.Deltas()) != 1 || offer.Deltas()[0].Kind() != Replace {
 		t.Fatalf("offer = %#v, %v", offer.Deltas(), err)
@@ -399,9 +388,8 @@ func TestAptPreviewRejectsIncompleteOperationStreams(t *testing.T) {
 		"Unknown pkg\n",
 	} {
 		script := newAptScript(t, nil, []aptRun{{proof.get, aptTransactionArgs(true, aptRefs(t, "amd64", "pkg")), started(output), nil}})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx := packageContext(t)
 		offer, err := (aptBehavior{effects: script.effects()}).Preview(ctx, proof, observation)
-		cancel()
 		if err == nil || offer.valid() {
 			t.Fatalf("accepted %q as %#v", output, offer.Deltas())
 		}
@@ -425,9 +413,8 @@ func TestAptCommitPreservesStarted(t *testing.T) {
 			{proof.get, aptTransactionArgs(true, aptRefs(t, "amd64", "held")), started(""), nil},
 			{proof.get, aptTransactionArgs(false, aptRefs(t, "amd64", "held")), test.result, test.err},
 		})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx := packageContext(t)
 		got, err := (aptBehavior{effects: script.effects()}).Commit(ctx, proof, observation, expected)
-		cancel()
 		if err == nil || got.Started != test.result.Started {
 			t.Fatalf("commit = %#v, %v", got, err)
 		}
@@ -440,8 +427,7 @@ func TestAptCommitBlocksChangedOfferBeforeMutation(t *testing.T) {
 	observation := aptObservation(t)
 	expected, _ := newOffer(nil)
 	script := newAptScript(t, nil, []aptRun{{proof.get, aptTransactionArgs(true, aptRefs(t, "amd64", "held")), started("Remv held [3.0-1]\n"), nil}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	result, err := (aptBehavior{effects: script.effects()}).Commit(ctx, proof, observation, expected)
 	if err == nil || !errors.Is(err, ErrStale) || result.Started {
 		t.Fatalf("commit = %#v, %v", result, err)

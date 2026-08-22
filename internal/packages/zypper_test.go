@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nostalume/proofstrap/internal/linux"
 )
@@ -145,8 +144,7 @@ func TestZypperAdmissionClassifiesEvidenceWithoutDistroDispatch(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			script := newZypperScript(t, test.identities, test.runs)
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
+			ctx := packageContext(t)
 			got := probeZypper(ctx, script.effects())
 			if got.evidence.state != test.want || got.evidence.backend.String() != "zypper" {
 				t.Fatalf("probe = %#v, want state %v", got.evidence, test.want)
@@ -196,8 +194,7 @@ func TestZypperAdapterObservesPreviewsAndCommitsThroughNativeEvidence(t *testing
 		rpm.Path:    rpm,
 	}, runs)
 	effect := script.effects()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 
 	candidateValue := probeZypper(ctx, effect)
 	if candidateValue.evidence.state != candidateAdmitted {
@@ -398,8 +395,7 @@ func TestZypperObservationRejectsIncompleteOrContradictoryNativeState(t *testing
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			script := newZypperScript(t, nil, test.runs)
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
+			ctx := packageContext(t)
 			observation, err := (zypperBehavior{effects: script.effects()}).Observe(ctx, proof, []string{"bash"})
 			if err == nil || observation.valid() {
 				t.Fatalf("observation = %#v, %v", observation, err)
@@ -428,8 +424,7 @@ func TestZypperCommitPreservesStartedForEveryFailure(t *testing.T) {
 				{proof.zypper, zypperTransactionArgs(true, []string{"pkg"}), started(`<?xml version="1.0"?><stream><install-summary packages-to-change="0"></install-summary></stream>`), nil},
 				{proof.zypper, zypperTransactionArgs(false, []string{"pkg"}), test.result, test.err},
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
+			ctx := packageContext(t)
 			result, err := (zypperBehavior{effects: script.effects()}).Commit(ctx, proof, observation, expected)
 			if err == nil || result.Started != test.result.Started {
 				t.Fatalf("commit = %#v, %v", result, err)
@@ -446,8 +441,7 @@ func TestZypperCommitBlocksChangedOfferBeforeMutation(t *testing.T) {
 	expected, _ := newOffer([]Delta{mustDelta(t, RootAdd, "pkg", "", "direct")})
 	changed := zypperOfferXML("to-install", `type="package" name="pkg" edition="1.0-1" arch="x86_64"`, 1)
 	script := newZypperScript(t, nil, []zypperRun{{proof.zypper, zypperTransactionArgs(true, []string{"pkg"}), startedBytes(changed), nil}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	result, err := (zypperBehavior{effects: script.effects()}).Commit(ctx, proof, observation, expected)
 	if err == nil || !errors.Is(err, ErrStale) || result.Started {
 		t.Fatalf("commit = %#v, %v", result, err)

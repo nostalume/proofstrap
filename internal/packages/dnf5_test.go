@@ -7,7 +7,6 @@ import (
 	"os"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/nostalume/proofstrap/internal/linux"
 )
@@ -42,8 +41,7 @@ func TestDNF5VerifyAccountsForReviewedTransition(t *testing.T) {
 
 func TestDNF5AdmissionBindsExactExecutableAndMajorVersion(t *testing.T) {
 	identity := linux.Identity{Path: dnf5Path, Digest: [32]byte{1}}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 
 	script := newDNF5Script(t, map[string]linux.Identity{dnf5Path: identity}, []dnf5Run{{
 		identity: identity,
@@ -180,8 +178,7 @@ func TestDNF5ObserveClassifiesInstalledRootsInOneQuery(t *testing.T) {
 		"kernel-core\t0\t6.14.3\t200.fc42\tx86_64\tFedora Project\tDependency\n" +
 		"kernel-core\t0\t6.13.12\t100.fc42\tx86_64\tFedora Project\tWeak Dependency\n"
 	script := newDNF5Script(t, nil, []dnf5Run{{identity: proof.executable, args: dnf5InventoryArgs(), result: started(data)}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	got, err := (dnf5Behavior{effects: script.effects(), files: dnf5TestFiles()}).Observe(ctx, proof, []string{"bash", "kernel-core", "missing"})
 	if err != nil {
 		t.Fatal(err)
@@ -210,9 +207,8 @@ func TestDNF5ObserveRejectsAmbiguousOrUnknownReasons(t *testing.T) {
 		"pkg\t0\t1\t1\tx86_64\tvendor\tUser",
 	} {
 		script := newDNF5Script(t, nil, []dnf5Run{{identity: proof.executable, args: dnf5InventoryArgs(), result: started(data)}})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx := packageContext(t)
 		got, err := (dnf5Behavior{effects: script.effects(), files: dnf5TestFiles()}).Observe(ctx, proof, []string{"pkg"})
-		cancel()
 		if err == nil || got.valid() {
 			t.Fatalf("accepted malformed installed state %q: %#v", data, got)
 		}
@@ -227,8 +223,7 @@ func TestDNF5ObserveRejectsNonConcreteDesiredNameBeforeNativeRun(t *testing.T) {
 		runs++
 		return started(""), nil
 	}}}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 
 	for _, desired := range []string{"curl >= 8", "@development-tools", "/tmp/curl.rpm", "libcurl.so.4()(64bit)", "curl*"} {
 		if got, err := behavior.Observe(ctx, proof, []string{desired}); err == nil || got.valid() {
@@ -245,8 +240,7 @@ func TestDNF5PreviewStoresDecodesAndCleansOneTransaction(t *testing.T) {
 	observation := dnf5Observation(t, "curl", demandDependency, "curl\t0:8.0-1.fc42\tx86_64")
 	files := &dnf5FileScript{directory: "/tmp/proofstrap-dnf5-a", data: []byte(`{"version":"1.0","rpms":[{"nevra":"curl-0:8.1-1.fc42.x86_64","action":"Upgrade","reason":"User","repo_id":"fedora","package_path":"./packages/curl.rpm"},{"nevra":"curl-0:8.0-1.fc42.x86_64","action":"Replaced","reason":"Dependency","repo_id":"@System"}]}`)}
 	script := newDNF5Script(t, nil, []dnf5Run{{identity: proof.executable, args: dnf5StoreArgs(files.directory, []string{"curl"}, false), result: started("stored\n")}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	offer, err := (dnf5Behavior{effects: script.effects(), files: files.effects()}).Preview(ctx, proof, observation)
 	if err != nil {
 		t.Fatal(err)
@@ -279,9 +273,8 @@ func TestDNF5PreviewRejectsUnsafeStoredEvidenceAndStillCleans(t *testing.T) {
 	} {
 		files := &dnf5FileScript{directory: "/tmp/proofstrap-dnf5-b", data: data}
 		script := newDNF5Script(t, nil, []dnf5Run{{identity: proof.executable, args: dnf5StoreArgs(files.directory, []string{"curl"}, false), result: started("stored\n")}})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx := packageContext(t)
 		offer, err := (dnf5Behavior{effects: script.effects(), files: files.effects()}).Preview(ctx, proof, observation)
-		cancel()
 		if err == nil || offer.valid() {
 			t.Fatalf("accepted stored evidence %q as %#v", data, offer)
 		}
@@ -472,8 +465,7 @@ func TestDNF5CommitRestoresStoreOfferBeforeReplay(t *testing.T) {
 	}
 	files := &dnf5FileScript{directory: "/tmp/proofstrap-dnf5-c", data: data}
 	script := newDNF5Script(t, nil, []dnf5Run{{identity: proof.executable, args: dnf5StoreArgs(files.directory, []string{"curl"}, true), result: started("stored\n")}, {identity: proof.executable, args: dnf5ReplayArgs(files.directory), result: started("replayed\n")}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	result, err := (dnf5Behavior{effects: script.effects(), files: files.effects()}).Commit(ctx, proof, observation, expected)
 	if err != nil || !result.Started {
 		t.Fatalf("commit = %#v, %v", result, err)
@@ -488,8 +480,7 @@ func TestDNF5CommitBlocksChangedOfferBeforeReplay(t *testing.T) {
 	expected, _ := newOffer([]Delta{mustDelta(t, Add, "curl\tx86_64", "", "0:8.1-1.fc42"), mustDelta(t, RootAdd, "curl", "", "direct")})
 	files := &dnf5FileScript{directory: "/tmp/proofstrap-dnf5-d", data: []byte(`{"version":"1.0","rpms":[{"nevra":"curl-0:8.2-1.fc42.x86_64","action":"Install","reason":"User","repo_id":"fedora","package_path":"./packages/curl.rpm"}]}`)}
 	script := newDNF5Script(t, nil, []dnf5Run{{identity: proof.executable, args: dnf5StoreArgs(files.directory, []string{"curl"}, true), result: started("stored\n")}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	result, err := (dnf5Behavior{effects: script.effects(), files: files.effects()}).Commit(ctx, proof, observation, expected)
 	if err == nil || !errors.Is(err, ErrStale) || result.Started {
 		t.Fatalf("commit = %#v, %v", result, err)
@@ -530,8 +521,7 @@ func TestDNF5PreviewCleansAfterNativeReadAndCleanupFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			test.run.args = dnf5StoreArgs(test.files.directory, []string{"curl"}, false)
 			script := newDNF5Script(t, nil, []dnf5Run{test.run})
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
+			ctx := packageContext(t)
 			offer, err := (dnf5Behavior{effects: script.effects(), files: test.files.effects()}).Preview(ctx, proof, observation)
 			if err == nil || offer.valid() {
 				t.Fatalf("preview = %#v, %v", offer, err)
@@ -550,8 +540,7 @@ func TestDNF5PreviewJoinsPrimaryAndCleanupFailures(t *testing.T) {
 	readErr, cleanupErr := errors.New("read failed"), errors.New("cleanup failed")
 	files := &dnf5FileScript{directory: "/tmp/proofstrap-dnf5-joined", readErr: readErr, removeErr: cleanupErr}
 	script := newDNF5Script(t, nil, []dnf5Run{{identity: proof.executable, args: dnf5StoreArgs(files.directory, []string{"curl"}, false), result: started("stored\n")}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	_, err := (dnf5Behavior{effects: script.effects(), files: files.effects()}).Preview(ctx, proof, observation)
 	if !errors.Is(err, readErr) || !errors.Is(err, cleanupErr) {
 		t.Fatalf("joined error = %v", err)
@@ -562,8 +551,7 @@ func TestDNF5PreviewJoinsPrimaryAndCleanupFailures(t *testing.T) {
 func TestDNF5PreviewDoesNotCleanAnUncreatedDirectory(t *testing.T) {
 	proof := dnf5Proof{executable: linux.Identity{Path: dnf5Path, Digest: [32]byte{1}}, version: "5.2.16.0"}
 	files := &dnf5FileScript{mkdirErr: errors.New("mkdir failed")}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	_, err := (dnf5Behavior{effects: newDNF5Script(t, nil, nil).effects(), files: files.effects()}).Preview(ctx, proof, dnf5Observation(t, "curl", demandMissing, ""))
 	if err == nil || files.mkdirs != 1 || len(files.removes) != 0 {
 		t.Fatalf("preview error = %v, file effects = mkdir:%d removes:%#v", err, files.mkdirs, files.removes)
@@ -584,8 +572,7 @@ func TestDNF5CommitCleanupFailurePreservesReplayStarted(t *testing.T) {
 		{identity: proof.executable, args: dnf5StoreArgs(files.directory, []string{"curl"}, true), result: started("stored\n")},
 		{identity: proof.executable, args: dnf5ReplayArgs(files.directory), result: started("replayed\n")},
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	result, err := (dnf5Behavior{effects: script.effects(), files: files.effects()}).Commit(ctx, proof, observation, expected)
 	if !result.Started || !errors.Is(err, cleanupErr) {
 		t.Fatalf("commit = %#v, %v", result, err)
@@ -620,8 +607,7 @@ func TestDNF5CommitStartedMeansReplayStarted(t *testing.T) {
 				runs = append(runs, *test.replay)
 			}
 			script := newDNF5Script(t, nil, runs)
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
+			ctx := packageContext(t)
 			result, err := (dnf5Behavior{effects: script.effects(), files: files.effects()}).Commit(ctx, proof, observation, expected)
 			if err == nil || result.Started != test.wantStarted {
 				t.Fatalf("commit = %#v, %v", result, err)
@@ -650,8 +636,7 @@ func TestDNF5AdapterObservesPreviewsCommitsAndReobserves(t *testing.T) {
 		{identity: proof.executable, args: dnf5InventoryArgs(), result: startedBytes(dnf5Fixture(t, "installed-post.tsv"))},
 	}
 	script := newDNF5Script(t, nil, runs)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := packageContext(t)
 	planBehavior := dnf5Behavior{effects: script.effects(), files: planFiles.effects()}
 	observation, err := planBehavior.Observe(ctx, proof, []string{"curl"})
 	if err != nil || !reflect.DeepEqual(observation.demands(), []demand{{Name: "curl", State: demandDependency}}) {

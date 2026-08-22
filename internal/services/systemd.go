@@ -213,7 +213,7 @@ func probeManager(ctx context.Context, effects systemEffects, tool linux.Identit
 	args := append(append([]string(nil), prefix...), "show", "--property=Version", "--value")
 	result, err := effects.run(ctx, tool, args, nil)
 	if err != nil || !result.Started {
-		return "", fmt.Errorf("%w: %v", ErrIndeterminate, commandFailure("manager probe", result, err))
+		return "", fmt.Errorf("%w: %v", ErrIndeterminate, linux.CommandFailure("manager probe", result, err))
 	}
 	if result.ExitCode != 0 {
 		return "", fmt.Errorf("%w: manager endpoint is unreachable", ErrUnsupported)
@@ -368,7 +368,7 @@ func (selected *Selected) observeChunk(ctx context.Context, desired []Demand) (m
 	}
 	result, err := selected.effects.run(ctx, selected.evidence.tool, args, nil)
 	if err != nil || !result.Started {
-		return nil, commandFailure("observe services", result, err)
+		return nil, linux.CommandFailure("observe services", result, err)
 	}
 	if len(result.Stdout) == 0 || len(result.Stdout) > maxObservationBytes {
 		return nil, fmt.Errorf("service property output is empty or exceeds %d bytes", maxObservationBytes)

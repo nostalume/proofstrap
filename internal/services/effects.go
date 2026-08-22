@@ -81,10 +81,3 @@ func inspectHome(path string) (homeEvidence, error) {
 	}
 	return homeEvidence{path: path, uid: stat.Uid, gid: stat.Gid, mode: uint16(info.Mode().Perm()), device: uint64(stat.Dev), inode: stat.Ino, directory: info.IsDir() && info.Mode()&os.ModeSymlink == 0}, nil
 }
-
-func commandFailure(action string, result linux.Result, err error) error {
-	if err == nil && result.Started && result.ExitCode == 0 && len(result.Stderr) == 0 {
-		return nil
-	}
-	return errors.Join(fmt.Errorf("%s failed: started=%t exit=%d stderr=%q", action, result.Started, result.ExitCode, result.Stderr), err)
-}

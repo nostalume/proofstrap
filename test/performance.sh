@@ -6,27 +6,21 @@ temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
 metrics="$temporary/metrics"
 
-record() {
-  printf '%s=%s\n' "$1" "$2" >> "$metrics"
-}
+printf 'revision=%s\n' "$(git -C "$root" rev-parse HEAD)" > "$metrics"
+printf 'go_version=%s\n' "$(go version | tr ' ' '_')" >> "$metrics"
 
-record revision "$(git -C "$root" rev-parse HEAD)"
-record go_version "$(go version | tr ' ' '_')"
-
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go -C "$root" build -trimpath -buildvcs=true -ldflags='-s -w' \
-  -o "$temporary/proofstrap" ./cmd/proofstrap
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go -C "$root" build -trimpath -buildvcs=true -ldflags='-s -w' \
-  -o "$temporary/proofstrap-pack" ./cmd/proofstrap-pack
-record runtime_amd64_bytes "$(wc -c < "$temporary/proofstrap" | tr -d ' ')"
-record author_amd64_bytes "$(wc -c < "$temporary/proofstrap-pack" | tr -d ' ')"
+for command in proofstrap proofstrap-pack; do
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C "$root" build -trimpath -buildvcs=true -ldflags='-s -w' \
+    -o "$temporary/$command" "./cmd/$command"
+done
+printf 'runtime_amd64_bytes=%s\nauthor_amd64_bytes=%s\n' \
+  "$(wc -c < "$temporary/proofstrap" | tr -d ' ')" "$(wc -c < "$temporary/proofstrap-pack" | tr -d ' ')" >> "$metrics"
 
 "$root/release/fetch.sh" "$temporary/assets"
 "$root/release/build.sh" "$temporary/dist" "$temporary/assets"
 for archive in "$temporary/dist"/proofstrap_linux_*.tar.gz; do
   name=$(basename "$archive" .tar.gz)
-  record "archive_${name#proofstrap_linux_}_bytes" "$(wc -c < "$archive" | tr -d ' ')"
+  printf 'archive_%s_bytes=%s\n' "${name#proofstrap_linux_}" "$(wc -c < "$archive" | tr -d ' ')" >> "$metrics"
 done
 
 go -C "$root" test ./internal/app -run '^$' \
@@ -42,10 +36,8 @@ awk '/^Benchmark/ {
 }
 END {
   for (name in count) {
-    printf "benchmark_%s_samples=%d\n", name, count[name]
-    printf "benchmark_%s_mean_ns_per_op=%.0f\n", name, ns[name]/count[name]
-    printf "benchmark_%s_mean_bytes_per_op=%.0f\n", name, bytes[name]/count[name]
-    printf "benchmark_%s_mean_allocs_per_op=%.0f\n", name, allocs[name]/count[name]
+    printf "benchmark_%s_samples=%d\nbenchmark_%s_mean_ns_per_op=%.0f\n", name, count[name], name, ns[name]/count[name]
+    printf "benchmark_%s_mean_bytes_per_op=%.0f\nbenchmark_%s_mean_allocs_per_op=%.0f\n", name, bytes[name]/count[name], name, allocs[name]/count[name]
   }
 }' "$temporary/bench" >> "$metrics"
 

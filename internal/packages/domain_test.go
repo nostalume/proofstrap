@@ -3,12 +3,33 @@ package packages
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nostalume/proofstrap/internal/binding"
 	"github.com/nostalume/proofstrap/internal/linux"
 )
+
+func packageContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func TestNativeDiagnosticIsCanonicalAndBounded(t *testing.T) {
+	result := linux.Result{Started: true, ExitCode: 1, Stderr: []byte("first\n  second\tthird \xff")}
+	const want = "probe: native exit 1: first second third �"
+	if got := nativeDiagnostic("probe", result, nil); got != want {
+		t.Fatalf("native diagnostic = %q, want %q", got, want)
+	}
+	result = linux.Result{Started: true, ExitCode: 4, Stdout: append(make([]byte, 5000), []byte("final failure\n")...)}
+	got := nativeDiagnostic("commit", result, nil)
+	if !strings.Contains(got, "final failure") || len(got) > 900 {
+		t.Fatalf("native diagnostic lost bounded tail: len=%d text=%q", len(got), got)
+	}
+}
 
 func TestDNFInventoryQueryFormatsHonorNativeRecordBoundaries(t *testing.T) {
 	row := "--queryformat=%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{vendor}\t%{reason}"
