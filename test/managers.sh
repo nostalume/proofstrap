@@ -18,10 +18,10 @@ subuid=$(awk -F: -v user="$login" '$1 == user && $3 >= 65535 { print $2; exit }'
 result() { reported=1; printf '%s case=%s %s\n' "$1" "$case_id" "$2"; }
 fail() { result FAIL "$1" >&2; exit 1; }
 unavailable() { result UNAVAILABLE "$1" >&2; exit 69; }
-same_process() { [ -r "/proc/$1/stat" ] && [ "$(awk '{print $22}' "/proc/$1/stat")" = "$2" ]; }
+same_process() { [ -r "/proc/$1/stat" ] && [ "$(awk '{print $22}' "/proc/$1/stat" 2>/dev/null)" = "$2" ]; }
 find_leader() {
 	expected=$1; count=0; while [ "$count" -lt 200 ]; do
-		children=$(pgrep -P "$supervisor" || :); if [ "$(printf '%s\n' "$children" | awk 'NF {n++} END {print n+0}')" -eq 1 ] && [ "$(cat "/proc/$children/comm" 2>/dev/null || :)" = "$expected" ]; then leader=$children; leader_start=$(awk '{print $22}' "/proc/$leader/stat"); return; fi
+		children=$(pgrep -P "$supervisor" || :); if [ "$(printf '%s\n' "$children" | awk 'NF {n++} END {print n+0}')" -eq 1 ] && [ "$(cat "/proc/$children/comm" 2>/dev/null || :)" = "$expected" ]; then leader=$children; leader_start=$(awk '{print $22}' "/proc/$leader/stat" 2>/dev/null); return; fi
 		count=$((count + 1)); sleep .1
 	done; fail "reason=target-leader"
 }
@@ -89,8 +89,8 @@ resolve_case() {
 enter() {
 	case "$tier" in
 		package)
-			if [ "$outer_uid" -eq 0 ]; then unshare --mount --uts --ipc --pid --fork --kill-child=TERM --net -- "$root/test/managers.sh" _enter "$target" "$@"
-			else unshare --map-users "0:$outer_uid:1" --map-users "1:$subuid:65535" --map-groups "0:$outer_gid:1" --map-groups "1:$subgid:65535" --mount --uts --ipc --pid --fork --kill-child=TERM --net -- "$root/test/managers.sh" _enter "$target" "$@"; fi ;;
+			if [ "$outer_uid" -eq 0 ]; then unshare --mount --uts --ipc --pid --fork --kill-child=TERM --net -- "$runner" _enter "$target" "$@"
+			else unshare --map-users "0:$outer_uid:1" --map-users "1:$subuid:65535" --map-groups "0:$outer_gid:1" --map-groups "1:$subgid:65535" --mount --uts --ipc --pid --fork --kill-child=TERM --net -- "$runner" _enter "$target" "$@"; fi ;;
 		openrc) nsenter --target "$leader" --user --preserve-credentials --mount --uts --ipc --net --pid --root --wd -- "$@" ;;
 		systemd) nsenter --target "$leader" --mount --uts --ipc --net --pid --root --wd -- "$@" ;;
 	esac
@@ -111,7 +111,7 @@ start_target() {
 	case "$tier" in
 		package) return ;;
 		openrc)
-			unshare --user --map-root-user --mount --uts --ipc --pid --fork --kill-child=TERM --net --cgroup -- "$root/test/managers.sh" _enter "$target" /sbin/init > "$generation/target.log" 2>&1 &
+			unshare --user --map-root-user --mount --uts --ipc --pid --fork --kill-child=TERM --net --cgroup -- "$runner" _enter "$target" /sbin/init > "$generation/target.log" 2>&1 &
 			supervisor=$!; supervisor_start=$(awk '{print $22}' "/proc/$supervisor/stat")
 			find_leader init ;;
 		systemd)
@@ -176,10 +176,13 @@ run_case() {
 	[ "$outer_uid" -eq 0 ] || [ "$tier" != package ] || { [ -n "$subuid" ] && [ -n "$subgid" ]; } || unavailable "reason=subids"
 	generation=$(mktemp -d "${TMPDIR:-/tmp}/proofstrap-manager.XXXXXX")
 	touch "$generation/SENTINEL.proofstrap-manager"
+	runner=$generation/runner; install -m 0755 "$root/test/managers.sh" "$runner"
 	tar --no-same-owner -xzf "$object" -C "$generation"
 	target=$generation/root; work=$target/proofstrap-case; mkdir -p "$work"
 	for device in null zero random urandom console tty; do [ -e "$target/dev/$device" ] || : > "$target/dev/$device"; done
-	install -m 0755 "$generation/proofstrap" "$work/proofstrap"
+	runtime=${PROOFSTRAP_MANAGER_RUNTIME:-$generation/proofstrap}
+	[ -f "$runtime" ] && [ -x "$runtime" ] && [ ! -L "$runtime" ] || fail "reason=runtime"
+	install -m 0755 "$runtime" "$work/proofstrap"
 	install -m 0444 "$generation/semantic.pstrap" "$generation/binding.pstrap" "$work/"
 	config=${domain}.toml; install -m 0444 "$generation/$config" "$work/$config"
 	start_target
@@ -188,7 +191,7 @@ run_case() {
 		plan=/proofstrap-case/plan.$pass.json
 		receipt_file=/proofstrap-case/receipt.$pass.json
 		journal_file=/proofstrap-case/journal.$pass
-		if ! enter /proofstrap-case/proofstrap plan --config "/proofstrap-case/$config" --output "$plan" --profile-bundle /proofstrap-case/semantic.pstrap --profile-bundle /proofstrap-case/binding.pstrap > "$generation/review" 2> "$generation/plan.err"; then detail=$(tr '\n' '_' < "$generation/plan.err"); review=$(tr '\n' '_' < "$generation/review"); fail "reason=plan detail=$detail review=$review"; fi
+		if ! enter /proofstrap-case/proofstrap plan --config "/proofstrap-case/$config" --output "$plan" --pack-file /proofstrap-case/semantic.pstrap --pack-file /proofstrap-case/binding.pstrap > "$generation/review" 2> "$generation/plan.err"; then detail=$(tr '\n' '_' < "$generation/plan.err"); review=$(tr '\n' '_' < "$generation/review"); fail "reason=plan detail=$detail review=$review"; fi
 		digest_plan=$(sed -n 's/^digest: //p' "$generation/review"); [ "${#digest_plan}" -eq 71 ] || fail "reason=plan"
 		if enter /proofstrap-case/proofstrap apply --plan "$plan" --accept "$digest_plan" --journal "$journal_file" --receipt "$receipt_file" > "$generation/receipt" 2> "$generation/apply.err"; then apply_status=0; else apply_status=$?; fi
 		[ "$apply_status" -eq 0 ] && break
@@ -197,11 +200,11 @@ run_case() {
 	done
 	cmp "$generation/receipt" "$target$receipt_file"; [ -s "$target$journal_file" ]
 	if [ "$domain" = package ]; then native_package; else native_service; fi
-	if ! enter /proofstrap-case/proofstrap plan --config "/proofstrap-case/$config" --output /proofstrap-case/after.json --profile-bundle /proofstrap-case/semantic.pstrap --profile-bundle /proofstrap-case/binding.pstrap > "$generation/after" 2> "$generation/after.err"; then
+	if ! enter /proofstrap-case/proofstrap plan --config "/proofstrap-case/$config" --output /proofstrap-case/after.json --pack-file /proofstrap-case/semantic.pstrap --pack-file /proofstrap-case/binding.pstrap > "$generation/after" 2> "$generation/after.err"; then
 		detail=$(tr '\n' '_' < "$generation/after.err"); review=$(tr '\n' '_' < "$generation/after"); fail "reason=replan detail=$detail review=$review"
 	fi
 	grep -F '"operations":[]' "$work/after.json" >/dev/null
-	tool_digest=$(sha256sum "$generation/proofstrap" | awk '{print $1}')
+	tool_digest=$(sha256sum "$runtime" | awk '{print $1}')
 	manager_version; [ -n "$native_version" ]
 	stop_target || fail "reason=kill-fallback"
 	duration=$(($(date +%s) - began))
