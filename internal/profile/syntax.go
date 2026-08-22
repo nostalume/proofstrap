@@ -3,47 +3,51 @@ package profile
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
-// Syntax is the profile-owned TOML surface embedded by larger documents.
-// Callers must pass it to Embed; admitted state never retains this mutable form.
-type Syntax struct {
-	Profiles map[string]rawProfile `toml:"profiles"`
+func Encode(input Input) ([]byte, error) {
+	if input.path == "" || input.syntax.Profiles == nil {
+		return nil, fmt.Errorf("invalid semantic input")
+	}
+	return toml.Marshal(input.syntax)
 }
 
-// Input is one validated syntax unit with immutable provenance.
+type Syntax struct {
+	Profiles map[string]rawProfile `toml:"profiles,omitempty"`
+}
+
 type Input struct {
 	path   string
 	syntax Syntax
 }
 
 type rawProfile struct {
-	Parameters   map[string]string     `toml:"parameters"`
-	Include      []CallSyntax          `toml:"include"`
-	Packages     []string              `toml:"packages"`
-	Services     map[string]rawService `toml:"services"`
-	Homes        []rawAccount          `toml:"homes"`
-	HomeModes    []rawHomeMode         `toml:"home_modes"`
-	AccountLocks []rawAccount          `toml:"account_locks"`
-	Memberships  []rawMembership       `toml:"memberships"`
-	Hostname     *string               `toml:"hostname"`
-	Timezone     *string               `toml:"timezone"`
+	Parameters   map[string]string     `toml:"parameters,omitempty"`
+	Include      []CallSyntax          `toml:"include,omitempty"`
+	Packages     []string              `toml:"packages,omitempty"`
+	Services     map[string]rawService `toml:"services,omitempty"`
+	Homes        []rawAccount          `toml:"homes,omitempty"`
+	HomeModes    []rawHomeMode         `toml:"home_modes,omitempty"`
+	AccountLocks []rawAccount          `toml:"account_locks,omitempty"`
+	Memberships  []rawMembership       `toml:"memberships,omitempty"`
+	Hostname     *string               `toml:"hostname,omitempty"`
+	Timezone     *string               `toml:"timezone,omitempty"`
 }
 
-// CallSyntax is the shared TOML spelling for root and nested profile calls.
 type CallSyntax struct {
 	Profile   any            `toml:"profile"`
-	Arguments map[string]any `toml:"arguments"`
+	Arguments map[string]any `toml:"arguments,omitempty"`
 }
 
 type rawService struct {
 	Target   any      `toml:"target"`
-	Packages []string `toml:"packages"`
-	Enabled  *bool    `toml:"enabled"`
-	Running  *bool    `toml:"running"`
+	Packages []string `toml:"packages,omitempty"`
+	Enabled  *bool    `toml:"enabled,omitempty"`
+	Running  *bool    `toml:"running,omitempty"`
 }
 
 type rawAccount struct {
@@ -61,7 +65,6 @@ type rawMembership struct {
 	Present *bool `toml:"present"`
 }
 
-// Parse strictly decodes one standalone profile member.
 func Parse(member Member) (Input, error) {
 	if len(member.Data) > MaxMemberBytes {
 		return Input{}, diagnostic(member.Path, "", "", "Limit", "member exceeds 1 MiB")
@@ -77,7 +80,6 @@ func Parse(member Member) (Input, error) {
 	return Embed(member.Path, raw)
 }
 
-// Embed validates profile syntax decoded as part of a larger strict document.
 func Embed(path string, raw Syntax) (Input, error) {
 	if path == "" {
 		return Input{}, &Diagnostic{Category: "InvalidValue", Detail: "member path provenance is required"}

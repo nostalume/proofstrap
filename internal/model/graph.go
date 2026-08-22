@@ -185,6 +185,20 @@ func (g Graph) Nodes() []Node {
 	return nodes
 }
 
+// Equivalent reports semantic equality while deliberately ignoring provenance.
+func Equivalent(left, right Graph) bool {
+	if len(left.nodes) != len(right.nodes) {
+		return false
+	}
+	for key, node := range left.nodes {
+		other, ok := right.nodes[key]
+		if !ok || node.resource.desired() != other.resource.desired() || !sameDependencies(node.resource, other.resource) {
+			return false
+		}
+	}
+	return true
+}
+
 func PackageIDOf(candidate Node) (PackageID, bool) {
 	resource, valid := resourceOf(candidate)
 	value, ok := resource.(packageResource)

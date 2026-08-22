@@ -1,16 +1,19 @@
 package pack_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/nostalume/proofstrap/internal/binding"
 	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/pack"
-	"github.com/nostalume/proofstrap/internal/packbuild"
 	"github.com/nostalume/proofstrap/internal/profile"
 )
 
@@ -98,23 +101,15 @@ func buildSource(t *testing.T, ctx context.Context, input, output string) (pack.
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := packbuild.Build(ctx, absoluteInput, output)
+	data := archiveFixture(t, absoluteInput)
+	if err := os.WriteFile(output, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := pack.Read(ctx, bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	file, err := os.Open(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	source, err := pack.Read(ctx, file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if source.Digest() != digest {
-		t.Fatalf("built digest = %s, admitted digest = %s", digest, source.Digest())
-	}
-	return source, digest
+	return source, source.Digest()
 }
 
 func assertDeterministicBuild(t *testing.T, ctx context.Context, input string, want pack.Digest, output string) {
@@ -123,11 +118,66 @@ func assertDeterministicBuild(t *testing.T, ctx context.Context, input string, w
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := packbuild.Build(ctx, absoluteInput, output)
+	data := archiveFixture(t, absoluteInput)
+	if err := os.WriteFile(output, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gotSource, err := pack.Read(ctx, bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := gotSource.Digest()
 	if got != want {
 		t.Fatalf("rebuilt digest = %s, want %s", got, want)
 	}
+}
+
+func archiveFixture(t *testing.T, root string) []byte {
+	t.Helper()
+	manifest, err := os.ReadFile(filepath.Join(root, "manifest.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := "profiles"
+	if _, err := os.Stat(filepath.Join(root, directory)); err != nil {
+		directory = "bindings"
+	}
+	entries, err := os.ReadDir(filepath.Join(root, directory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buffer bytes.Buffer
+	gzipWriter, _ := gzip.NewWriterLevel(&buffer, gzip.BestCompression)
+	gzipWriter.Header = gzip.Header{ModTime: time.Unix(0, 0), OS: 255}
+	tarWriter := tar.NewWriter(gzipWriter)
+	members := []struct {
+		name string
+		data []byte
+	}{{"manifest.toml", manifest}}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(root, directory, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		members = append(members, struct {
+			name string
+			data []byte
+		}{directory + "/" + entry.Name(), data})
+	}
+	for _, member := range members {
+		header := &tar.Header{Name: member.name, Mode: 0o644, Size: int64(len(member.data)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR, ModTime: time.Unix(0, 0)}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(member.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }

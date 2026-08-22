@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -15,18 +14,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nostalume/proofstrap/internal/binding"
+	"github.com/nostalume/proofstrap/internal/document"
 	"github.com/nostalume/proofstrap/internal/linux"
+	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/pack"
 	"golang.org/x/sys/unix"
 )
 
-const (
-	maxManifest = 64 << 10
-	maxContent  = 1 << 20
-	maxMembers  = 256
-	maxDecoded  = 32 << 20
-	maxOutput   = 8 << 20
-)
+const maxInput = 1 << 20
 
 type Category string
 
@@ -39,328 +35,364 @@ const (
 )
 
 type Diagnostic struct {
-	Category Category
-	Path     string
-	Detail   string
-	cause    error
+	Category     Category
+	Path, Detail string
+	cause        error
 }
 
 func (d *Diagnostic) Error() string {
-	location := d.Path
-	if location != "" {
-		location += ": "
+	p := d.Path
+	if p != "" {
+		p += ": "
 	}
-	return location + string(d.Category) + ": " + d.Detail
+	return p + string(d.Category) + ": " + d.Detail
 }
-
 func (d *Diagnostic) Unwrap() error { return d.cause }
-
-func diagnostic(category Category, path, detail string, cause error) *Diagnostic {
-	if detail == "" && cause != nil {
-		detail = cause.Error()
+func diagnostic(c Category, p, detail string, err error) *Diagnostic {
+	if detail == "" && err != nil {
+		detail = err.Error()
 	}
-	return &Diagnostic{Category: category, Path: path, Detail: detail, cause: cause}
+	return &Diagnostic{c, p, detail, err}
 }
 
-type inputFile struct {
-	archivePath string
-	directory   int
-	name        string
+type snapshot struct {
+	path string
+	file *os.File
+	stat unix.Stat_t
 }
 
-func Build(ctx context.Context, inputRoot, outputPath string) (pack.Digest, error) {
-	if err := canceled(ctx); err != nil {
-		return pack.Digest{}, err
-	}
-	if !linux.CleanAbsoluteNonRoot(inputRoot) || !linux.CleanAbsoluteNonRoot(outputPath) {
-		return pack.Digest{}, diagnostic(InvalidInput, "", "input and output must be clean absolute non-root paths", nil)
-	}
-	relative, err := filepath.Rel(inputRoot, outputPath)
-	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return pack.Digest{}, diagnostic(InvalidInput, outputPath, "output must be outside input root", nil)
-	}
-	rootFD, err := linux.OpenDir(inputRoot)
-	if err != nil {
-		return pack.Digest{}, diagnostic(InvalidInput, inputRoot, "input root is unavailable or unsafe", err)
-	}
-	defer unix.Close(rootFD)
-
-	rootNames, err := directoryNames(rootFD)
-	if err != nil {
-		return pack.Digest{}, diagnostic(IO, inputRoot, "enumerate input root", err)
-	}
-	manifest, err := readInput(rootFD, "manifest.toml", maxManifest)
-	if err != nil {
-		if errors.Is(err, errInputChanged) {
-			return pack.Digest{}, diagnostic(InputChanged, filepath.Join(inputRoot, "manifest.toml"), "manifest changed during read", err)
-		}
-		return pack.Digest{}, diagnostic(InvalidInput, filepath.Join(inputRoot, "manifest.toml"), "read manifest", err)
-	}
-	kind, err := pack.ManifestKind(manifest)
-	if err != nil {
-		return pack.Digest{}, diagnostic(InvalidInput, filepath.Join(inputRoot, "manifest.toml"), "invalid manifest", err)
-	}
-	contentName := "profiles"
-	if kind == pack.Binding {
-		contentName = "bindings"
-	}
-	expectedRootNames := []string{"manifest.toml", contentName}
-	sort.Strings(expectedRootNames)
-	if !equalStrings(rootNames, expectedRootNames) {
-		return pack.Digest{}, diagnostic(InvalidInput, inputRoot, "authoring root has unexpected entries", nil)
-	}
-	contentFD, err := linux.OpenDirAt(rootFD, contentName)
-	if err != nil {
-		return pack.Digest{}, diagnostic(InvalidInput, filepath.Join(inputRoot, contentName), "content directory is unavailable or unsafe", err)
-	}
-	defer unix.Close(contentFD)
-	contentNames, err := directoryNames(contentFD)
-	if err != nil || len(contentNames) == 0 || len(contentNames) > maxMembers {
-		return pack.Digest{}, diagnostic(InvalidInput, filepath.Join(inputRoot, contentName), "content directory must contain 1..256 files", err)
-	}
-	files := []inputFile{{archivePath: "manifest.toml", directory: rootFD, name: "manifest.toml"}}
-	for _, name := range contentNames {
-		archivePath := contentName + "/" + name
-		files = append(files, inputFile{archivePath: archivePath, directory: contentFD, name: name})
-	}
-
-	parentPath, finalName := filepath.Dir(outputPath), filepath.Base(outputPath)
-	parentFD, err := linux.OpenDir(parentPath)
-	if err != nil {
-		return pack.Digest{}, diagnostic(InvalidInput, parentPath, "output parent is unavailable or unsafe", err)
-	}
-	defer unix.Close(parentFD)
-	var finalStat unix.Stat_t
-	if err := unix.Fstatat(parentFD, finalName, &finalStat, unix.AT_SYMLINK_NOFOLLOW); err == nil {
-		return pack.Digest{}, diagnostic(OutputExists, outputPath, "output already exists", nil)
-	} else if err != unix.ENOENT {
-		return pack.Digest{}, diagnostic(IO, outputPath, "inspect output", err)
-	}
-	stageFD, stageName, err := linux.CreateStageAt(parentFD, rand.Reader, ".proofstrap-pack-")
-	if err != nil {
-		return pack.Digest{}, diagnostic(IO, outputPath, "create output staging file", err)
-	}
-	stage := os.NewFile(uintptr(stageFD), stageName)
-	defer func() {
-		_ = stage.Close()
-		_ = unix.Unlinkat(parentFD, stageName, 0)
-	}()
-
-	limited := &limitWriter{writer: stage, remaining: maxOutput}
-	gzipWriter, err := gzip.NewWriterLevel(limited, gzip.BestCompression)
-	if err != nil {
-		return pack.Digest{}, diagnostic(IO, outputPath, "create gzip writer", err)
-	}
-	gzipWriter.Header = gzip.Header{ModTime: time.Unix(0, 0), OS: 255}
-	tarWriter := tar.NewWriter(gzipWriter)
-	decodedBytes := int64(2 * 512)
-	for _, item := range files {
-		if err := canceled(ctx); err != nil {
-			return pack.Digest{}, err
-		}
-		if err := writeInput(ctx, tarWriter, item, &decodedBytes); err != nil {
-			return pack.Digest{}, err
-		}
-	}
-	if err := tarWriter.Close(); err != nil {
-		_ = gzipWriter.Close()
-		return pack.Digest{}, diagnostic(IO, outputPath, "finish tar archive", err)
-	}
-	if err := gzipWriter.Close(); err != nil {
-		return pack.Digest{}, diagnostic(IO, outputPath, "finish gzip archive", err)
-	}
-	finalRootNames, err := directoryNames(rootFD)
-	if err != nil {
-		return pack.Digest{}, diagnostic(IO, inputRoot, "re-enumerate input root", err)
-	}
-	finalContentNames, err := directoryNames(contentFD)
-	if err != nil {
-		return pack.Digest{}, diagnostic(IO, filepath.Join(inputRoot, contentName), "re-enumerate content directory", err)
-	}
-	if !equalStrings(rootNames, finalRootNames) || !equalStrings(contentNames, finalContentNames) {
-		return pack.Digest{}, diagnostic(InputChanged, inputRoot, "authoring tree changed during build", nil)
-	}
-	if _, err := stage.Seek(0, io.SeekStart); err != nil {
-		return pack.Digest{}, diagnostic(IO, outputPath, "rewind staged archive", err)
-	}
-	source, err := pack.Read(ctx, stage)
-	if err != nil {
-		return pack.Digest{}, diagnostic(InvalidInput, outputPath, "completed archive rejected", err)
-	}
-	if err := stage.Chmod(0o644); err != nil {
-		return pack.Digest{}, diagnostic(IO, outputPath, "set output mode", err)
-	}
-	if err := stage.Sync(); err != nil {
-		return pack.Digest{}, diagnostic(IO, outputPath, "flush output", err)
-	}
-	if err := canceled(ctx); err != nil {
-		return pack.Digest{}, err
-	}
-	if err := unix.Linkat(parentFD, stageName, parentFD, finalName, 0); err != nil {
-		if err == unix.EEXIST {
-			return pack.Digest{}, diagnostic(OutputExists, outputPath, "output already exists", err)
-		}
-		return pack.Digest{}, diagnostic(IO, outputPath, "publish output", err)
-	}
-	if err := unix.Fsync(parentFD); err != nil {
-		return pack.Digest{}, diagnostic(IO, parentPath, "flush output directory", err)
-	}
-	_ = unix.Unlinkat(parentFD, stageName, 0)
-	return source.Digest(), nil
+func (s *snapshot) close() { _ = s.file.Close() }
+func (s *snapshot) unchanged() bool {
+	var now unix.Stat_t
+	return unix.Fstat(int(s.file.Fd()), &now) == nil && sameStat(s.stat, now)
+}
+func sameStat(a, b unix.Stat_t) bool {
+	return a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.Mtim == b.Mtim && a.Ctim == b.Ctim
 }
 
-func writeInput(ctx context.Context, writer *tar.Writer, item inputFile, decodedBytes *int64) error {
-	fd, before, err := openInput(item.directory, item.name)
+func readSnapshot(path string, limit int64) ([]byte, *snapshot, error) {
+	fd, err := linux.OpenRegular(path)
 	if err != nil {
-		return diagnostic(InvalidInput, item.archivePath, "open authoring file", err)
+		return nil, nil, err
 	}
-	file := os.NewFile(uintptr(fd), item.archivePath)
-	defer file.Close()
-	maximum := int64(maxContent)
-	if item.archivePath == "manifest.toml" {
-		maximum = maxManifest
+	f := os.NewFile(uintptr(fd), path)
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Nlink != 1 || st.Size < 0 || st.Size > limit {
+		_ = f.Close()
+		return nil, nil, errors.New("unsafe or oversized regular file")
 	}
-	if before.Size < 0 || before.Size > maximum {
-		return diagnostic(InvalidInput, item.archivePath, "authoring file exceeds its limit", nil)
-	}
-	charge := int64(512) + (before.Size+511)/512*512
-	if *decodedBytes > maxDecoded-charge {
-		return diagnostic(InvalidInput, item.archivePath, "decoded archive exceeds 32 MiB", nil)
-	}
-	*decodedBytes += charge
-	header := &tar.Header{Name: item.archivePath, Mode: 0o644, Size: before.Size, Typeflag: tar.TypeReg, Format: tar.FormatUSTAR, ModTime: time.Unix(0, 0)}
-	if err := writer.WriteHeader(header); err != nil {
-		return diagnostic(IO, item.archivePath, "write tar header", err)
-	}
-	if copied, err := copyExact(ctx, writer, file, before.Size); err != nil || copied != before.Size {
-		if ctx != nil && ctx.Err() != nil {
-			return canceled(ctx)
-		}
-		return diagnostic(InputChanged, item.archivePath, "authoring file changed during read", err)
+	b := make([]byte, st.Size)
+	if _, err = io.ReadFull(f, b); err != nil {
+		_ = f.Close()
+		return nil, nil, err
 	}
 	var extra [1]byte
-	if n, _ := file.Read(extra[:]); n != 0 {
-		return diagnostic(InputChanged, item.archivePath, "authoring file grew during read", nil)
+	if n, _ := f.Read(extra[:]); n != 0 {
+		_ = f.Close()
+		return nil, nil, errors.New("file grew during read")
 	}
-	var after unix.Stat_t
-	if err := unix.Fstat(fd, &after); err != nil || !sameStat(before, after) {
-		return diagnostic(InputChanged, item.archivePath, "authoring file changed during build", err)
+	s := &snapshot{path, f, st}
+	if !s.unchanged() {
+		s.close()
+		return nil, nil, errors.New("file changed during read")
+	}
+	return b, s, nil
+}
+
+// Build compiles one schema-3 document into an absent, self-contained workspace.
+func Build(ctx context.Context, inputPath, outputPath string) (string, error) {
+	if err := canceled(ctx); err != nil {
+		return "", err
+	}
+	if !linux.CleanAbsoluteNonRoot(inputPath) || !linux.CleanAbsoluteNonRoot(outputPath) {
+		return "", diagnostic(InvalidInput, "", "input and output must be clean absolute non-root paths", nil)
+	}
+	data, input, err := readSnapshot(inputPath, maxInput)
+	if err != nil {
+		return "", diagnostic(InvalidInput, inputPath, "read input document", err)
+	}
+	defer input.close()
+	target, err := document.Decode(inputPath, data)
+	if err != nil {
+		return "", diagnostic(InvalidInput, inputPath, "decode input document", err)
+	}
+	objects, sources, snaps, err := loadClosure(ctx, filepath.Join(filepath.Dir(inputPath), "packs"), target.View().Sources)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		for _, s := range snaps {
+			s.close()
+		}
+	}()
+	used := map[string]struct{}{}
+	for _, s := range target.View().Sources {
+		used[s.Name] = struct{}{}
+	}
+	semanticAlias := fresh("local", used)
+	used[semanticAlias] = struct{}{}
+	bindingAlias := fresh("binding", used)
+	originalGraph, originalBindings, calls, err := document.ResolvePromotion(ctx, target, sources, semanticAlias)
+	if err != nil {
+		return "", diagnostic(InvalidInput, inputPath, "resolve input workspace", err)
+	}
+	promotion, err := document.Promote(target, semanticAlias, calls)
+	if err != nil {
+		return "", diagnostic(InvalidInput, inputPath, "promote document", err)
+	}
+	byAlias := map[string]pack.Digest{}
+	for _, s := range target.View().Sources {
+		byAlias[s.Name] = s.Digest
+	}
+	var semanticDigest, bindingDigest *pack.Digest
+	if promotion.Semantic != nil {
+		requires, err := requirements(promotion.SemanticRequires, byAlias)
+		if err != nil {
+			return "", err
+		}
+		blob, source, err := makeArchive(ctx, pack.Semantic, "profiles/local.toml", promotion.Semantic, requires)
+		if err != nil {
+			return "", err
+		}
+		d := source.Digest()
+		semanticDigest = &d
+		objects[d] = blob
+		sources = append(sources, source)
+		byAlias[semanticAlias] = d
+	}
+	if promotion.Binding != nil {
+		requires, err := requirements(promotion.BindingRequires, byAlias)
+		if err != nil {
+			return "", err
+		}
+		if promotion.BindingUsesLocal {
+			if semanticDigest == nil {
+				return "", diagnostic(InvalidInput, inputPath, "local bindings require local profiles", nil)
+			}
+			requires[semanticAlias] = *semanticDigest
+		}
+		blob, source, err := makeArchive(ctx, pack.Binding, "bindings/local.toml", promotion.Binding, requires)
+		if err != nil {
+			return "", err
+		}
+		d := source.Digest()
+		bindingDigest = &d
+		objects[d] = blob
+		sources = append(sources, source)
+	}
+	config, err := document.RenderTarget(target, promotion, semanticAlias, semanticDigest, bindingAlias, bindingDigest)
+	if err != nil {
+		return "", diagnostic(InvalidInput, inputPath, "render target", err)
+	}
+	generated, err := document.Decode(filepath.Join(outputPath, "proofstrap.toml"), config)
+	if err != nil {
+		return "", diagnostic(InvalidInput, inputPath, "generated document rejected: "+err.Error(), err)
+	}
+	generatedGraph, generatedBindings, err := document.Resolve(ctx, generated, sources)
+	if err != nil {
+		return "", diagnostic(InvalidInput, inputPath, "generated workspace rejected: "+err.Error(), err)
+	}
+	if !model.Equivalent(originalGraph, generatedGraph) || !binding.Equivalent(originalBindings, generatedBindings) {
+		return "", diagnostic(InvalidInput, inputPath, "generated workspace changed resolved meaning", nil)
+	}
+	if !input.unchanged() {
+		return "", diagnostic(InputChanged, inputPath, "input changed during build", nil)
+	}
+	for _, s := range snaps {
+		if !s.unchanged() {
+			return "", diagnostic(InputChanged, s.path, "source changed during build", nil)
+		}
+	}
+	if err := publish(outputPath, config, objects); err != nil {
+		return "", err
+	}
+	return filepath.Join(outputPath, "proofstrap.toml"), nil
+}
+
+func requirements(handles []string, aliases map[string]pack.Digest) (map[string]pack.Digest, error) {
+	r := make(map[string]pack.Digest, len(handles))
+	for _, h := range handles {
+		d, ok := aliases[h]
+		if !ok {
+			return nil, diagnostic(InvalidInput, "", "missing source alias "+h, nil)
+		}
+		r[h] = d
+	}
+	return r, nil
+}
+func fresh(base string, used map[string]struct{}) string {
+	for n := 1; ; n++ {
+		v := base
+		if n > 1 {
+			v = fmt.Sprintf("%s-%d", base, n)
+		}
+		if _, ok := used[v]; !ok {
+			return v
+		}
+	}
+}
+
+func loadClosure(ctx context.Context, store string, roots []document.Source) (map[pack.Digest][]byte, []pack.Source, []*snapshot, error) {
+	objects := map[pack.Digest][]byte{}
+	if len(roots) == 0 {
+		return objects, nil, nil, nil
+	}
+	var snaps []*snapshot
+	var total int64
+	digests := make([]pack.Digest, len(roots))
+	for i, r := range roots {
+		digests[i] = r.Digest
+	}
+	loader := func(ctx context.Context, d pack.Digest) (pack.Source, error) {
+		if len(objects) >= 64 {
+			return pack.Source{}, diagnostic(InvalidInput, store, "source closure exceeds 64 packs", nil)
+		}
+		name := strings.TrimPrefix(d.String(), "sha256:") + ".pstrap"
+		path := filepath.Join(store, "sha256", name)
+		data, s, err := readSnapshot(path, 8<<20)
+		if err != nil {
+			return pack.Source{}, diagnostic(InvalidInput, path, "read exact source", err)
+		}
+		snaps = append(snaps, s)
+		total += int64(len(data))
+		if total > 128<<20 {
+			return pack.Source{}, diagnostic(InvalidInput, store, "source closure exceeds 128 MiB", nil)
+		}
+		source, err := pack.Read(ctx, bytes.NewReader(data))
+		if err != nil || source.Digest() != d {
+			return pack.Source{}, diagnostic(InvalidInput, path, "source digest or archive is invalid", err)
+		}
+		objects[d] = data
+		return source, nil
+	}
+	sources, err := pack.ResolveClosure(ctx, digests, nil, loader)
+	if err != nil {
+		return nil, nil, snaps, err
+	}
+	return objects, sources, snaps, nil
+}
+
+func makeArchive(ctx context.Context, kind pack.Kind, name string, content []byte, requires map[string]pack.Digest) ([]byte, pack.Source, error) {
+	var manifest strings.Builder
+	fmt.Fprintf(&manifest, "schema = 1\nkind = %q\n", kind.String())
+	if len(requires) > 0 {
+		manifest.WriteString("\n[requires]\n")
+		keys := make([]string, 0, len(requires))
+		for k := range requires {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&manifest, "%s = %q\n", k, requires[k].String())
+		}
+	}
+	var out bytes.Buffer
+	gz, _ := gzip.NewWriterLevel(&out, gzip.BestCompression)
+	gz.Header = gzip.Header{ModTime: time.Unix(0, 0), OS: 255}
+	tw := tar.NewWriter(gz)
+	for _, m := range []struct {
+		name string
+		data []byte
+	}{{"manifest.toml", []byte(manifest.String())}, {name, content}} {
+		h := &tar.Header{Name: m.name, Mode: 0o644, Size: int64(len(m.data)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR, ModTime: time.Unix(0, 0)}
+		if err := tw.WriteHeader(h); err != nil {
+			return nil, pack.Source{}, err
+		}
+		if _, err := tw.Write(m.data); err != nil {
+			return nil, pack.Source{}, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, pack.Source{}, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, pack.Source{}, err
+	}
+	if out.Len() > 8<<20 {
+		return nil, pack.Source{}, diagnostic(InvalidInput, name, "generated pack exceeds 8 MiB", nil)
+	}
+	blob := append([]byte(nil), out.Bytes()...)
+	source, err := pack.Read(ctx, bytes.NewReader(blob))
+	return blob, source, err
+}
+
+func publish(output string, config []byte, objects map[pack.Digest][]byte) error {
+	parent := filepath.Dir(output)
+	if _, err := os.Lstat(output); err == nil {
+		return diagnostic(OutputExists, output, "output already exists", nil)
+	} else if !os.IsNotExist(err) {
+		return diagnostic(IO, output, "inspect output", err)
+	}
+	stage, err := os.MkdirTemp(parent, ".proofstrap-pack-")
+	if err != nil {
+		return diagnostic(IO, output, "create staging directory", err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	if len(objects) > 0 {
+		dir := filepath.Join(stage, "packs", "sha256")
+		if err = os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		digests := make([]pack.Digest, 0, len(objects))
+		for d := range objects {
+			digests = append(digests, d)
+		}
+		sort.Slice(digests, func(i, j int) bool { return digests[i].String() < digests[j].String() })
+		for _, d := range digests {
+			name := strings.TrimPrefix(d.String(), "sha256:") + ".pstrap"
+			if err = writeSynced(filepath.Join(dir, name), objects[d]); err != nil {
+				return err
+			}
+		}
+	}
+	if err = writeSynced(filepath.Join(stage, "proofstrap.toml"), config); err != nil {
+		return err
+	}
+	for _, directory := range []string{filepath.Join(stage, "packs", "sha256"), filepath.Join(stage, "packs"), stage} {
+		fd, openErr := unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if os.IsNotExist(openErr) {
+			continue
+		}
+		if openErr != nil {
+			return openErr
+		}
+		if syncErr := unix.Fsync(fd); syncErr != nil {
+			_ = unix.Close(fd)
+			return syncErr
+		}
+		_ = unix.Close(fd)
+	}
+	if err = unix.Renameat2(unix.AT_FDCWD, stage, unix.AT_FDCWD, output, unix.RENAME_NOREPLACE); err != nil {
+		if err == unix.EEXIST {
+			return diagnostic(OutputExists, output, "output already exists", err)
+		}
+		return diagnostic(IO, output, "publish workspace", err)
+	}
+	published = true
+	if fd, err := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0); err == nil {
+		_ = unix.Fsync(fd)
+		_ = unix.Close(fd)
 	}
 	return nil
 }
 
-func copyExact(ctx context.Context, destination io.Writer, source io.Reader, size int64) (int64, error) {
-	buffer := make([]byte, 32<<10)
-	limited := &io.LimitedReader{R: source, N: size}
-	var copied int64
-	for limited.N > 0 {
-		if err := canceled(ctx); err != nil {
-			return copied, err
-		}
-		read, err := limited.Read(buffer)
-		if read > 0 {
-			written, writeErr := destination.Write(buffer[:read])
-			copied += int64(written)
-			if writeErr != nil {
-				return copied, writeErr
-			}
-			if written != read {
-				return copied, io.ErrShortWrite
-			}
-		}
-		if err != nil {
-			return copied, err
-		}
-		if read == 0 {
-			return copied, io.ErrNoProgress
-		}
-	}
-	return copied, nil
-}
-
-func openInput(directory int, name string) (int, unix.Stat_t, error) {
-	fd, err := unix.Openat(directory, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+func writeSynced(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o444)
 	if err != nil {
-		return -1, unix.Stat_t{}, err
+		return err
 	}
-	var status unix.Stat_t
-	if err := unix.Fstat(fd, &status); err != nil {
-		_ = unix.Close(fd)
-		return -1, status, err
+	if _, err = file.Write(data); err == nil {
+		err = file.Sync()
 	}
-	if status.Mode&unix.S_IFMT != unix.S_IFREG || status.Nlink != 1 {
-		_ = unix.Close(fd)
-		return -1, status, errors.New("authoring entry must be a single-link regular file")
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
 	}
-	return fd, status, nil
-}
-
-func readInput(directory int, name string, maximum int64) ([]byte, error) {
-	fd, status, err := openInput(directory, name)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), name)
-	defer file.Close()
-	if status.Size < 0 || status.Size > maximum {
-		return nil, errors.New("file exceeds limit")
-	}
-	data := make([]byte, status.Size)
-	if _, err := io.ReadFull(file, data); err != nil {
-		return nil, fmt.Errorf("%w: %v", errInputChanged, err)
-	}
-	var extra [1]byte
-	if n, _ := file.Read(extra[:]); n != 0 {
-		return nil, fmt.Errorf("%w: file grew during read", errInputChanged)
-	}
-	var after unix.Stat_t
-	if err := unix.Fstat(fd, &after); err != nil || !sameStat(status, after) {
-		return nil, fmt.Errorf("%w: file changed during read", errInputChanged)
-	}
-	return data, nil
-}
-
-var errInputChanged = errors.New("input changed")
-
-func directoryNames(fd int) ([]string, error) {
-	duplicate, err := linux.OpenDirAt(fd, ".")
-	if err != nil {
-		return nil, err
-	}
-	directory := os.NewFile(uintptr(duplicate), "directory")
-	defer directory.Close()
-	entries, err := directory.ReadDir(-1)
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, len(entries))
-	for index, entry := range entries {
-		names[index] = entry.Name()
-	}
-	sort.Strings(names)
-	return names, nil
-}
-
-func equalStrings(left, right []string) bool {
-	return bytes.Equal([]byte(strings.Join(left, "\x00")), []byte(strings.Join(right, "\x00")))
-}
-
-func sameStat(left, right unix.Stat_t) bool {
-	return left.Dev == right.Dev && left.Ino == right.Ino && left.Size == right.Size && left.Mtim == right.Mtim && left.Ctim == right.Ctim
-}
-
-type limitWriter struct {
-	writer    io.Writer
-	remaining int64
-}
-
-func (w *limitWriter) Write(data []byte) (int, error) {
-	if int64(len(data)) > w.remaining {
-		return 0, errors.New("compressed archive exceeds 8 MiB")
-	}
-	n, err := w.writer.Write(data)
-	w.remaining -= int64(n)
-	return n, err
+	return err
 }
 
 func canceled(ctx context.Context) error {

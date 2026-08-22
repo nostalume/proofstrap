@@ -3,7 +3,9 @@ package binding
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
+	"strings"
 )
 
 type Domain uint8
@@ -75,6 +77,22 @@ type mapping struct {
 
 type catalogueState struct{ mappings map[mappingKey]mapping }
 type Catalogue struct{ state *catalogueState }
+
+func Equivalent(left, right []Catalogue) bool {
+	collect := func(values []Catalogue) map[mappingKey]string {
+		result := make(map[mappingKey]string)
+		for _, catalogue := range values {
+			if catalogue.state == nil {
+				continue
+			}
+			for key, value := range catalogue.state.mappings {
+				result[key] = strings.Join(value.outputs, "\x00")
+			}
+		}
+		return result
+	}
+	return maps.Equal(collect(left), collect(right))
+}
 
 func sortedStrings(values map[string]struct{}) []string {
 	result := make([]string, 0, len(values))

@@ -5,32 +5,30 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/nostalume/proofstrap/internal/pack"
 	"github.com/nostalume/proofstrap/internal/packbuild"
 )
 
-func TestRunBuildPrintsOnlyDigest(t *testing.T) {
+func TestRunBuildPrintsOnlyGeneratedConfig(t *testing.T) {
 	directory := t.TempDir()
 	t.Chdir(directory)
-	digest, _ := pack.ParseDigest("sha256:" + strings.Repeat("1", 64))
+	config := filepath.Join(directory, "dist", "proofstrap.toml")
 	called := false
-	build := func(_ context.Context, input, output string) (pack.Digest, error) {
-		called = input == filepath.Join(directory, "input") && output == filepath.Join(directory, "output.pstrap")
-		return digest, nil
+	build := func(_ context.Context, input, output string) (string, error) {
+		called = input == filepath.Join(directory, "input.toml") && output == filepath.Join(directory, "dist")
+		return config, nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), build, []string{"build", "--input", "input", "--output", "output.pstrap"}, &stdout, &stderr)
-	if code != 0 || !called || stdout.String() != digest.String()+"\n" || stderr.Len() != 0 {
+	code := run(context.Background(), build, []string{"build", "--input", "input.toml", "--output", "dist"}, &stdout, &stderr)
+	if code != 0 || !called || stdout.String() != config+"\n" || stderr.Len() != 0 {
 		t.Fatalf("run = %d, called=%v, stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
 	}
 }
 
 func TestRunGrammarAndHelp(t *testing.T) {
 	called := false
-	build := func(context.Context, string, string) (pack.Digest, error) { called = true; return pack.Digest{}, nil }
+	build := func(context.Context, string, string) (string, error) { called = true; return "", nil }
 	for _, test := range []struct {
 		name   string
 		args   []string
@@ -62,31 +60,23 @@ func TestRunGrammarAndHelp(t *testing.T) {
 	}
 }
 
-func TestRunBuildRelativeAndAbsolutePathsProduceSameBytes(t *testing.T) {
-	input, _ := filepath.Abs("../../internal/packbuild/testdata/deterministic/input")
+func TestRunBuildRelativeInputAndOutput(t *testing.T) {
 	directory := t.TempDir()
-	relativeInput, _ := filepath.Rel(directory, input)
 	t.Chdir(directory)
+	if err := os.WriteFile("input.toml", []byte("schema=3\nhostname='host'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), packbuild.Build, []string{"build", "--input", relativeInput, "--output", "relative.pstrap"}, &stdout, &stderr); code != 0 {
+	if code := run(context.Background(), packbuild.Build, []string{"build", "--input", "input.toml", "--output", "dist"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("relative build: code=%d stderr=%q", code, stderr.String())
 	}
-	relative, _ := os.ReadFile("relative.pstrap")
-	digest := stdout.String()
-	stdout.Reset()
-	stderr.Reset()
-	absolutePath := filepath.Join(directory, "absolute.pstrap")
-	if code := run(context.Background(), packbuild.Build, []string{"build", "--input", input, "--output", absolutePath}, &stdout, &stderr); code != 0 {
-		t.Fatalf("absolute build: code=%d stderr=%q", code, stderr.String())
-	}
-	absolute, _ := os.ReadFile(absolutePath)
-	if !bytes.Equal(relative, absolute) || stdout.String() != digest {
-		t.Fatal("relative and absolute builds differ")
+	if stdout.String() != filepath.Join(directory, "dist", "proofstrap.toml")+"\n" {
+		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
 func TestRunCancellation(t *testing.T) {
-	build := func(context.Context, string, string) (pack.Digest, error) { return pack.Digest{}, context.Canceled }
+	build := func(context.Context, string, string) (string, error) { return "", context.Canceled }
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), build, []string{"build", "--input", "/input", "--output", "/output"}, &stdout, &stderr)
 	if code != 130 || stdout.Len() != 0 || stderr.Len() == 0 {

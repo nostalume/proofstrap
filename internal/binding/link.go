@@ -8,7 +8,6 @@ import (
 	"github.com/nostalume/proofstrap/internal/profile"
 )
 
-// Link proves an admitted module against its exact semantic requirements.
 func Link(ctx context.Context, module Module, local profile.Library, required map[string]profile.Library) (Catalogue, error) {
 	if err := canceled(ctx); err != nil {
 		return Catalogue{}, err
@@ -55,6 +54,15 @@ func Requirements(module Module) []string {
 		}
 	}
 	return sortedMapKeys(used)
+}
+
+func UsesLocal(module Module) bool {
+	for _, reference := range module.references {
+		if reference.handle == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Module) Present() bool { return m.mappings != nil }

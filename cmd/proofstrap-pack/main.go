@@ -11,13 +11,12 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/nostalume/proofstrap/internal/pack"
 	"github.com/nostalume/proofstrap/internal/packbuild"
 )
 
-const usage = "usage: proofstrap-pack build --input DIR --output FILE"
+const usage = "usage: proofstrap-pack build --input FILE --output DIR"
 
-type buildFunc func(context.Context, string, string) (pack.Digest, error)
+type buildFunc func(context.Context, string, string) (string, error)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -40,7 +39,7 @@ func run(ctx context.Context, build buildFunc, arguments []string, stdout, stder
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	digest, err := build(ctx, input, output)
+	config, err := build(ctx, input, output)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -48,7 +47,7 @@ func run(ctx context.Context, build buildFunc, arguments []string, stdout, stder
 		}
 		return 1
 	}
-	if _, err := fmt.Fprintln(stdout, digest.String()); err != nil {
+	if _, err := fmt.Fprintln(stdout, config); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

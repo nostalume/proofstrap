@@ -120,7 +120,7 @@ jobs:
         env:
           GOOS: windows
           GOARCH: amd64
-        run: go build ./internal/model ./internal/profile ./internal/binding ./internal/config ./internal/engine
+        run: go build ./internal/model ./internal/profile ./internal/binding ./internal/document ./internal/engine
 
       - name: Vet
         run: go vet ./...

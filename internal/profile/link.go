@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// Link resolves an admitted module against its exact semantic requirements.
 func Link(origin string, module Module, required map[string]Library) (Library, error) {
 	if origin == "" {
 		return Library{}, &Diagnostic{Category: "InvalidValue", Detail: "source origin is required"}

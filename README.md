@@ -235,13 +235,15 @@ mutation.
 ### `proofstrap-pack build`
 
 ```text
-proofstrap-pack build --input DIR --output FILE
+proofstrap-pack build --input FILE --output DIR
 ```
 
-Build one deterministic semantic or binding `.pstrap` archive from a strict
-source directory. Relative paths resolve once against the working directory;
-the output is create-exclusive. Success prints only the canonical pack digest.
-This command belongs to the separately distributed author tool.
+Compile one schema-3 document into a deterministic, self-contained workspace.
+Local profiles and bindings become content-addressed packs; imports are read
+only from the input file's sibling `packs` store. Relative paths resolve once
+against the working directory, the output directory is create-exclusive, and
+success prints its generated `proofstrap.toml` path. This command belongs to
+the separately distributed author tool.
 
 ## Configuration
 

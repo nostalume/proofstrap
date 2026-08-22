@@ -211,22 +211,23 @@ authoring directory
 -> Plan and Apply
 ~~~
 
-`proofstrap-pack` is a separate distributor/profile-author executable. It owns
-directory traversal, authoring validation, canonical member order, and archive
-writing. Identical input with the same builder version produces identical bytes.
-The builder validates its completed output through the shared archive reader
-before publishing it.
+`proofstrap-pack` is a separate distributor/profile-author executable. It
+promotes one admitted schema-3 document into canonical semantic and binding
+archives. Identical input and exact imports with the same builder version
+produce identical bytes. The builder re-admits and resolves its completed
+workspace before publishing it.
 
 Its implemented interface is exact and absent-only:
 
 ~~~text
-proofstrap-pack build --input DIR --output FILE
+proofstrap-pack build --input FILE --output DIR
 ~~~
 
 The CLI resolves relative input and output paths once against its working
 directory before calling the absolute-path builder.
-Success prints only the completed archive's `sha256:<64-lower-hex>` identity.
-The builder never overwrites an output or imports it into a runtime store.
+Success prints only the generated `DIR/proofstrap.toml` path. Imports are read
+only from `dirname(FILE)/packs`; generated and imported exact objects are
+written beneath `DIR/packs/sha256`. The builder never overwrites an output.
 
 `proofstrap` is the user/runtime executable. It imports and structurally inspects
 exact archives but does not import the writer package. Plan uses the pack library

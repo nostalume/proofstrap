@@ -3,33 +3,79 @@ package binding
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
-// Syntax is the binding-owned TOML surface embedded by larger documents.
-// Callers must pass it to Embed; admitted state never retains this mutable form.
+func EncodePromoted(input Input, semanticAlias string) ([]byte, error) {
+	if input.path == "" || !validSymbol(semanticAlias) {
+		return nil, fmt.Errorf("invalid binding promotion")
+	}
+	syntax := Syntax{Package: promoteTables(input.syntax.Package, semanticAlias), Service: promoteTables(input.syntax.Service, semanticAlias)}
+	if input.syntax.Bind != nil {
+		syntax.Bind = make([]Clause, len(input.syntax.Bind))
+		for index, clause := range input.syntax.Bind {
+			syntax.Bind[index] = Clause{
+				Package: append([]string(nil), clause.Package...), Service: append([]string(nil), clause.Service...),
+				From: clause.From, Same: append([]string(nil), clause.Same...), To: cloneOutputs(clause.To),
+			}
+			if syntax.Bind[index].From == "" {
+				syntax.Bind[index].From = semanticAlias
+			}
+		}
+	}
+	return toml.Marshal(syntax)
+}
+
+func promoteTables(input map[string]map[string][]string, alias string) map[string]map[string][]string {
+	if input == nil {
+		return nil
+	}
+	result := make(map[string]map[string][]string, len(input))
+	for backend, cells := range input {
+		result[backend] = make(map[string][]string, len(cells))
+		for symbol, outputs := range cells {
+			if !strings.Contains(symbol, ":") {
+				symbol = alias + ":" + symbol
+			}
+			result[backend][symbol] = append([]string(nil), outputs...)
+		}
+	}
+	return result
+}
+
+func cloneOutputs(input map[string][]string) map[string][]string {
+	if input == nil {
+		return nil
+	}
+	result := make(map[string][]string, len(input))
+	for symbol, outputs := range input {
+		result[symbol] = append([]string(nil), outputs...)
+	}
+	return result
+}
+
 type Syntax struct {
-	Package map[string]map[string][]string `toml:"package"`
-	Service map[string]map[string][]string `toml:"service"`
-	Bind    []Clause                       `toml:"bind"`
+	Package map[string]map[string][]string `toml:"package,omitempty"`
+	Service map[string]map[string][]string `toml:"service,omitempty"`
+	Bind    []Clause                       `toml:"bind,omitempty"`
 }
 
 type Clause struct {
-	Package []string            `toml:"package"`
-	Service []string            `toml:"service"`
-	From    string              `toml:"from"`
-	Same    []string            `toml:"same"`
-	To      map[string][]string `toml:"to"`
+	Package []string            `toml:"package,omitempty"`
+	Service []string            `toml:"service,omitempty"`
+	From    string              `toml:"from,omitempty"`
+	Same    []string            `toml:"same,omitempty"`
+	To      map[string][]string `toml:"to,omitempty"`
 }
 
-// Input is one validated syntax unit with immutable provenance.
 type Input struct {
 	path   string
 	syntax Syntax
 }
 
-// Parse strictly decodes one standalone binding member.
 func Parse(member Member) (Input, error) {
 	if len(member.Data) == 0 || len(member.Data) > maxMemberBytes {
 		return Input{}, bindingDiagnostic("Limit", member.Path, "", "binding member must be non-empty and at most 1 MiB", nil)
@@ -47,7 +93,6 @@ func Parse(member Member) (Input, error) {
 	return Embed(member.Path, syntax)
 }
 
-// Embed validates binding syntax decoded as part of a larger strict document.
 func Embed(path string, syntax Syntax) (Input, error) {
 	if path == "" {
 		return Input{}, bindingDiagnostic("InvalidValue", "", "", "member path provenance is required", nil)

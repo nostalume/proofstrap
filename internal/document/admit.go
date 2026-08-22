@@ -48,13 +48,16 @@ type Source struct {
 }
 
 type state struct {
-	origin   string
-	sources  []Source
-	bindings []string
-	include  []profile.Call
-	profiles profile.Module
-	mappings binding.Module
-	direct   model.Graph
+	origin       string
+	sources      []Source
+	bindings     []string
+	include      []profile.Call
+	profiles     profile.Module
+	mappings     binding.Module
+	direct       model.Graph
+	raw          rawDocument
+	profileInput profile.Input
+	bindingInput binding.Input
 }
 
 type Document struct{ state *state }
@@ -85,13 +88,13 @@ type BindingFields binding.Syntax
 
 type rawDocument struct {
 	Schema           *int                 `toml:"schema"`
-	Sources          map[string]string    `toml:"sources"`
-	SelectedBindings []string             `toml:"bindings"`
-	Include          []profile.CallSyntax `toml:"include"`
+	Sources          map[string]string    `toml:"sources,omitempty"`
+	SelectedBindings []string             `toml:"bindings,omitempty"`
+	Include          []profile.CallSyntax `toml:"include,omitempty"`
 	ProfileFields
 	BindingFields
-	Groups   map[string]rawGroup   `toml:"groups"`
-	Accounts map[string]rawAccount `toml:"accounts"`
+	Groups   map[string]rawGroup   `toml:"groups,omitempty"`
+	Accounts map[string]rawAccount `toml:"accounts,omitempty"`
 	Hostname *string               `toml:"hostname"`
 	Timezone *string               `toml:"timezone"`
 }
@@ -147,6 +150,7 @@ func Decode(origin string, data []byte) (Document, error) {
 		return Document{}, diagnostic("InvalidValue", "include", err.Error())
 	}
 	var profiles profile.Module
+	var profileInput profile.Input
 	profileSyntax := profile.Syntax(raw.ProfileFields)
 	if profileSyntax.Profiles != nil {
 		input, err := profile.Embed(origin, profileSyntax)
@@ -157,8 +161,10 @@ func Decode(origin string, data []byte) (Document, error) {
 		if err != nil {
 			return Document{}, convertProfile(err)
 		}
+		profileInput = input
 	}
 	var mappings binding.Module
+	var bindingInput binding.Input
 	bindingSyntax := binding.Syntax(raw.BindingFields)
 	if bindingSyntax.Package != nil || bindingSyntax.Service != nil || bindingSyntax.Bind != nil {
 		input, err := binding.Embed(origin, bindingSyntax)
@@ -169,6 +175,7 @@ func Decode(origin string, data []byte) (Document, error) {
 		if err != nil {
 			return Document{}, convertBinding(err)
 		}
+		bindingInput = input
 	}
 	direct, err := admitIdentity(origin, raw)
 	if err != nil {
@@ -191,7 +198,7 @@ func Decode(origin string, data []byte) (Document, error) {
 	if len(include) == 0 && len(direct.Nodes()) == 0 {
 		return Document{}, diagnostic("InvalidValue", "", "document must request desired state")
 	}
-	return Document{state: &state{origin, sources, bindings, include, profiles, mappings, direct}}, nil
+	return Document{state: &state{origin: origin, sources: sources, bindings: bindings, include: include, profiles: profiles, mappings: mappings, direct: direct, raw: raw, profileInput: profileInput, bindingInput: bindingInput}}, nil
 }
 
 func syntaxDiagnostic(err error) *Diagnostic {

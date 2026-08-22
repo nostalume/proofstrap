@@ -7,7 +7,6 @@ import (
 	"github.com/nostalume/proofstrap/internal/model"
 )
 
-// Call is an admitted concrete root profile call.
 type Call struct {
 	reference semanticReference
 	arguments map[string]string
@@ -57,15 +56,42 @@ func AdmitCalls(raw []CallSyntax) ([]Call, error) {
 	return result, nil
 }
 
-func BindCall(local Library, call Call, identities map[string]model.Key, resolver ResolveProfile) (Root, error) {
+func BindCall(local Library, call Call, identities map[string]model.Key, resolver ResolveProfile, alias string) (Root, *CallSyntax, error) {
+	library, name, reference := local, call.reference.name, call.reference.canonical()
+	if call.reference.alias != "" {
+		var err error
+		library, name, err = resolver(call.reference.canonical())
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	root, err := BindRoot(library, name, call.arguments, identities, resolver)
+	if err != nil || alias == "" {
+		return root, nil, err
+	}
+	if !validSymbol(alias) {
+		return nil, nil, fmt.Errorf("invalid semantic promotion")
+	}
 	if call.reference.alias == "" {
-		return BindRoot(local, call.reference.name, call.arguments, identities, resolver)
+		reference = alias + ":" + name
 	}
-	library, name, err := resolver(call.reference.canonical())
-	if err != nil {
-		return nil, err
+	key := library.localProfiles[name]
+	definition, exists := library.profiles[key]
+	if !exists {
+		return nil, nil, fmt.Errorf("missing profile %q", name)
 	}
-	return BindRoot(library, name, call.arguments, identities, resolver)
+	arguments := make(map[string]any, len(call.arguments))
+	for name, value := range call.arguments {
+		if definition.parameters[name] == profileReference && !strings.Contains(value, ":") {
+			value = alias + ":" + value
+		}
+		arguments[name] = value
+	}
+	if len(arguments) == 0 {
+		arguments = nil
+	}
+	rendered := &CallSyntax{Profile: reference, Arguments: arguments}
+	return root, rendered, nil
 }
 
 func CallRequirements(calls []Call) []string {
@@ -73,6 +99,11 @@ func CallRequirements(calls []Call) []string {
 	for _, call := range calls {
 		if call.reference.alias != "" {
 			used[call.reference.alias] = struct{}{}
+		}
+		for _, value := range call.arguments {
+			if reference, err := parseSemanticReference(value); err == nil && reference.alias != "" {
+				used[reference.alias] = struct{}{}
+			}
 		}
 	}
 	return sortedKeys(used)
