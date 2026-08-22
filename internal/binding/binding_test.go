@@ -44,7 +44,7 @@ func admitBinding(ctx context.Context, origin string, members []Member, required
 	if err != nil {
 		return Catalogue{}, err
 	}
-	return Link(ctx, module, required)
+	return Link(ctx, module, profile.Library{}, required)
 }
 
 func TestPackedAndEmbeddedAdmissionAgree(t *testing.T) {
@@ -64,7 +64,7 @@ func TestPackedAndEmbeddedAdmissionAgree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	packedCatalogue, err := Link(context.Background(), packedModule, map[string]profile.Library{"core": library})
+	packedCatalogue, err := Link(context.Background(), packedModule, profile.Library{}, map[string]profile.Library{"core": library})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestPackedAndEmbeddedAdmissionAgree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	embeddedCatalogue, err := Link(context.Background(), embeddedModule, map[string]profile.Library{"core": library})
+	embeddedCatalogue, err := Link(context.Background(), embeddedModule, profile.Library{}, map[string]profile.Library{"core": library})
 	if err != nil {
 		t.Fatal(err)
 	}

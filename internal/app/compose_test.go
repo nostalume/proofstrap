@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/config"
+	"github.com/nostalume/proofstrap/internal/document"
 	"github.com/nostalume/proofstrap/internal/pack"
 	"github.com/nostalume/proofstrap/internal/packbuild"
 )
@@ -20,15 +20,15 @@ func TestComposeProjectsExactSourceClosureOnce(t *testing.T) {
 	dependency := buildAppSource(t, filepath.Join(root, "semantic-dependency"), filepath.Join(output, "dependency.pstrap"))
 	semantic := buildAppSource(t, filepath.Join(root, "semantic-root"), filepath.Join(output, "semantic.pstrap"))
 	catalogue := buildAppSource(t, filepath.Join(root, "binding-catalogue"), filepath.Join(output, "binding.pstrap"))
-	data := []byte(fmt.Sprintf(`schema = 2
+	data := []byte(fmt.Sprintf(`schema = 3
 bindings = ["linux"]
-profiles = [{ profile = "core:workload" }]
+include = [{ profile = "core:workload" }]
 
 [sources]
 core = %q
 linux = %q
 `, semantic.Digest().String(), catalogue.Digest().String()))
-	target, err := config.Decode("test", data)
+	target, err := document.Decode("test", data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +50,49 @@ linux = %q
 	}
 }
 
+func TestComposeProjectsLocalProfileThroughLocalBinding(t *testing.T) {
+	target, err := document.Decode("target.toml", []byte(`schema = 3
+include = [{ profile = "workstation" }]
+
+[profiles.workstation]
+packages = ["agent"]
+
+[profiles.workstation.services.agent]
+target = "system"
+packages = ["agent"]
+running = true
+
+[[bind]]
+package = ["zypper"]
+to = { agent = ["agent-native"] }
+
+[[bind]]
+service = ["systemd"]
+to = { agent = ["agent.service"] }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageBackend, _ := binding.NewPackageBackendID("zypper")
+	serviceBackend, _ := binding.NewServiceBackendID("systemd")
+	graph, err := compose(context.Background(), target, nil, binding.Backends{Package: packageBackend, Service: serviceBackend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := graph.Nodes()
+	if len(nodes) != 2 {
+		t.Fatalf("projected nodes = %#v", nodes)
+	}
+	id, ok := binding.PackageIDOf(nodes[0])
+	if !ok || id.Backend() != packageBackend || id.Name() != "agent-native" {
+		t.Fatalf("package node = %#v", nodes[0])
+	}
+	service, ok := binding.ServiceIDOf(nodes[1])
+	if !ok || service.Backend() != serviceBackend || service.Name() != "agent.service" || len(nodes[1].Dependencies()) != 1 {
+		t.Fatalf("service node = %#v", nodes[1])
+	}
+}
+
 func TestResolveCompositionBindsProfileReferenceAcrossSources(t *testing.T) {
 	root := t.TempDir()
 	core := buildInlineSemantic(t, filepath.Join(root, "core"), `[profiles.workstation]
@@ -60,13 +103,13 @@ profile = { parameter = "desktop" }
 	extra := buildInlineSemantic(t, filepath.Join(root, "extra"), `[profiles.sway]
 packages = ["sway"]
 `)
-	data := []byte(fmt.Sprintf(`schema = 2
-profiles = [{ profile = "core:workstation", arguments = { desktop = "extra:sway" } }]
+	data := []byte(fmt.Sprintf(`schema = 3
+include = [{ profile = "core:workstation", arguments = { desktop = "extra:sway" } }]
 [sources]
 core = %q
 extra = %q
 `, core.Digest(), extra.Digest()))
-	target, err := config.Decode("test", data)
+	target, err := document.Decode("test", data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,13 +121,13 @@ extra = %q
 	if len(nodes) != 1 || nodes[0].Key().Canonical() != "package:sway" {
 		t.Fatalf("nodes = %#v", nodes)
 	}
-	renamed := []byte(fmt.Sprintf(`schema=2
-profiles=[{profile="core:workstation",arguments={desktop="choice:sway"}}]
+	renamed := []byte(fmt.Sprintf(`schema=3
+include=[{profile="core:workstation",arguments={desktop="choice:sway"}}]
 [sources]
 core=%q
 choice=%q
 `, core.Digest(), extra.Digest()))
-	target, err = config.Decode("renamed", renamed)
+	target, err = document.Decode("renamed", renamed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,8 +141,8 @@ func TestResolveCompositionRejectsUnusedSourceAfterBinding(t *testing.T) {
 	root := t.TempDir()
 	core := buildInlineSemantic(t, filepath.Join(root, "core"), "[profiles.base]\npackages=['base']\n")
 	unused := buildInlineSemantic(t, filepath.Join(root, "unused"), "[profiles.other]\npackages=['other']\n")
-	data := []byte(fmt.Sprintf("schema=2\nprofiles=[{profile='core:base'}]\n[sources]\ncore=%q\nunused=%q\n", core.Digest(), unused.Digest()))
-	target, err := config.Decode("test", data)
+	data := []byte(fmt.Sprintf("schema=3\ninclude=[{profile='core:base'}]\n[sources]\ncore=%q\nunused=%q\n", core.Digest(), unused.Digest()))
+	target, err := document.Decode("test", data)
 	if err != nil {
 		t.Fatal(err)
 	}

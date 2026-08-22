@@ -124,6 +124,8 @@ type Library struct {
 	serviceSymbols map[string]struct{}
 }
 
+func (l Library) Present() bool { return l.profiles != nil }
+
 func (l Library) ProfileIDs() []string {
 	ids := make([]string, 0, len(l.localProfiles))
 	for id := range l.localProfiles {

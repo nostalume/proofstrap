@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/config"
+	"github.com/nostalume/proofstrap/internal/document"
 	"github.com/nostalume/proofstrap/internal/pack"
 )
 
 func BenchmarkBuildPlanDirect(b *testing.B) {
-	request := Request{Origin: "benchmark", Config: []byte("schema = 2\npackages = [\"flatpak:x\"]\n")}
+	request := Request{Origin: "benchmark", Config: []byte("schema=3\ninclude=[{profile='x'}]\n[profiles.x]\npackages=['x']\n[package.flatpak]\nx=['x']\n")}
 	benchmarkBuildPlan(b, request)
 }
 
@@ -38,8 +38,8 @@ func BenchmarkComposeProfile(b *testing.B) {
 		b.Fatal(err)
 	}
 	linux := buildAppSource(b, bindingRoot, linuxPath)
-	configData := fmt.Sprintf("schema = 2\nbindings = [\"linux\"]\nprofiles = [{ profile = \"core:curl\" }]\n[sources]\ncore = %q\nlinux = %q\n", core.Digest(), linux.Digest())
-	target, err := config.Decode("benchmark", []byte(configData))
+	configData := fmt.Sprintf("schema = 3\nbindings = [\"linux\"]\ninclude = [{ profile = \"core:curl\" }]\n[sources]\ncore = %q\nlinux = %q\n", core.Digest(), linux.Digest())
+	target, err := document.Decode("benchmark", []byte(configData))
 	if err != nil {
 		b.Fatal(err)
 	}

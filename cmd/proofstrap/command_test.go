@@ -11,13 +11,19 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nostalume/proofstrap/internal/app"
 	"github.com/nostalume/proofstrap/internal/engine"
 	"github.com/nostalume/proofstrap/internal/inventory"
 	"github.com/nostalume/proofstrap/internal/pack"
 )
+
+const commandBlockedDocument = `schema = 3
+include = [{ profile = "blocked" }]
+
+[profiles.blocked]
+packages = ["unmapped"]
+`
 
 func TestPlanAndApplyParsersCanonicalizeRelativeArtifactPaths(t *testing.T) {
 	directory := t.TempDir()
@@ -63,6 +69,7 @@ func TestPlanParserAggregatesGroupedAndRepeatedPackFiles(t *testing.T) {
 }
 
 const commandEmptyPlanJSON = `{"schema":1,"digest":"sha256:6e798e7de28e940a0eecede9ff1e10d4b479db250a983744d5311354a80ffb64","plan":{"operations":[],"blockers":[]}}`
+const commandBlockedPlanJSON = `{"schema":1,"digest":"sha256:a11e921054be7aab1654009effd14a75305787cfff2f3f7cc32bf501bd38afb9","plan":{"operations":[],"blockers":[{"kind":"unsupported","resource":"test","detail":"fixture"}]}}`
 
 func TestPlanAndApplyUseWorkingDirectoryDefaults(t *testing.T) {
 	directory := t.TempDir()
@@ -84,7 +91,7 @@ func TestPlanAndApplyUseWorkingDirectoryDefaults(t *testing.T) {
 	if code := runCommand(context.Background(), processEnvironment{}, inventoryCommands{}, applications, []string{"plan"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), filepath.Join(directory, "proofstrap.toml")) {
 		t.Fatalf("missing default: code=%d stderr=%q", code, stderr.String())
 	}
-	if err := os.WriteFile("proofstrap.toml", []byte("schema = 2\npackages = [\"flatpak:x\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile("proofstrap.toml", []byte(commandBlockedDocument), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stdout.Reset()
@@ -154,7 +161,7 @@ func TestPlanPublishesArtifactAndRendersReview(t *testing.T) {
 	packFileOne := filepath.Join(root, "one.pstrap")
 	packFileTwo := filepath.Join(root, "two.pstrap")
 	store := filepath.Join(root, "packs")
-	config := []byte("schema = 2\npackages = [\"flatpak:x\"]\n")
+	config := []byte(commandBlockedDocument)
 	if err := os.WriteFile(configPath, config, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -176,16 +183,14 @@ func TestPlanPublishesArtifactAndRendersReview(t *testing.T) {
 }
 
 func TestPlanPublishesBlockedArtifactAndReturnsOne(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	blocked, err := app.BuildPlan(ctx, app.Request{Origin: "test", Config: []byte("schema = 2\npackages = [\"flatpak:x\"]\n")})
+	blocked, err := app.DecodePlan([]byte(commandBlockedPlanJSON))
 	if err != nil || !blocked.Blocked() {
 		t.Fatalf("blocked Plan = %#v, %v", blocked, err)
 	}
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
 	outputPath := filepath.Join(root, "plan.json")
-	if err := os.WriteFile(configPath, []byte("schema = 2\npackages = [\"flatpak:x\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(commandBlockedDocument), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	applications := applicationCommands{buildPlan: func(context.Context, app.Request) (app.Plan, error) { return blocked, nil }}
@@ -320,7 +325,7 @@ func TestPlanBrokenOutputIsFailureAfterPublication(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
 	outputPath := filepath.Join(root, "plan.json")
-	if err := os.WriteFile(configPath, []byte("schema = 2\npackages = [\"flatpak:x\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(commandBlockedDocument), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	applications := applicationCommands{buildPlan: func(context.Context, app.Request) (app.Plan, error) { return plan, nil }}

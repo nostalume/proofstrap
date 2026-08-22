@@ -6,38 +6,12 @@ import (
 	"testing"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/config"
+	"github.com/nostalume/proofstrap/internal/document"
 	"github.com/nostalume/proofstrap/internal/identity"
 )
 
-func TestGroupPackagesCanonicalizesHostExactAndViaDependencies(t *testing.T) {
-	target, err := config.Decode("test", []byte(`schema = 2
-packages = ["curl", "flatpak:org.example.App"]
-
-[via]
-flatpak = ["flatpak"]
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostBackend, _ := binding.NewPackageBackendID("zypper")
-	groups, err := groupPackages(target, binding.Graph{}, hostBackend)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(groups) != 2 {
-		t.Fatalf("groups = %#v", groups)
-	}
-	if groups[0].backend.String() != "flatpak" || len(groups[0].names) != 1 || groups[0].names[0] != "org.example.App" || len(groups[0].dependencies) != 1 || groups[0].dependencies[0] != "package:zypper" {
-		t.Fatalf("flatpak group = %#v", groups[0])
-	}
-	if groups[1].backend.String() != "zypper" || len(groups[1].names) != 2 || groups[1].names[0] != "curl" || groups[1].names[1] != "flatpak" || len(groups[1].dependencies) != 0 {
-		t.Fatalf("host group = %#v", groups[1])
-	}
-}
-
 func TestIdentityCapabilitiesAreDerivedOnceFromDesiredKinds(t *testing.T) {
-	target, err := config.Decode("test", []byte(`schema = 2
+	target, err := document.Decode("test", []byte(`schema = 3
 [groups.users]
 gid = 1000
 [groups.audio]
@@ -53,7 +27,7 @@ supplementary = { audio = true }
 	if err != nil {
 		t.Fatal(err)
 	}
-	projected, err := binding.Project(context.Background(), target.Direct(), binding.Backends{}, nil)
+	projected, err := binding.Project(context.Background(), target.View().Direct, binding.Backends{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

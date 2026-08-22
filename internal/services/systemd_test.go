@@ -283,7 +283,7 @@ func projectedServiceNode(t *testing.T, user bool, unit string) binding.Node {
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalogue, err := binding.Link(context.Background(), bindingModule, map[string]profile.Library{"core": library})
+	catalogue, err := binding.Link(context.Background(), bindingModule, profile.Library{}, map[string]profile.Library{"core": library})
 	if err != nil {
 		t.Fatal(err)
 	}

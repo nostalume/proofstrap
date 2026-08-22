@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/config"
+	"github.com/nostalume/proofstrap/internal/document"
 	"github.com/nostalume/proofstrap/internal/inventory"
 	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/pack"
@@ -33,11 +33,12 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 	if ctx == nil || !bounded || !deadline.After(time.Now()) {
 		return Plan{}, fmt.Errorf("active bounded planning context is required")
 	}
-	target, err := config.Decode(request.Origin, request.Config)
+	target, err := document.Decode(request.Origin, request.Config)
 	if err != nil {
 		return Plan{}, err
 	}
-	declared := target.Sources()
+	view := target.View()
+	declared := view.Sources
 	var sources []pack.Source
 	if len(declared) == 0 {
 		if len(request.PackFiles) != 0 {
@@ -54,20 +55,19 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 		}
 	}
 
-	var hostBackend binding.PackageBackendID
-	if needsHostPackageBackend(target) {
-		selection := packages.SelectHost(ctx)
-		selected, issue := packageSelection(selection, "package:host")
-		if issue != nil {
-			return seal(body{blockers: []blocker{*issue}})
-		}
-		hostBackend = selected.Backend()
-	}
 	projected := binding.Graph{}
-	if len(target.Profiles()) != 0 || len(target.Bindings()) != 0 || len(target.Direct().Nodes()) != 0 {
+	if len(view.Include) != 0 || len(view.Direct.Nodes()) != 0 {
 		semantic, catalogues, resolveErr := resolveComposition(ctx, target, sources)
 		if resolveErr != nil {
 			return Plan{}, resolveErr
+		}
+		var packageBackend binding.PackageBackendID
+		if graphNeedsPackageBackend(semantic) {
+			selected, issue := packageSelection(packages.SelectHost(ctx), "package:host")
+			if issue != nil {
+				return seal(body{blockers: []blocker{*issue}})
+			}
+			packageBackend = selected.Backend()
 		}
 		var serviceBackend binding.ServiceBackendID
 		if graphNeedsServiceBackend(semantic) {
@@ -77,12 +77,12 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 			}
 			serviceBackend, _ = binding.NewServiceBackendID(selected.Backend())
 		}
-		projected, err = binding.Project(ctx, semantic, binding.Backends{Package: hostBackend, Service: serviceBackend}, catalogues)
+		projected, err = binding.Project(ctx, semantic, binding.Backends{Package: packageBackend, Service: serviceBackend}, catalogues)
 		if err != nil {
 			return Plan{}, err
 		}
 	}
-	groups, err := groupPackages(target, projected, hostBackend)
+	groups, err := groupPackages(projected)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -114,7 +114,7 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 	for resource, operationID := range hostPlan.satisfies {
 		satisfies[resource] = operationID
 	}
-	servicePlan := lowerServices(ctx, target, projected, hostBackend, satisfies, operationIDs, identityPlan.facts)
+	servicePlan := lowerServices(ctx, projected, satisfies, identityPlan.facts)
 	operations = append(operations, servicePlan.operations...)
 	blockers = append(blockers, servicePlan.blockers...)
 	if len(blockers) != 0 {
@@ -123,21 +123,18 @@ func BuildPlan(ctx context.Context, request Request) (Plan, error) {
 	return seal(body{operations: operations})
 }
 
-func graphNeedsServiceBackend(graph model.Graph) bool {
+func graphNeedsPackageBackend(graph model.Graph) bool {
 	for _, node := range graph.Nodes() {
-		if _, ok := model.ServiceIDOf(node); ok {
+		if _, ok := model.PackageIDOf(node); ok {
 			return true
 		}
 	}
 	return false
 }
 
-func needsHostPackageBackend(target config.Target) bool {
-	if len(target.Profiles()) != 0 || len(target.Bindings()) != 0 {
-		return true
-	}
-	for _, reference := range target.Packages() {
-		if _, exact := reference.Exact(); !exact {
+func graphNeedsServiceBackend(graph model.Graph) bool {
+	for _, node := range graph.Nodes() {
+		if _, ok := model.ServiceIDOf(node); ok {
 			return true
 		}
 	}

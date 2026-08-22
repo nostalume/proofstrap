@@ -1,7 +1,0 @@
-schema = 2
-bindings = ["linux"]
-packages = ["curl"]
-
-[sources]
-linux = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-unused = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

@@ -1,6 +1,0 @@
-schema = 2
-packages = ["flatpak:app"]
-
-[via]
-flatpak = ["snap:provider"]
-snap = ["flatpak:provider"]

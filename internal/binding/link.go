@@ -9,7 +9,7 @@ import (
 )
 
 // Link proves an admitted module against its exact semantic requirements.
-func Link(ctx context.Context, module Module, required map[string]profile.Library) (Catalogue, error) {
+func Link(ctx context.Context, module Module, local profile.Library, required map[string]profile.Library) (Catalogue, error) {
 	if err := canceled(ctx); err != nil {
 		return Catalogue{}, err
 	}
@@ -22,10 +22,19 @@ func Link(ctx context.Context, module Module, required map[string]profile.Librar
 			return Catalogue{}, err
 		}
 		library, exists := required[reference.handle]
-		if !exists {
-			return Catalogue{}, bindingDiagnostic("MissingReference", reference.member, reference.field, "missing requirement handle "+reference.handle, nil)
+		if reference.handle == "" {
+			library, exists = local, local.Present()
 		}
-		used[reference.handle] = struct{}{}
+		if !exists {
+			category, detail := "MissingReference", "missing requirement handle "+reference.handle
+			if reference.handle == "" && reference.key {
+				category, detail = "InvalidValue", "binding key must be handle:Symbol"
+			}
+			return Catalogue{}, bindingDiagnostic(category, reference.member, reference.field, detail, nil)
+		}
+		if reference.handle != "" {
+			used[reference.handle] = struct{}{}
+		}
 		if category, err := proveDeclaration(reference.domain, library, reference.symbol); err != nil {
 			return Catalogue{}, bindingDiagnostic(category, reference.member, reference.field, err.Error(), err)
 		}
@@ -37,6 +46,18 @@ func Link(ctx context.Context, module Module, required map[string]profile.Librar
 	}
 	return Catalogue{state: &catalogueState{mappings: module.mappings}}, nil
 }
+
+func Requirements(module Module) []string {
+	used := make(map[string]struct{})
+	for _, reference := range module.references {
+		if reference.handle != "" {
+			used[reference.handle] = struct{}{}
+		}
+	}
+	return sortedMapKeys(used)
+}
+
+func (m Module) Present() bool { return m.mappings != nil }
 
 func proveDeclaration(domain Domain, library profile.Library, symbol string) (string, error) {
 	packageID, packageErr := model.NewPackageID(symbol)

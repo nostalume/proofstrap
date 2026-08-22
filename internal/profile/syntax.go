@@ -22,7 +22,7 @@ type Input struct {
 
 type rawProfile struct {
 	Parameters   map[string]string     `toml:"parameters"`
-	Include      []rawInclude          `toml:"include"`
+	Include      []CallSyntax          `toml:"include"`
 	Packages     []string              `toml:"packages"`
 	Services     map[string]rawService `toml:"services"`
 	Homes        []rawAccount          `toml:"homes"`
@@ -33,7 +33,8 @@ type rawProfile struct {
 	Timezone     *string               `toml:"timezone"`
 }
 
-type rawInclude struct {
+// CallSyntax is the shared TOML spelling for root and nested profile calls.
+type CallSyntax struct {
 	Profile   any            `toml:"profile"`
 	Arguments map[string]any `toml:"arguments"`
 }

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/nostalume/proofstrap/internal/app"
-	"github.com/nostalume/proofstrap/internal/config"
+	"github.com/nostalume/proofstrap/internal/document"
 	"github.com/nostalume/proofstrap/internal/engine"
 	"github.com/nostalume/proofstrap/internal/inventory"
 	"github.com/nostalume/proofstrap/internal/linux"
@@ -211,21 +211,21 @@ func readConfig(path string) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, &config.Diagnostic{Category: "InvalidValue", Detail: "config is not a regular file"}
+		return nil, &document.Diagnostic{Category: "InvalidValue", Detail: "config is not a regular file"}
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(data) > maxConfigBytes {
-		return nil, &config.Diagnostic{Category: "Limit", Detail: "config exceeds 1 MiB"}
+		return nil, &document.Diagnostic{Category: "Limit", Detail: "config exceeds 1 MiB"}
 	}
 	return data, nil
 }
 
 func planFailure(err error, stderr io.Writer) int {
 	fmt.Fprintln(stderr, err)
-	var diagnostic *config.Diagnostic
+	var diagnostic *document.Diagnostic
 	if errors.As(err, &diagnostic) {
 		return 2
 	}

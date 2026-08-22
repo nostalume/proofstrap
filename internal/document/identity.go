@@ -1,4 +1,4 @@
-package config
+package document
 
 import (
 	"strconv"
@@ -15,7 +15,7 @@ func result(resource model.Resource, err error) resourceResult {
 	return resourceResult{resource: resource, err: err}
 }
 
-func admitPortable(origin string, raw rawTarget) (model.Graph, map[string]model.AccountKey, map[string]model.GroupKey, error) {
+func admitIdentity(origin string, raw rawDocument) (model.Graph, map[string]model.AccountKey, map[string]model.GroupKey, error) {
 	accounts := make(map[string]model.AccountKey, len(raw.Accounts))
 	groups := make(map[string]model.GroupKey, len(raw.Groups))
 	if raw.Groups != nil && len(raw.Groups) == 0 {

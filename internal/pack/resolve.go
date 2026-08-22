@@ -152,7 +152,7 @@ func admitBindingMembers(ctx context.Context, origin string, members []binding.M
 	if err != nil {
 		return binding.Catalogue{}, err
 	}
-	return binding.Link(ctx, module, required)
+	return binding.Link(ctx, module, profile.Library{}, required)
 }
 
 func semanticClosure(ctx context.Context, root Source, available []Source) ([]Source, error) {

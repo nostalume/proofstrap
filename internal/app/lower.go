@@ -1,11 +1,9 @@
 package app
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/config"
 )
 
 type packageGroup struct {
@@ -14,7 +12,7 @@ type packageGroup struct {
 	dependencies []string
 }
 
-func groupPackages(target config.Target, projected binding.Graph, host binding.PackageBackendID) ([]packageGroup, error) {
+func groupPackages(projected binding.Graph) ([]packageGroup, error) {
 	type aggregate struct {
 		backend      binding.PackageBackendID
 		names        map[string]struct{}
@@ -30,42 +28,9 @@ func groupPackages(target config.Target, projected binding.Graph, host binding.P
 		}
 		group.names[name] = struct{}{}
 	}
-	resolve := func(reference config.PackageRef) (binding.PackageBackendID, string, error) {
-		if exact, ok := reference.Exact(); ok {
-			return exact.Backend(), exact.Name(), nil
-		}
-		if host.String() == "" {
-			return binding.PackageBackendID{}, "", fmt.Errorf("host package backend is required for %q", reference.Name())
-		}
-		return host, reference.Name(), nil
-	}
 	for _, node := range projected.Nodes() {
 		if id, ok := binding.PackageIDOf(node); ok {
 			add(id.Backend(), id.Name())
-		}
-	}
-	for _, reference := range target.Packages() {
-		backend, name, err := resolve(reference)
-		if err != nil {
-			return nil, err
-		}
-		add(backend, name)
-	}
-	for _, via := range target.Via() {
-		group := groups[via.Backend().String()]
-		if group == nil {
-			return nil, fmt.Errorf("via backend %q has no demand", via.Backend())
-		}
-		for _, provider := range via.Packages() {
-			backend, _, err := resolve(provider)
-			if err != nil {
-				return nil, err
-			}
-			dependency := "package:" + backend.String()
-			if dependency == "package:"+via.Backend().String() {
-				return nil, fmt.Errorf("package backend %q bootstraps itself", via.Backend())
-			}
-			group.dependencies[dependency] = struct{}{}
 		}
 	}
 	keys := make([]string, 0, len(groups))

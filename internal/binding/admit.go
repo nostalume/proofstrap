@@ -19,6 +19,7 @@ type declarationReference struct {
 	symbol string
 	member string
 	field  string
+	key    bool
 }
 
 // Module is an admitted binding module whose semantic references are unlinked.
@@ -98,11 +99,11 @@ func Admit(ctx context.Context, origin string, inputs []Input) (Module, error) {
 					if err := canceled(ctx); err != nil {
 						return Module{}, err
 					}
-					handle, symbol, err := parseQualified(reference)
+					handle, symbol, err := parseReference(reference)
 					if err != nil {
 						return Module{}, bindingDiagnostic("InvalidValue", input.path, reference, err.Error(), err)
 					}
-					references = append(references, declarationReference{domain, handle, symbol, input.path, reference})
+					references = append(references, declarationReference{domain: domain, handle: handle, symbol: symbol, member: input.path, field: reference, key: true})
 					if err := admit(input, domain, backend, reference, symbol, tables[backend][reference], false); err != nil {
 						return Module{}, err
 					}
@@ -118,7 +119,7 @@ func Admit(ctx context.Context, origin string, inputs []Input) (Module, error) {
 			if len(clause.Service) > 0 {
 				domain, backends = Service, clause.Service
 			}
-			if !validSymbol(clause.From) {
+			if clause.From != "" && !validSymbol(clause.From) {
 				return Module{}, bindingDiagnostic("MissingReference", input.path, field, "missing requirement handle "+clause.From, nil)
 			}
 			seen := make(map[string]struct{}, len(backends))
@@ -148,7 +149,7 @@ func Admit(ctx context.Context, origin string, inputs []Input) (Module, error) {
 				values[symbol] = outputs
 			}
 			for _, symbol := range sortedMapKeys(values) {
-				references = append(references, declarationReference{domain, clause.From, symbol, input.path, field})
+				references = append(references, declarationReference{domain: domain, handle: clause.From, symbol: symbol, member: input.path, field: field})
 				for _, backend := range backends {
 					if err := canceled(ctx); err != nil {
 						return Module{}, err
@@ -163,10 +164,13 @@ func Admit(ctx context.Context, origin string, inputs []Input) (Module, error) {
 	return Module{mappings: mappings, references: references}, nil
 }
 
-func parseQualified(value string) (string, string, error) {
+func parseReference(value string) (string, string, error) {
 	parts := strings.Split(value, ":")
+	if len(parts) == 1 && validSymbol(parts[0]) {
+		return "", parts[0], nil
+	}
 	if len(parts) != 2 || !validSymbol(parts[0]) || !validSymbol(parts[1]) {
-		return "", "", fmt.Errorf("binding key must be handle:Symbol")
+		return "", "", fmt.Errorf("binding key must be Symbol or handle:Symbol")
 	}
 	return parts[0], parts[1], nil
 }

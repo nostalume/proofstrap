@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/nostalume/proofstrap/internal/binding"
-	"github.com/nostalume/proofstrap/internal/config"
 	"github.com/nostalume/proofstrap/internal/identity"
 	"github.com/nostalume/proofstrap/internal/model"
 	"github.com/nostalume/proofstrap/internal/services"
@@ -24,7 +23,7 @@ type serviceResult struct {
 	blockers   []blocker
 }
 
-func lowerServices(ctx context.Context, target config.Target, projected binding.Graph, hostBackend binding.PackageBackendID, satisfies map[string]string, packageOperations map[string]struct{}, facts map[string]identity.AccountFact) serviceResult {
+func lowerServices(ctx context.Context, projected binding.Graph, satisfies map[string]string, facts map[string]identity.AccountFact) serviceResult {
 	result := serviceResult{}
 	items := make(map[string]serviceItem)
 	for _, node := range projected.Nodes() {
@@ -43,56 +42,6 @@ func lowerServices(ctx context.Context, target config.Target, projected binding.
 		}
 		backend := id.Backend().String()
 		item := serviceItem{id: serviceOperationBase(backend, id.Name(), user), resource: node.Semantic().Key().Canonical(), backend: backend, user: user, demand: demand, dependencies: operationDependencies(node.Semantic(), satisfies)}
-		if _, exists := items[item.id]; exists {
-			result.blockers = append(result.blockers, blocker{kind: "conflict", resource: item.id, detail: "duplicate concrete service demand"})
-		} else {
-			items[item.id] = item
-		}
-	}
-	for _, configured := range target.Services() {
-		id, exact := configured.ID().Exact()
-		if !exact {
-			var err error
-			backendName := "systemd"
-			if _, user := model.ServiceTargetUser(configured.Target()); !user {
-				selected, selectErr := services.SelectHostSystem(ctx)
-				if selectErr != nil {
-					result.blockers = append(result.blockers, blocker{kind: "unsupported", resource: "service:" + configured.ID().Name(), detail: selectErr.Error()})
-					continue
-				}
-				backendName = selected.Backend()
-			}
-			backend, _ := binding.NewServiceBackendID(backendName)
-			id, err = binding.NewServiceID(backend, configured.ID().Name())
-			if err != nil {
-				result.blockers = append(result.blockers, blocker{kind: "indeterminate", resource: "service", detail: err.Error()})
-				continue
-			}
-		}
-		demand, err := services.NewDemand(id, configured.Target(), configured.Enable(), configured.Run())
-		if err != nil {
-			result.blockers = append(result.blockers, blocker{kind: "indeterminate", resource: "service:" + id.Name(), detail: err.Error()})
-			continue
-		}
-		user, _ := model.ServiceTargetUser(configured.Target())
-		dependencies := map[string]struct{}{}
-		if user != "" {
-			if dependency := satisfies["account:"+user]; dependency != "" {
-				dependencies[dependency] = struct{}{}
-			}
-		}
-		for _, reference := range configured.Packages() {
-			backend := hostBackend
-			if native, ok := reference.Exact(); ok {
-				backend = native.Backend()
-			}
-			operationID := "package:" + backend.String()
-			if _, exists := packageOperations[operationID]; exists {
-				dependencies[operationID] = struct{}{}
-			}
-		}
-		backend := id.Backend().String()
-		item := serviceItem{id: serviceOperationBase(backend, id.Name(), user), resource: "service:" + backend + ":" + id.Name(), backend: backend, user: user, demand: demand, dependencies: mapKeys(dependencies)}
 		if _, exists := items[item.id]; exists {
 			result.blockers = append(result.blockers, blocker{kind: "conflict", resource: item.id, detail: "duplicate concrete service demand"})
 		} else {

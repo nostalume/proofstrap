@@ -186,7 +186,7 @@ exec /usr/bin/mv "$@"
 					t.Fatalf("runtime generation contains author tool: %v", err)
 				}
 				starter := filepath.Join(filepath.Dir(installed), ".proofstrap-releases", checksumFor(test.archive), "examples", "bootstrap.toml")
-				if contents, err := os.ReadFile(starter); err != nil || !bytes.Contains(contents, []byte("profiles = [{ profile = \"core:bootstrap-cli\" }]")) || !bytes.Contains(output, []byte("plan --config "+starter+" --output ./plan.json")) || !bytes.Contains(output, []byte("cp -- \""+starter+"\" ./proofstrap.toml")) {
+				if contents, err := os.ReadFile(starter); err != nil || !bytes.Contains(contents, []byte("include = [{ profile = \"core:bootstrap-cli\" }]")) || !bytes.Contains(output, []byte("plan --config "+starter+" --output ./plan.json")) || !bytes.Contains(output, []byte("cp -- \""+starter+"\" ./proofstrap.toml")) {
 					t.Fatalf("starter config = %q, %v; output=%q", contents, err, output)
 				}
 				if info, err := os.Stat(starter); err != nil || info.Mode().Perm() != 0o444 {
@@ -275,7 +275,7 @@ func releaseArchive(t *testing.T, arch string, executable []byte, options ...str
 		{name: root + "/LICENSE", mode: 0o644, data: []byte("license")},
 		{name: root + "/docs/config.md", mode: 0o644, data: []byte("config")},
 		{name: root + "/docs/profile.md", mode: 0o644, data: []byte("profile")},
-		{name: root + "/examples/bootstrap.toml", mode: 0o644, data: []byte(fmt.Sprintf("schema = 2\n\nbindings = [\"linux\"]\nprofiles = [{ profile = \"core:bootstrap-cli\" }]\n\n[sources]\ncore = \"sha256:%s\"\nlinux = \"sha256:%s\"\n", strings.TrimSuffix(semanticName, ".pstrap"), strings.TrimSuffix(bindingName, ".pstrap")))},
+		{name: root + "/examples/bootstrap.toml", mode: 0o644, data: []byte(fmt.Sprintf("schema = 3\n\nbindings = [\"linux\"]\ninclude = [{ profile = \"core:bootstrap-cli\" }]\n\n[sources]\ncore = \"sha256:%s\"\nlinux = \"sha256:%s\"\n", strings.TrimSuffix(semanticName, ".pstrap"), strings.TrimSuffix(bindingName, ".pstrap")))},
 		{name: root + "/packs/sha256/" + semanticName, mode: 0o444, data: semantic},
 		{name: root + "/packs/sha256/" + bindingName, mode: 0o444, data: binding},
 	}
