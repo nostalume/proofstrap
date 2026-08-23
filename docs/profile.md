@@ -1,987 +1,232 @@
 # Profile and binding specification
 
-## Status
-
-This document specifies Proofstrap's profile and native-binding contract.
-Archive and manifest admission, semantic resolution and expansion, binding
-projection, deterministic pack building, local stores, explicit import,
-structural inspection, target configuration, Plan/Apply pack integration,
-official core/Linux packs, and explicit local workspace acquisition are
-implemented.
-
-The authority, identity, digest, and failure laws below are the durable format
-contract and do not depend on delivery-plan terminology.
-
-## Purpose
-
-Profiles move reusable desired-state composition out of Go without turning
-Proofstrap into a privileged script runner. A profile names closed typed
-resources and composes profiles. A binding pack translates backend-neutral
-package and service identities for an observed backend. Observation, reconciliation,
-commands, verification, permissions, and lifecycle policy remain engine-owned.
-
-The goals are plural resources and instances, distribution-independent profiles,
-exact digest-pinned truth, and rejection of ambient lookup, fallback, executable
-content, and implicit authority.
-
-## Approved design summary
-
-| Area | Approved contract |
-|---|---|
-| Authority | Config selects exact roots; semantic packs compose intent; binding packs map names; code owns behavior and effects. |
-| Identity | One Symbol grammar; semantic resource ID is domain kind plus global local name; exact digest selects source generation and provenance only. |
-| Pack | One schema-selected semantic or binding tar-gzip archive with exact requirements and bounded streaming admission. |
-| Acquisition | Config-sibling and explicitly named content-addressed stores or archives; create-exclusive atomic import. |
-| Profile | Map-keyed declarations, compact typed parameters, exact includes, and canonical bound-instance identity. |
-| Package | PackageRef set with direct-present intent only. |
-| Service | ServiceRef plus explicit System/User target, independent lifecycle axes, and explicit delivering PackageRefs. |
-| Graph | No generic authored dependency language; service delivery and closed domain laws create edges. |
-| Binding | Exact independently backend-indexed package/service mappings; no topology or lifecycle authority. |
-| Effects | Profiles contain no commands, probes, scripts, executable paths, permissions, fallback, or mutation policy. |
-
-## Resolution model
-
-Resolution is ordered and non-executable:
-
-~~~text
-admit config-pinned root packs
--> resolve exact manifest requirements from admitted stores
--> bind pack-local lexical aliases
--> instantiate selected and included profiles
--> expand target-independent semantic resources
--> apply config-activated bindings for observed domain backends
--> unify direct and bound native resources
--> derive conflicts or unsupported outcomes
-~~~
-
-No step executes a host command. Distribution identity remains provenance rather
-than a selector.
-
-## Construct inventory
-
-The language is closed. Unknown fields and constructs are admission errors.
-
-| Construct | Owner | Behavior |
-|---|---|---|
-| Config pack pin | Config | Admits an exact root pack identity and digest. |
-| Profile selection | Config | Instantiates one root profile with typed arguments. |
-| Binding activation | Config | Makes one exact binding pack participate. |
-| Direct resource | Config | Declares machine-specific typed desired state. |
-| Pack manifest | Pack | Declares schema, kind, and exact requirements. |
-| Requirement | Manifest | Binds a private lexical handle to one exact admitted semantic pack. |
-| Profile | Semantic pack | Defines reusable typed composition. |
-| Parameter | Profile | Accepts an account, group, or exact profile reference. |
-| Include | Profile | Instantiates another profile with typed arguments. |
-| Semantic resource | Profile | Declares backend-neutral package or service intent. |
-| Service package prerequisite | Service | Declares package presence and package-to-service delivery edges. |
-| Dependency edge | Model/domain | Adds closed ordering and failure coupling; it is not a generic authored construct. |
-| Native binding | Binding pack | Maps semantic identity to native identities. |
-| Conflict | Engine-derived | Reports contradictory desired truth. |
-| Unsupported | Engine-derived | Reports valid intent without an implementation. |
-| Provenance | Engine-derived | Explains contributions without changing equality. |
-
-There is no separate template construct. A profile with parameters is already a
-template.
-
-## Configuration authority
-
-One strict versioned config remains the desired-state root. It pins root packs
-separately from selecting profiles and activating bindings. Its pure admission
-grammar and production CLI acquisition are implemented and specified by the
-[target configuration specification](config.md).
-
-~~~toml
-schema = 1
-
-bindings = ["linux"]
-profiles = [
-  { profile = "core:network", arguments = { account = { account = "alice" } } },
-]
-
-[sources]
-core = "sha256:..."
-linux = "sha256:..."
-
-[accounts.alice]
-~~~
-
-Config aliases are local to config. Pack requirements cannot see them. A development
-path may provide bytes for an already pinned identity but cannot alter truth.
-Importing a binding pack never activates it; only explicit config selection does.
-
-## Pack kinds and manifests
-
-Every pack has exactly one authority kind:
-
-- A `semantic` pack contains profiles and backend-neutral semantic intent.
-- A `binding` pack contains native package/service name mappings.
-
-Mixed packs are rejected. A manifest declares only its schema, kind, and
-optional exact requirements.
-
-~~~toml
-schema = 1
-kind = "semantic"
-
-[requires]
-core = "sha256:..."
-~~~
-
-Requirement handles are private lexical locators, not semantic identity, URLs,
-registry keys, filesystem paths, or download instructions. Semantic and binding
-packs may require semantic packs. Binding packs cannot be required.
-
-`schema` is an exact positive integer selecting grammar and interpretation. It
-is not an update selector or compatibility range; a runtime reads only schemas it
-explicitly implements.
-
-Pack and profile versions are absent. The exact source digest is the pack
-generation, and a profile is identified by that digest plus its local ID. One
-closure deduplicates identical digests. Updating is an explicit semantic-pack
-digest replacement, coherent binding-pack replacement,
-and newly reviewed Plan, never latest/range resolution.
-
-## Requirements and acquisition
-
-A requirement binds a private pack-local handle to an exact digest. The resolver
-searches only admitted release, user, and system stores for that digest.
-
-Requirements do not download, query a registry, select profiles, activate bindings,
-inherit store precedence, provide transitive name scopes, or re-export names.
-Requirement cycles fail.
-
-Config pins roots; manifests pin exact transitive requirements. On a fresh system, a
-release bundle or explicit import operation must place every required digest in
-an admitted store. Missing content reports its exact identity and digest; another
-stored generation is never substituted.
-
-## Digest identities
-
-A pack source digest is SHA-256 over the complete archive byte sequence exactly
-as acquired. Config pins, manifest requirements, store keys, and import verification
-all use that value. The manifest does not contain its enclosing archive digest,
-which avoids a self-reference.
-
-Recompression, member reordering, archive-header changes, or any other byte
-change creates a new source identity even when decoded declarations are equal.
-Repacking is republishing and requires new config and requirement pins. The
-format has no normalized-archive digest and no separate canonical pack-contract
-digest.
-
-This source digest is distinct from the Plan semantic digest:
-
-~~~text
-pack source identity = SHA-256(exact archive bytes)
-Plan semantic identity = SHA-256(canonical expanded review)
-~~~
-
-Packaging differences therefore change acquisition identity but not the
-canonical semantics computed after successful admission and expansion.
-
-## Archive envelope
-
-An admitted pack is exactly one gzip stream containing one tar stream. The first
-member is the regular file `manifest.toml`. Later regular files occur exactly
-once in canonical path order under the kind-specific `profiles/` or
-`bindings/` TOML prefix. Proofstrap checks actual decoded bytes and counts while
-reading. The verified whole-archive digest is the sole integrity authority; the
-manifest has no member list, sizes, or member digests.
-
-The reader rejects concatenated gzip streams, non-padding trailing content,
-directories, links, sparse files, devices, FIFOs, sockets, extension records,
-duplicate/case-colliding paths, invalid-kind or out-of-order members. Absolute,
-drive-qualified, UNC, empty, dot-segment,
-traversal, and backslash paths also fail.
-
-Admission streams validation and never performs generic extraction. Loose
-directories are pack-builder inputs only; they are never admitted, selected, or
-digest-pinned sources. Exact byte, count, path, and expansion ceilings are
-engine-owned schema limits; a manifest cannot raise them.
-
-### Authoring and runtime tools
-
-The archive is the only admitted profile or binding representation, but it is
-not the only authoring form:
-
-~~~text
-authoring directory
--> proofstrap-pack
--> deterministic .pstrap archive and SHA-256
--> proofstrap import/release bundle
--> Plan and Apply
-~~~
-
-`proofstrap-pack` is a separate distributor/profile-author executable. It
-promotes one admitted schema-3 document into canonical semantic and binding
-archives. Identical input and exact imports with the same builder version
-produce identical bytes. The builder re-admits and resolves its completed
-workspace before publishing it.
-
-Its implemented interface is exact and absent-only:
-
-~~~text
-proofstrap-pack build --input FILE --output DIR
-~~~
-
-The CLI resolves relative input and output paths once against its working
-directory before calling the absolute-path builder.
-Success prints only the generated `DIR/proofstrap.toml` path. Imports are read
-only from `dirname(FILE)/packs`; generated and imported exact objects are
-written beneath `DIR/packs/sha256`. The builder never overwrites an output.
-
-`proofstrap` is the user/runtime executable. It imports and structurally inspects
-exact archives but does not import the writer package. Plan uses the pack library
-for pure semantic and binding resolution.
-Config-sibling packs, explicit stores, explicit archive paths, and local imports
-use the same reader.
-
-Loose directories, individual TOML files, inline profiles, stdin packs, URLs,
-registry names, and unpinned archives are not runtime profile inputs. Direct
-typed config resources remain the no-pack minimal path.
-
-## Store publication
-
-The sole authoritative stored name is:
-
-~~~text
-<store>/sha256/<64-lower-hex>.pstrap
-~~~
-
-Import computes identity from admitted staged bytes. An expected digest is an
-optional assertion:
-
-~~~text
-open source once as a regular file
--> create-exclusive random staging file in the final directory
--> bounded copy of exact bytes
--> rewind, completely validate, and hash the staged archive
--> compare an expected digest when supplied
--> flush staged file
--> atomically hard-link staging to final digest path
--> flush store directory
--> remove staging name
-~~~
-
-The final hard link is publication. Import never writes directly to the final
-name and never uses an overwriting rename. An existing valid target is successful
-deduplication; an invalid target is store corruption and is never replaced.
-Concurrent importers converge through one link winner and loser verification.
-
-A pre-link crash leaves inert staging. A post-link crash leaves a complete
-authoritative pack and possibly inert staging. Resolvers recognize canonical
-final names only. Cleanup is maintenance rather than recovery authority. Import
-does not modify its source and preserves primary and cleanup errors.
-
-No mutable index is authoritative. Plan opens only exact demanded paths and does
-not enumerate stores. Parsed packs may be cached only within one process/run.
-
-### Acquisition and import stores
-
-| Scope | Root | Writer |
-|---|---|---|
-| System | `/var/lib/proofstrap/packs` | Explicit privileged import |
-| User | `$XDG_DATA_HOME/proofstrap/packs` | Current user |
-
-If XDG_DATA_HOME is absent or relative, user scope falls back to
-`$HOME/.local/share/proofstrap/packs`. Without an absolute HOME, user scope is
-unavailable. Every root uses the same content-addressed layout.
-
-Import defaults to user scope; `--system` explicitly selects system scope and
-requires authority to be already available without prompting. Import does not
-make either store implicit.
-
-Config pins content, never store scope or filesystem path. For one Plan request,
-the CLI admits an existing `packs` directory beside the selected config,
-grouped or repeated `--pack-store` directories, and grouped or repeated
-`--pack-file` archives. Duplicate explicit paths or archive identities fail.
-No executable-adjacent, release, ambient user/system, current-directory, or
-remote store is searched.
-
-The runtime archive interface is:
-
-~~~text
-proofstrap import [--digest DIGEST] [--system] ARCHIVE
-proofstrap inspect ARCHIVE
-proofstrap inspect --digest DIGEST ARCHIVE
-~~~
-
-Import defaults to the user store. Success writes the bounded structural JSON
-record with its persisted scope. `--system` selects the system store but never
-invokes privilege escalation or prompts. `--digest` asserts an expected
-whole-archive identity; omission derives it from the same admitted staged bytes.
-Import never activates profiles or bindings.
-
-An archive path admits one local regular archive read-only and reports its computed identity;
-`--digest` additionally requires an exact match. Inspection never imports it,
-and the path remains only a locator rather than config identity.
-Relative archive paths are resolved once against the process working directory
-and passed to exact archive admission as clean absolute paths.
-
-All inspect forms output one deterministic JSON array containing only digest,
-kind, sorted direct requirements, canonical member paths, and observed scopes.
-This is a structural projection, not a TOML conversion: raw authored content,
-decoded resources, and transitive closure are not exposed. JSON is completely
-validated and bounded before stdout is written.
-
-Removal, update, registry, automatic acquisition, store enumeration, repair,
-staging cleanup, and garbage collection are not implemented.
-
-## Engine budgets
-
-Limits are versioned engine constants. A config or pack cannot request larger
-values, and the maxima are not allocation targets.
-
-| Per archive or declaration | Maximum |
-|---|---:|
-| Compressed archive | 8 MiB |
-| Decoded tar stream | 32 MiB |
-| `manifest.toml` | 64 KiB |
-| Individual content member | 1 MiB |
-| Members after manifest | 256 |
-| Content filename bytes | 99 |
-| Requirements per pack | 64 |
-| Profiles per semantic pack | 256 |
-| Parameters per profile | 16 |
-| Includes per profile | 64 |
-| Resources per profile | 1,024 |
-| Semantic dynamic-value container depth | 16 |
-| Binding entries per pack | 8,192 |
-| Native outputs per binding | 32 |
-
-| Whole resolution | Maximum |
-|---|---:|
-| Packs in closure | 64 |
-| Aggregate compressed source | 128 MiB |
-| Bound profile instances | 4,096 |
-| Canonical resource nodes | 32,768 |
-| Dependency edges | 131,072 |
-| Provenance contributions | 262,144 |
-
-The exact maximum succeeds; maximum plus one fails. Arithmetic is checked before
-allocation or append. Tar claims are checked before allocation and actual bytes
-are enforced during streaming. Archive, closure,
-expansion, graph, and provenance budgets remain independent.
-
-A limit failure publishes neither a pack nor a partial graph and identifies the
-budget, observed value, maximum, and source provenance. Cancellation is a
-separate operational result. Wall-clock speed does not change semantic validity.
-Raising a ceiling requires an engine/schema change.
-
-These ceilings bound hostile input; they are not normal sizing hints. Minimal
-inputs must not preallocate maximum-sized collections or activate unused
-resolution phases.
-
-### Enforcement and minimal cost
-
-Budget checks belong to the owner performing the work, not to a late validation
-pass or global policy framework. Small unexported counters charge before reads,
-allocation, closure enqueue, instance creation, binding fan-out, and graph
-mutation. A graph builder first computes its complete node, edge, and provenance
-delta; either every charge succeeds or the builder remains unchanged.
-
-Cycle, missing-reference, and binding-conflict validation happens before
-expansion so structural defects retain precise diagnostics instead of becoming
-limit failures. Closure traversal and profile expansion use visited and memo
-tables and do not repeatedly scan or recursively expand the same input.
-
-Empty collections remain unallocated. Non-empty collections may use validated
-observed counts as capacity, never engine maxima. If config selects no packs,
-profiles, or bindings, Proofstrap does not open/enumerate stores, initialize pack
-indexes, or probe package/service backends unless direct resources demand them.
-Exact store lookup uses the digest path rather than scanning installed packs.
-
-There is no exported limits API, configurable budget policy, global budget
-service, or third-party archive/graph framework.
+## Boundary
+
+Profiles express reusable backend-neutral desired state. Bindings map declared
+semantic package and service symbols to native manager identities. Neither can
+contain commands, probes, distribution tests, executable paths, fallback
+selection, or mutation policy.
+
+The same profile and binding body grammar is embedded in a schema-3 document or
+stored in a pack. Official and personal sources have identical semantics.
+`proofstrap-pack build` is the ordinary author path; generated manifests,
+digests, and content-addressed filenames are outputs, never author input.
+
+The complete executable document is
+[examples/proofstrap.toml](../examples/proofstrap.toml). Snippets below are
+grammar fragments rather than additional complete documents.
 
 ## Names and references
 
-One Symbol grammar applies to config aliases, requirement handles, profile IDs,
-semantic package/service IDs, and parameter names:
+A `Symbol` is 1–63 characters: lowercase ASCII first, then lowercase ASCII,
+digits, or `-`. Profile IDs, parameter names, source handles, and semantic
+package/service IDs are Symbols.
 
-~~~text
-[a-z][a-z0-9-]{0,62}
-~~~
+Within a local document or one semantic pack, `name` is local and
+`handle:name` refers through an exact declared semantic requirement. Exactly
+one colon qualifies a reference. A handle is lexical scope, not a namespace,
+provider, category, or fallback.
 
-There is no case folding, Unicode normalization, underscore variant, or separate
-grammar for handles, profiles, and semantic resources. A qualified reference is
-exactly `handle:name`, with both components Symbols.
+Pack requirements map handles to exact `sha256:` archive identities. `include`
+creates profile-composition edges; a service's `packages` creates delivery
+edges. There is no general `requires` field in profile bodies.
 
-A semantic identity is:
+## Profile grammar
 
-~~~text
-(domain kind, local name)
-~~~
+Profiles are keyed tables:
 
-Domain kind distinguishes equal names:
-
-~~~text
-(package, network-manager)
-(service, network-manager)
-~~~
-
-Within its pack a source uses a short name:
-
-~~~toml
-packages = ["network-manager"]
-~~~
-
-Across packs it uses exactly one requirement handle:
-
-~~~toml
-packages = ["core:network-manager"]
-~~~
-
-Unqualified names resolve directly. Qualified names require a declared
-requirement and prove that the required pack declares the typed resource before
-reducing to the same global `(domain, name)` identity. Handle chains such as
-`a:b:name`, ambient lookup, and
-declaration-order resolution are rejected. The exact pack digest establishes the
-source generation, so resource references carry no version suffix.
-
-Content filenames use the flat USTAR-safe lowercase ASCII grammar:
-
-~~~text
-[a-z0-9][a-z0-9-]{0,93}.toml
-~~~
-
-The complete member path is exactly one kind-specific prefix plus that filename.
-Native package and service names, backend IDs, account/group names, hostnames,
-timezones, and filesystem paths retain their own domain validators and are never
-coerced into a Symbol.
-
-## Profiles, parameters, and includes
-
-Each `profiles/*.toml` member is a container. Profile IDs are table keys:
-
-~~~toml
-[profiles.network]
-packages = ["network-manager"]
-parameters = { account = "account_ref", group = "group_ref" }
-~~~
-
-A member may contain multiple profiles and must contain at least one. The table
-key is the sole local profile ID, so an `id` field is rejected. Every profile
-ID is unique across the complete pack; a declaration cannot be reopened,
-extended, or merged from another table or member.
-
-Member paths provide packaging and error provenance only. They do not derive,
-qualify, or scope profile identity. Moving an unchanged declaration between
-members changes the exact archive source digest, but not admitted semantics or
-the Plan semantic digest.
-
-A profile has required typed parameters, exact includes, and typed resources.
-The optional `parameters` field is a TOML 1.0 inline table from Symbol name to
-exact kind. The admitted kinds are `account_ref`, `group_ref`, and `profile_ref`. Omission means
-no parameters; an explicit empty map is rejected. Parameter order has no
-meaning. Parameters have no defaults, optional form, or metadata object, and
-every declaration must be consumed or forwarded.
-
-Binding produces an AccountKey, GroupKey, or canonical pack-digest/profile
-identity, never an interpolated string, and creates no resource. A separately
-declared Account or Group node must satisfy every final identity reference.
-
-Root selection and include share one instantiation law. Instance identity is pack
-digest, profile ID, and canonical typed arguments. Identical instances
-deduplicate; different bindings remain distinct.
-
-~~~toml
-[[profiles.network.include]]
-profile = "core:user-service"
-
-[profiles.network.include.arguments]
-account = { parameter = "account" }
-~~~
-
-An include may bind a literal reference or forward a same-kind parameter. It
-cannot override fields, acquire/import packs, activate bindings, or depend on
-target facts. Definition include cycles fail before target inspection.
-
-A dynamic target is exactly `{ parameter = "name" }`, where `name` is a
-`profile_ref`. Its selected profile may come from another config-pinned semantic
-source. The selected profile's complete parameter row must exactly match the
-include argument names and kinds. Active dynamic cycles fail; a completed
-repeated instance deduplicates. Config aliases disappear when the argument is
-bound and never become semantic identity.
-
-~~~toml
-[profiles.workstation]
-parameters = { account = "account_ref", desktop = "profile_ref" }
-
-[[profiles.workstation.include]]
-profile = { parameter = "desktop" }
-
-[profiles.workstation.include.arguments]
-account = { parameter = "account" }
-~~~
-
-An Include is an optional non-empty array of tables. Each entry requires exactly
-`profile`. The `arguments` table is required when the resolved target has
-parameters and forbidden when it has none. Its keys must match every target
-parameter exactly. Missing, extra, duplicate, partial, and wrong-kind bindings
-fail. Explicitly empty `include` or `arguments` fails. Duplicate canonical
-Include instances within one profile fail; differently bound instances remain
-distinct. Include ordering has no meaning.
-
-Argument inputs are contextual:
-
-~~~text
-ArgumentExpr<K> = Literal(K) | Forward(ParameterName, K)
-K = AccountKey | GroupKey | ProfileIdentity
-~~~
-
-A string literal is validated by the resolved target parameter kind.
-`{ parameter = "name" }` is the only forwarding object; the named caller
-parameter must exist and have the same kind. No coercion, inference, fallback,
-interpolation, default, optional binding, or implicit resource creation exists.
-
-Validation has two phases:
-
-~~~text
-admit string or exact forwarding-object syntax
--> resolve target profile and parameter schema
--> require exact argument keys
--> validate literals and same-kind forwarding
--> produce canonical typed arguments atomically
-~~~
-
-At most 16 arguments are admitted. The resulting AccountKeys and GroupKeys are
-references; the final graph must still contain separately declared Account and
-Group resources. Root-config argument source syntax belongs to the separate
-target configuration contract.
-
-## Whole-member admission
-
-Each semantic content member is valid UTF-8 TOML 1.0, no larger than 1 MiB,
-with exactly one non-empty root `profiles` table. At least one profile must be
-declared, and every profile must contribute at least one Include or resource;
-parameters alone do not make a profile meaningful. Comments and whitespace are
-allowed. Trailing comments and whitespace are allowed after the root table;
-another document or any content outside `profiles` is rejected.
-
-Unknown fields fail at every level. Duplicate keys, reopened profile tables,
-duplicate profile IDs, and conflicting TOML table forms fail. An explicitly
-empty collection or table fails unless its field explicitly permits emptiness;
-this format permits none. Structural nesting depth is at most 16. Counts are charged
-before allocation.
-
-Admission is two-phase and atomic:
-
-~~~text
-parse one complete member and admit its closed source shapes
--> resolve profile references and contextual argument schemas in the supplied library
--> validate pack-wide profile identity, cycles, references, and limits
--> publish the complete admitted library, or publish nothing
-~~~
-
-A syntax failure identifies member provenance and line and column. A semantic
-failure identifies member provenance, profile ID, and canonical field path, and
-also line and column when the TOML decoder supplies them reliably. Diagnostic
-categories are stable; exact prose is not. Multiple members aggregate
-atomically and independently of input order. Member paths are provenance only.
-
-The following is one complete valid semantic member. It defines the include
-target locally so its argument contract is visible:
-
-~~~toml
-[profiles.user-audio]
-parameters = { account = "account_ref", group = "group_ref" }
-homes = [{ account = { parameter = "account" } }]
-home_modes = [{ account = { parameter = "account" }, mode = "0700" }]
-account_locks = [{ account = { parameter = "account" } }]
-memberships = [{ account = { parameter = "account" }, group = { parameter = "group" }, present = true }]
-
-[profiles.user-audio.services.pipewire]
-target = { user = { parameter = "account" } }
-packages = ["pipewire"]
-enabled = true
-running = true
-
+```toml
 [profiles.desktop]
-parameters = { account = "account_ref", group = "group_ref" }
-packages = ["network-manager"]
-hostname = "workstation"
-timezone = "Asia/Shanghai"
-
-[[profiles.desktop.include]]
-profile = "user-audio"
-
-[profiles.desktop.include.arguments]
-account = { parameter = "account" }
-group = { parameter = "group" }
-
-[profiles.desktop.services.network-manager]
-target = "system"
-packages = ["network-manager"]
-enabled = true
-running = true
-~~~
-
-### Field and fixture matrix
-
-Fixture names below are stable stems under
-`internal/profile/testdata/invalid/`. “Resource” charges the
-per-profile resource budget; collection counts are charged before allocation.
-
-| Construct | Admitted shape and constructor owner | Identity and collection law | Budget charge | Required negative fixture stem |
-|---|---|---|---|---|
-| Member root | exact non-empty `profiles` table; `profile` decoder | member path is provenance only; whole member is atomic | 1 MiB; dynamic values depth 16 | `member-root-unknown` |
-| Profile declaration | non-empty table keyed by Symbol; `profile` decoder | local Symbol; unique pack-wide; Include/resource required | 256 per pack | `profile-empty` |
-| `parameters` | omitted or non-empty inline Symbol-to-kind table; profile constructor | parameter name + exact `account_ref`/`group_ref` kind; orderless, no duplicates | 16 per profile | `parameters-empty` |
-| `include` | omitted or non-empty array of exact Include tables; expansion constructor | resolved target + canonical typed arguments; orderless, no duplicate instance | 64 per profile | `include-duplicate-instance` |
-| Include `profile` | required ProfileRef string; profile resolver | canonical semantic profile ID | included with Include | `include-missing-profile` |
-| Include `arguments` | exact non-empty contextual argument table iff target is parameterized; resolver | exact target parameter keys; literals or same-kind forwarding only | 16 per Include | `arguments-wrong-kind` |
-| `packages` | omitted or non-empty PackageRef array; package constructor | canonical semantic package ID; orderless, no duplicates | 1 resource each | `packages-duplicate` |
-| `services` entry | table keyed by ServiceRef; service constructor | semantic service ID + target; one declaration per profile | 1 resource each | `service-duplicate-id` |
-| service `target` | required `"system"` or exact user-reference table; service constructor | part of ServiceKey | included with service | `service-target-shape` |
-| service `enabled` / `running` | required booleans; service constructor | desired values, not identity; axes independent | included with service | `service-missing-running` |
-| service `packages` | omitted or non-empty PackageRef array; edge constructor | orderless unique package prerequisites | resource plus edge each | `service-packages-empty` |
-| `homes` | omitted or non-empty exact account-reference tables; Home constructor | AccountKey; presence-only, orderless unique | 1 resource each | `homes-empty` |
-| `home_modes` | omitted or non-empty account plus four-octal-mode tables; HomeMode constructor | AccountKey; one value per key | 1 resource each | `home-mode-invalid` |
-| `account_locks` | omitted or non-empty exact account-reference tables; AccountLock constructor | AccountKey; presence-only, orderless unique | 1 resource each | `account-lock-duplicate` |
-| `memberships` | omitted or non-empty exact account/group/required-present tables; Membership constructor | AccountKey + GroupKey; one boolean per key | 1 resource each | `membership-missing-present` |
-| `hostname` | omitted or validated string; Hostname constructor | singleton Hostname key | 1 resource | `hostname-invalid` |
-| `timezone` | omitted or validated string; Timezone constructor | singleton Timezone key | 1 resource | `timezone-invalid` |
-| forbidden profile fields | no `id`, `resources`, `requires`, `depends_on`, Account/Group, AccountShell, native name, backend, selector, or executable field | cannot construct authority or topology | none | `profile-forbidden-field` |
-
-## Resource authority
-
-Profiles own backend-neutral package and service intent. Config may declare native,
-machine-specific resources directly. Both enter one canonical graph.
-
-| Resource | Config | Semantic profile |
-|---|---:|---:|
-| Native package or service | Yes | No |
-| Semantic package or service | No | Yes |
-| Account or Group | Yes | No |
-| Home, HomeMode, Membership, AccountLock | Yes | Yes, through typed references |
-| AccountShell | Yes | No |
-| Hostname or Timezone | Yes | Yes |
-
-Config alone declares Accounts and Groups. Including a profile cannot decide
-managed/external authority, choose UID/GID, or acquire identity-management
-authority.
-
-Profiles cannot declare, parameterize, or override AccountShell because its
-desired value is an exact absolute target path. The canonical model reserves
-AccountShell for direct machine intent, but its config shape, requiredness,
-emission, and identity-adapter behavior are deferred entirely to the target
-configuration and adapter stages.
-
-### Identity-derived and host resource syntax
-
-Identity-derived resources use closed plural fields; host singleton resources
-use scalars:
-
-~~~toml
-[profiles.desktop]
-parameters = { account = "account_ref", group = "group_ref" }
-
+parameters = { account = "account_ref", session = "profile_ref" }
+include = [
+  { profile = { parameter = "session" } },
+  { profile = "audio", arguments = { account = { parameter = "account" } } },
+]
+packages = ["dbus"]
 homes = [{ account = { parameter = "account" } }]
 home_modes = [{ account = { parameter = "account" }, mode = "0700" }]
 account_locks = [{ account = { parameter = "account" } }]
 memberships = [
-  {
-    account = { parameter = "account" },
-    group = { parameter = "group" },
-    present = true,
-  },
+  { account = { parameter = "account" }, group = "audio", present = true },
 ]
+```
 
-hostname = "workstation"
-timezone = "Asia/Shanghai"
-~~~
+A profile must contribute at least one include or resource. Supported fields
+are:
 
-An account or group reference expression is exactly either its literal domain
-name or a parameter forwarding object:
+| Field | Desired meaning |
+| --- | --- |
+| `parameters` | typed inputs used or transparently forwarded by the body |
+| `include` | local, imported, or parameter-selected profile instances |
+| `packages` | orderless semantic package presence |
+| `services` | semantic service lifecycle and delivery packages |
+| `homes` | declared account home presence |
+| `home_modes` | home presence and exact mode |
+| `account_locks` | account locked state |
+| `memberships` | exact explicit supplementary member edge |
+| `hostname`, `timezone` | exact host state |
 
-~~~toml
-homes = [{ account = "alice" }]
-memberships = [{ account = "alice", group = "audio", present = true }]
-homes = [{ account = { parameter = "account" } }]
-~~~
+Explicit empty collections are invalid. Duplicate resources or include
+instances are rejected. Equal resources contributed through different profiles
+deduplicate later with provenance; unequal desired truth conflicts atomically.
 
-The containing field supplies the expected reference kind. Generic typed
-wrappers, interpolation, and scalar/path parameters are rejected.
+### Parameters and includes
 
-`homes` and `account_locks` are presence-only sets. `home_modes` requires
-one exact four-character octal mode from `0000` through `0777`.
-`memberships.present` is required: true requests membership and false requests
-absence. Hostname and timezone use their domain validators and singleton keys.
-Omission means unowned.
+Parameter kinds are exactly `account_ref`, `group_ref`, and `profile_ref`.
+Every parameter must be consumed or forwarded. A literal account/group value is
+a string; transparent forwarding uses exactly `{ parameter = "name" }`.
+`profile_ref` values can only be forwarded into an include target or argument.
 
-An explicitly empty plural field fails. Duplicate canonical resource keys
-inside one profile fail even when values match; contradictory values also fail.
-Equal resources from different expanded instances unify normally and retain all
-provenance. A generic `resources = [{ kind = ... }]` union, singular aliases,
-and profile AccountShell fields are forbidden.
+Static include targets use `profile = "name"` or `"handle:name"`. Dynamic
+targets use `profile = { parameter = "choice" }`. Arguments are forbidden for
+a parameterless target and otherwise must exactly match its signature. Include
+cycles, including dynamically selected cycles during expansion, fail. Ordering
+does not choose among duplicates or conflicts.
 
-A service declaration owns semantic ID, an exact service target, independent
-persistence/runtime intent, and dependencies. A binding supplies native names
-only.
+Root `include` uses the same call shape, but its profile and argument values are
+literal strings supplied by the target document.
 
-## Package intent
+### Packages and services
 
-The compact package form is:
+Package entries are semantic Symbols or qualified semantic references. They
+request presence only; removal and alternatives are not modeled.
 
-~~~toml
-[profiles.desktop]
-packages = ["network-manager", "core:font-stack"]
-~~~
-
-These strings are PackageRef values, never native package-manager names:
-
-~~~text
-PackageRef = Local(Symbol) | Imported(Alias, Symbol)
-
-"network-manager"
--> (package, network-manager)
-
-"core:font-stack"
--> prove required pack `core` declares package `font-stack`
--> (package, font-stack)
-~~~
-
-The canonical semantic ID is `(package, local name)`. The exact
-source digest is already fixed by the admitted closure and remains provenance;
-it is not repeated in every reference. Text that happens to equal a native
-package name is still semantic in this field. Only an active binding may produce
-native package identities.
-
-There is no separate package-ID declaration or export catalogue. A local
-PackageRef introduces its ID into the pack-wide package symbol set, and every
-local ID is addressable through an exact requirement handle. Qualified references
-and binding entries must resolve to that set. A missing ID is MissingReference;
-an existing ID without an active mapping for the observed package backend is
-Unsupported.
-
-Each entry means direct presence only. Package version, manager, scope, absence,
-optionality, native fields, and per-entry objects are forbidden. Order has no
-meaning. Duplicates inside one profile fail; identical package resources emitted
-by multiple profile instances deduplicate during canonical unification.
-
-## Service intent
-
-The service table key is a ServiceRef:
-
-~~~text
-ServiceRef = Local(Symbol) | Imported(Alias, Symbol)
-~~~
-
-It resolves to the canonical semantic ID `(service, local name)`.
-There is no repeated `id` field or local resource label. A qualified reference
-contains a colon and must therefore be a quoted TOML key:
-
-~~~toml
-[profiles.desktop.services."core:pipewire"]
-target = { user = { parameter = "account" } }
-running = true
-~~~
-
-Local use introduces the ID into the pack-wide service symbol set. Qualified
-references and binding entries must resolve to that set. Package and service IDs
-remain different domains even when their local names are equal.
-
-Service target is a closed sum:
-
-~~~text
-ServiceTarget = System | User(AccountKey)
-~~~
-
-~~~toml
-[profiles.desktop.services.network-manager]
+```toml
+[profiles.desktop.services.session]
 target = "system"
-packages = ["network-manager"]
+packages = ["session"]
 enabled = true
 running = true
+```
 
-[profiles.desktop.services.pipewire]
-target = { user = { parameter = "account" } }
-enabled = true
-running = true
-~~~
+The service table key is a semantic service reference. `target` is required:
+`"system"`, or `{ user = { parameter = "account" } }` for a typed user target.
+At least one of `enabled` and `running` is required. Each is independent: true
+requests enabled/running and false requests disabled/stopped; omission leaves
+that axis unmanaged. Optional non-empty `packages` request semantic delivery
+packages and order them before service work.
 
-A user target requires an `account_ref` parameter. A system target carries no
-account. There are no independent `scope` and `principal` fields, implicit
-system target, root/current/numeric user syntax, or authored execution principal.
-Execution identity and any user-manager endpoint are derived later from the
-admitted Account and live adapter evidence.
+### Accounts and host resources
 
-`enabled` and `running` are independent optional source fields. Omission
-means Proofstrap does not own that axis. `true` requests Enabled or Running;
-`false` explicitly authorizes Disabled or Stopped. The decoder preserves field
-presence and admits closed three-state model values:
+`homes`, `home_modes`, and `account_locks` take account literals or
+`account_ref` parameters. Memberships additionally take a group literal or
+`group_ref` parameter and require `present`. Home modes are strings `0000`
+through `0777`. These fields refer to identities declared by the target
+document; profiles do not create account or group identities.
 
-~~~text
-EnableIntent = Unmanaged | Enabled | Disabled
-RunIntent    = Unmanaged | Running | Stopped
-~~~
+Hostname and timezone use the same validated model as direct document fields.
+They are literal exact values, not adapter selectors.
 
-A service with neither axis is rejected. Its optional non-empty `packages`
-field contains PackageRefs. Every entry declares that package directly present
-and adds its package-to-service prerequisite edge. Duplicate entries fail; one
-package may serve several services and deduplicates as a resource while retaining
-each edge.
+## Binding grammar
 
-The lifecycle axes are manager-independent.
-Systemd, OpenRC, or another admitted service adapter must independently observe
-and converge every requested axis. Missing capability derives Unsupported;
-neither a binding nor an adapter may couple, reinterpret, or ignore intent.
+A binding maps one declared semantic symbol and domain to 1–32 native outputs
+for one backend. It never declares semantics. Direct tables are useful for
+irregular mappings:
 
-Canonical service resource identity is semantic service ID plus target;
-lifecycle intent does not enter the key. A ServiceRef occurs at most once in one
-profile. The same parameterized profile may be instantiated for several
-AccountKeys: identical bindings deduplicate and different bindings create
-distinct service resources. The exact config syntax for expressing those plural
-root instances is deferred to the target config grammar.
-
-## Native binding catalogues
-
-Package and service mappings are independently indexed by observed backend:
-
-~~~toml
-[package.zypper]
-"core:network-manager" = ["NetworkManager"]
-
-[package.apk]
-"core:network-manager" = ["networkmanager"]
+```toml
+[package.apt]
+"core:archive" = ["zip", "unzip"]
 
 [service.systemd]
-"core:network-manager" = ["NetworkManager.service"]
+"core:ssh-server" = ["sshd.service"]
+```
 
-[service.openrc]
-"core:network-manager" = ["networkmanager"]
-~~~
+In a standalone binding pack, keys are `handle:Symbol` and the handle must be an
+exact semantic requirement. In an embedded document, unqualified keys refer to
+local profiles; qualification still refers to imported semantics.
 
-Equal explicit cells may instead use a factored clause:
+Factored clauses remove repeated equal cells:
 
-~~~toml
+```toml
 [[bind]]
-package = ["apt", "dnf5", "zypper", "apk"]
+package = ["apk", "apt", "dnf4", "dnf5", "zypper"]
 from = "core"
-same = ["ca-certificates", "curl", "git"]
-to = { zip = ["zip", "unzip"] }
+same = ["curl", "dbus"]
 
 [[bind]]
-service = ["openrc"]
+service = ["openrc", "systemd"]
 from = "core"
-to = { network-manager = ["networkmanager"] }
-~~~
+to = { ssh-server = ["sshd"] }
+```
 
-Exactly one of `package` or `service` is a non-empty, orderless backend list.
-`from` names one direct manifest requirement handle. Every symbol in `same`
-maps to the one native output with the same spelling; every `to` entry supplies
-an exact non-empty output set. At least one of `same` and `to` must be non-empty,
-and their symbols must be disjoint. Backends and symbols cannot repeat.
+Each clause supplies exactly one non-empty `package` or `service` backend list.
+`from` is the semantic handle and may be omitted only for local declarations.
+`same` maps each symbol to the identical native spelling; `to` maps a symbol to
+an explicit non-empty output list. At least one is required, and their symbols
+must not overlap.
 
-A clause is only a finite rectangular spelling of ordinary binding cells. Each
-expanded cell passes the same declaration, output, collision, and 8,192-key
-admission laws as the expanded tables. A cell emitted by a clause cannot also
-occur in another clause or an expanded table; there is no source-order override.
-Clause order and list order do not affect the admitted catalogue.
+Backend IDs and native outputs are data identities, not executables. Duplicate
+cells, duplicate outputs, and two different semantic symbols emitting the same
+native identity for one backend/domain conflict. A key must name a semantic
+declaration in the correct domain. Missing, wrong-domain, or unused requirement
+handles fail admission.
 
-Expanded tables remain accepted. Clauses add no default, wildcard, inheritance,
-fallback, backend group, or runtime projection behavior. The archived member is
-still the exact authored TOML and pack schema remains 1. Readers predating clause
-support reject the closed `bind` field rather than guessing its meaning.
+Binding activation does not probe a host. During Plan, the observed package and
+service backends select cells from the already admitted catalogues. Every
+demanded semantic native resource must map; missing mappings are reported
+atomically as unsupported. Unused mappings are inert. Projection is orderless,
+deduplicates equal output, rejects unequal output, and preserves provenance.
 
-The canonical binding key is:
+## Packs and exact identity
 
-~~~text
-(domain kind, exact BackendID, canonical semantic identity)
-~~~
+A `.pstrap` is one gzip stream containing a canonical USTAR archive. Its first
+regular member is `manifest.toml`; remaining regular UTF-8 members are strictly
+ordered and case-distinct. Semantic content lives under `profiles/`; binding
+content under `bindings/`. Other paths, links, directories, devices, multiple
+gzip streams, and trailing compressed data fail.
 
-This permits Zypper with OpenRC without a distro family or combined variant. A
-binding emits one or more validated native identities in its own domain.
-Identical active entries deduplicate; different outputs for one key conflict.
-Inactive backend entries and mappings for resources absent from the semantic
-graph are inert. A disputed active key reports Conflict, not Unsupported.
+The strict manifest grammar is:
 
-Backend IDs are typed separately for package and service domains. Their grammar
-is `[a-z][a-z0-9]*(?:-[a-z0-9]+)*`, with at most 63 bytes; a missing backend is
-represented by the typed zero value for that domain. Native names are exact,
-non-empty UTF-8 strings of at most 255 bytes. They are never normalized,
-repaired, suffixed, or used as semantic IDs.
+```toml
+schema = 1
+kind = "semantic" # or "binding"
 
-Every binding key is a direct `handle:Symbol` reference into a Semantic pack
-named by the Binding pack's manifest requirements. Binding packs declare no
-semantic symbols and cannot use unqualified or transitive references. Admission
-allows at most 8,192 unique keys per catalogue, 32 orderless unique outputs per
-key, and 1 MiB per member. Its raw shape is closed, so deeper or wrong-shaped
-values fail strict TOML decoding rather than requiring a separate depth walker.
-Exact maxima succeed; overflow fails atomically.
+[requires]
+core = "sha256:..."
+```
 
-When a prerequisite emits several native resources, every dependent points to
-every emitted prerequisite. Bindings cannot add includes, parameters, lifecycle
-intent, principals, dependencies, or topology.
+`requires` is omitted when absent and non-empty when present. It contains at
+most 64 Symbol handles, each bound to an exact semantic-pack digest. Binding
+requirements point to semantic packs; semantic requirements form an acyclic
+exact closure. A pack cannot require itself.
 
-## Imports, includes, dependency edges, conflicts, and unsupported
+Archive identity is SHA-256 over the complete compressed bytes. The same
+semantic TOML in differently encoded archive bytes is a different source. The
+reader computes identity while boundedly admitting the stream; `inspect` may
+optionally compare it with an expected digest, and `import` publishes under
+that computed identity without activation.
 
-- A **requirement** makes one exact semantic pack addressable through a lexical handle. It adds
-  no desired resource or profile instance.
-- An **include** instantiates one addressable profile with typed arguments. It
-  contributes that instance's resources but adds no blanket ordering edge.
-- A service **packages** field declares PackageRefs present and creates only
-  their package-to-service delivery edges.
-- A **dependency edge** orders concrete resources and failure-couples the
-  dependent. The language authors no generic `requires` or `depends_on`; other
-  edges come from closed Account/Home/Membership/service-target domain laws.
-- A **conflict** means desired truth contradicts itself.
-- **Unsupported** means valid intent lacks an admitted target implementation.
+Authors normally do not write this envelope. The compiler promotes one schema-3
+document into zero or one local semantic pack, zero or one local binding pack,
+and a generated target. It reads imported objects only from the input's sibling
+content-addressed store, checks that inputs remain unchanged, compares original
+and generated resolved meaning, then publishes the absent output directory
+atomically.
 
-Using a cross-pack Include, PackageRef, or ServiceRef requires a manifest
-requirement for addressability, but the requirement itself never selects or instantiates the
-target.
-A dependency edge never requires, includes, or invents a missing resource.
+## Limits and diagnostics
 
-Conflict and unsupported are derived, never authored. Conflicts include
-incompatible values for one logical resource, duplicate UID/GID ownership, or
-differing active mappings for one binding key. Unsupported includes a missing
-mapping for the observed backend or a missing safe adapter capability.
+Each semantic or binding TOML member is at most 1 MiB and strictly rejects
+unknown fields. One semantic module admits at most 256 profiles; each profile
+has at most 16 parameters, 64 includes, 1,024 resources, and structural depth
+16. One binding catalogue has at most 8,192 cells and 32 native outputs per
+cell. Projection admits at most 32,768 nodes, 131,072 edges, and 262,144
+provenance entries.
 
-Missing requirement, missing reference, forbidden authority, observation failure,
-conflict, and unsupported remain distinct diagnostics. Unsupported never causes
-fallback.
+One compressed pack is at most 8 MiB and 32 MiB decoded, with a 64 KiB manifest,
+256 content members, and 1 MiB per content member. A resolved closure has at
+most 64 sources and a bounded aggregate compressed size.
 
-## Provenance and determinism
+Admission and linking are atomic and deterministic. Diagnostics identify the
+source/member, profile or field when applicable, category, detail, and TOML
+line/column for syntax failures. Categories distinguish syntax and limits from
+missing references, wrong domains, duplicates, conflicts, cycles, unused
+requirements, unsupported projection, integrity, kind, and path failures.
 
-Each resource retains canonical provenance for config location, pack digest,
-profile definition and instance, source declaration, and binding entry.
-Provenance survives deduplication but changes neither identity nor authority.
+## Non-goals
 
-Expansion is invariant to pack load order, declaration order, map iteration, and
-store location. Canonical ordering is engine-owned.
-
-## Implementation boundary
-
-Implemented functionality includes the closed semantic profile language, direct
-exact requirement resolution, strict native-binding catalogues, active-backend
-atomic projection, pure target-configuration admission, bounded deterministic
-archive construction, content-addressed local stores, explicit user/system
-import, and structural JSON inspection. Tests cover complete language and target
-fixtures, archive and parser rejection matrices, deterministic bytes, store
-containment, explicit archive operations, and the composed build-to-projection path.
-
-Production target-config acquisition, Plan/Apply pack integration, and native
-host package-backend resolution are implemented. Official pack contents, a
-release bundle, and installer activation remain deferred; they must reuse these
-identities and authority rather than create parallel concepts.
-
-## Forbidden constructs
-
-The format rejects:
-
-- separate templates or visibility/export declarations;
-- distro families, ID-like selectors, variants, and realizations;
-- predicates, priorities, inheritance, and fallback;
-- conditional includes and target-dependent composition;
-- parameter defaults, optional parameters, and generic scalar/path parameters;
-- interpolation and environment expansion;
-- commands, scripts, hooks, probes, parsers, and executable paths;
-- registry lookup, implicit download/latest, pack/profile versions, and ranges;
-- requirement re-export and handle chains;
-- generic authored `requires` or `depends_on`;
-- authored unsupported, conflict, or lifecycle permission; and
-- binding-defined topology or cross-domain output.
-
-New constructs require a demonstrated domain need and an explicit schema
-decision. Unknown content fails closed rather than being ignored.
+The language has no versions, provider categories, alternatives, defaults,
+fallbacks, ordered overlays, arbitrary dependencies, scripts, remote fetch,
+registries, signature policy, executable adapters, package removal, service
+manager installation, account/group deletion, or dotfile/application
+configuration. Adding one requires a separate authority and failure design; it
+must not be encoded as a binding or reference spelling.

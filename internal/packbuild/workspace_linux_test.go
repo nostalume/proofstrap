@@ -3,8 +3,10 @@ package packbuild_test
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,9 +41,15 @@ func TestBuildDirectOnlyAndAbsentOnly(t *testing.T) {
 
 func TestBuildIsDeterministicAndRejectsDirectoryInput(t *testing.T) {
 	root := t.TempDir()
-	input := filepath.Join(root, "input.toml")
-	data := []byte("schema=3\ninclude=[{profile='base'}]\n[profiles.base]\npackages=['base']\n")
-	if err := os.WriteFile(input, data, 0o600); err != nil {
+	input, err := filepath.Abs(filepath.Join("..", "..", "examples", "proofstrap.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := document.Decode(input, data); err != nil {
 		t.Fatal(err)
 	}
 	left, right := filepath.Join(root, "left"), filepath.Join(root, "right")
@@ -51,19 +59,49 @@ func TestBuildIsDeterministicAndRejectsDirectoryInput(t *testing.T) {
 	if _, err := packbuild.Build(context.Background(), input, right); err != nil {
 		t.Fatal(err)
 	}
-	leftConfig, _ := os.ReadFile(filepath.Join(left, "proofstrap.toml"))
-	rightConfig, _ := os.ReadFile(filepath.Join(right, "proofstrap.toml"))
-	if !bytes.Equal(leftConfig, rightConfig) {
-		t.Fatal("generated configs differ")
+	if !reflect.DeepEqual(workspaceFiles(t, left), workspaceFiles(t, right)) {
+		t.Fatal("generated workspaces differ")
 	}
-	leftEntries, _ := os.ReadDir(filepath.Join(left, "packs", "sha256"))
-	rightEntries, _ := os.ReadDir(filepath.Join(right, "packs", "sha256"))
-	if len(leftEntries) != 1 || len(rightEntries) != 1 || leftEntries[0].Name() != rightEntries[0].Name() {
-		t.Fatal("generated identities differ")
+	generated, err := os.ReadFile(filepath.Join(left, "proofstrap.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := document.Decode(filepath.Join(left, "proofstrap.toml"), generated); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := packbuild.Build(context.Background(), root, filepath.Join(root, "bad")); err == nil {
 		t.Fatal("directory input accepted")
 	}
+}
+
+func workspaceFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := make(map[string]string)
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		var data []byte
+		if !entry.IsDir() {
+			data, err = os.ReadFile(path)
+		}
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files[relative] = info.Mode().String() + "\x00" + string(data)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return files
 }
 
 func TestBuildQualifiesProfileReferenceArgumentsOnly(t *testing.T) {

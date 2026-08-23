@@ -50,6 +50,12 @@ jobs:
           test ! -d spec
           test -f docs/config.md
           test -f docs/profile.md
+          test -f examples/proofstrap.toml
+          test ! -e examples/alpine.toml
+          test -f cmd/proofstrap/archive.go
+          test -f cmd/proofstrap/archive_test.go
+          test ! -e cmd/proofstrap/inventory.go
+          test ! -e cmd/proofstrap/inventory_test.go
           test ! -d test/official
           test ! -e release/fetch.sh
           test -x release/build.sh
@@ -81,6 +87,14 @@ jobs:
             echo "retired documentation or acceptance path found" >&2
             exit 1
           fi
+          if rg -n 'schema *= *2|\[via\]|profile-bundle|pkit' README.md docs examples; then
+            echo "retired public authoring contract found" >&2
+            exit 1
+          fi
+          test "$(wc -l < README.md)" -le 240
+          test "$(wc -l < docs/config.md)" -le 190
+          test "$(wc -l < docs/profile.md)" -le 620
+          test "$(( $(wc -l < README.md) + $(wc -l < docs/config.md) + $(wc -l < docs/profile.md) + $(wc -l < docs/architecture.md) ))" -le 1100
           test "$(go list ./internal/... | wc -l)" -le 14
           test "$(find cmd internal -type f -name '*.go' ! -name '*_test.go' | wc -l)" -le 71
           test "$(awk 'NF { lines++ } END { print lines+0 }' install.sh release/build.sh)" -le 150

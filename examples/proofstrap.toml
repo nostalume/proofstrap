@@ -1,0 +1,18 @@
+schema = 3
+include = [{ profile = "bootstrap" }]
+
+[profiles.bootstrap]
+packages = ["curl"]
+
+[profiles.bootstrap.services.dbus]
+target = "system"
+packages = ["dbus"]
+running = true
+
+[[bind]]
+package = ["apk", "apt", "dnf4", "dnf5", "zypper"]
+same = ["curl", "dbus"]
+
+[[bind]]
+service = ["openrc", "systemd"]
+same = ["dbus"]
