@@ -70,4 +70,5 @@ ln -s ".proofstrap-releases/$generation/proofstrap" "$link_tmp"
 mv -Tf -- "$link_tmp" "$launcher"
 link_tmp=
 printf 'installed: %s\n' "$launcher"
-printf 'next: create proofstrap.toml or use a distributed workspace, then run proofstrap plan\n'
+printf 'profiles: https://github.com/nostalume/proofstrap-core-profiles\n'
+printf 'next: acquire a fixed workspace into %s/.proofstrap, then run proofstrap plan there\n' "$HOME"

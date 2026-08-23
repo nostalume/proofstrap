@@ -23,6 +23,9 @@ profile, binding, or configuration value supplies an executable path or command.
 
 ## Ownership
 
+- The runtime installer owns immutable executable generations only. The profile
+  distributor creates an absent source-complete workspace; the user owns its
+  `proofstrap.toml` thereafter. Runtime and catalogue updates never overwrite it.
 - `cmd/proofstrap` owns exact CLI grammar, process environment, signals, streams,
   help, and exit mapping.
 - `internal/document`, `internal/profile`, `internal/pack`, `internal/model`, and
@@ -43,11 +46,13 @@ is no compatibility execution owner or alternate grammar.
 ## Plan
 
 Plan reads one explicitly named absolute configuration file and optional exact
-pack-file/store paths. Configuration pins archive digests and selects roots; it contains
-no store paths or behavior overrides. Acquisition resolves the complete pinned
-closure, profile expansion produces backend-neutral resources, activated
-bindings map native identities, and the app lowers the graph into typed reviewed
-operations.
+pack-file/store paths. The CLI defaults to the current directory and never
+searches HOME. Configuration pins archive digests and selects roots; it contains
+no store paths or behavior overrides. Explicit files seed inventory; the config
+sibling store and explicit roots form a sorted validated store set. Acquisition
+resolves the complete pinned closure, profile expansion produces backend-neutral
+resources, activated bindings map native identities, and the app lowers the
+graph into typed reviewed operations.
 
 A global unsupported or contradictory condition produces a publishable blocked
 Plan with no mutation authority. A progress barrier may follow reviewed
@@ -59,7 +64,9 @@ publication is same-directory, create-exclusive, atomic, and durable.
 Apply accepts only a Plan path, its exact accepted digest, optional journal and
 receipt paths, cancellation, current principal facts, and output. It never reads
 configuration or packs. Before generation zero it validates the canonical Plan,
-operation payloads, dependency graph, principal, and output parents.
+operation payloads, dependency graph, principal, and output parents. Output
+parents must be owned by the effective principal and not group/other writable;
+root Apply therefore cannot publish into an ordinary user-owned directory.
 
 Mutating execution uses one create-exclusive private journal descriptor:
 

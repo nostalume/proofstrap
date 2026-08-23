@@ -366,17 +366,12 @@ func TestPlanOversizeConfigIsSchemaFailureBeforeBuild(t *testing.T) {
 	}
 }
 
-func TestHelpStatesExactCommandGrammar(t *testing.T) {
-	for _, test := range []struct {
-		arguments []string
-		usage     string
-	}{
-		{[]string{"--help"}, rootUsage}, {[]string{"plan", "--help"}, planUsage}, {[]string{"apply", "--help"}, applyUsage},
-	} {
+func TestHelpIsSideEffectFree(t *testing.T) {
+	for _, arguments := range [][]string{{"--help"}, {"plan", "--help"}, {"apply", "--help"}, {"inspect", "--help"}, {"import", "--help"}} {
 		var stdout, stderr bytes.Buffer
-		code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applicationCommands{}, test.arguments, &stdout, &stderr)
-		if code != 0 || stderr.Len() != 0 || stdout.String() != test.usage+"\n" || strings.Contains(stdout.String(), "_create-home") {
-			t.Fatalf("%v: code=%d stdout=%q stderr=%q", test.arguments, code, stdout.String(), stderr.String())
+		code := runCommand(context.Background(), processEnvironment{}, archiveCommands{}, applicationCommands{}, arguments, &stdout, &stderr)
+		if code != 0 || stderr.Len() != 0 || stdout.Len() == 0 || strings.Contains(stdout.String(), "_create-home") {
+			t.Fatalf("%v: code=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
 		}
 	}
 }

@@ -9,7 +9,9 @@ probes, store paths, URLs, overlays, executable policy, or adapter selection.
 
 `proofstrap plan` reads `./proofstrap.toml` unless `--config FILE` replaces it.
 There is no config search, merge, fragment, stdin, interpolation, or environment
-substitution. `proofstrap-pack build` accepts the same document grammar.
+substitution. Workspace placement is process input, not document truth: the
+ordinary `$HOME/.proofstrap/proofstrap.toml` is selected explicitly or by first
+entering that directory. Packs beside the selected config are its sibling store.
 
 The complete executable example is [examples/proofstrap.toml](../examples/proofstrap.toml).
 
@@ -64,7 +66,8 @@ Every declared source must be used by a root, a transitive reference, or a
 selected binding. `bindings` names declared sources and is required only for
 imported binding packs. Local binding declarations are active by presence.
 Aliases do not enter semantic identity; their exact digest and referenced symbol
-do.
+do. Official examples already contain distributor-generated pins; ordinary
+users do not calculate them. Changing a pin is an explicit catalogue update.
 
 ## Local declarations
 
@@ -73,10 +76,11 @@ do.
 admission and linking logic. Local references are unqualified; imported
 semantic references use `alias:symbol`.
 
-`proofstrap-pack build` promotes local semantic and binding bodies into separate
-content-addressed packs and rewrites the generated target with exact source
-digests. It preserves expanded meaning and never writes manifests or digests
-back into the author input.
+Plan admits local declarations directly; personal customization requires no
+compile or digest. `proofstrap-pack build` is the separate distribution path: it
+promotes local bodies into content-addressed packs and writes a generated target
+with exact source digests. It preserves expanded meaning and never writes
+manifests or digests back into the author input.
 
 ## Direct identity and host intent
 

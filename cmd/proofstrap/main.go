@@ -24,6 +24,75 @@ const (
 	applyUsage      = "usage: proofstrap apply [--plan PLAN] --accept sha256:DIGEST [--journal FILE] [--receipt FILE]"
 	maxConfigBytes  = 1 << 20
 	planningTimeout = 30 * time.Minute
+	rootHelp        = `Proofstrap plans and applies declarative Linux bootstrap state.
+
+Usage:
+  proofstrap <command> [options]
+
+Commands:
+  plan      Resolve desired state and create a reviewed, sealed Plan
+  apply     Apply one explicitly accepted Plan
+  inspect   Validate and describe one .pstrap archive
+  import    Persist one exact archive in a content-addressed store
+
+Run 'proofstrap <command> --help' for command details.
+
+Exit status:
+  0    success or converged
+  1    blocked, stale, failed, or output failure
+  2    invalid command, document, or Plan
+  3    verified partial progress; create a fresh Plan
+  130  canceled`
+	planHelp = `Create a sealed Plan from one Proofstrap document.
+
+Usage:
+  proofstrap plan [--config FILE] [--output PLAN]
+    [--pack-file FILE [FILE ...]] [--pack-store DIR [DIR ...]]
+
+Options:
+  --config FILE       Input document (default: ./proofstrap.toml)
+  --output PLAN       Exclusively created Plan (default: ./plan.json)
+  --pack-file FILE    Explicit exact .pstrap archive; may be repeated
+  --pack-store DIR    Store root containing sha256/; may be repeated
+
+Resolution:
+  Explicit pack files populate the initial inventory. Remaining exact objects
+  are resolved from packs/ beside the config and from explicit stores. Every
+  present exact object is validated.
+
+Output:
+  Creates PLAN without replacing an existing file and prints a human-readable
+  review and digest to stdout. Planning does not mutate the host or persist
+  supplied packs.
+
+Example:
+  proofstrap plan --config "$HOME/.proofstrap/proofstrap.toml"`
+
+	applyHelp = `Apply one sealed Plan whose digest was explicitly reviewed.
+
+Usage:
+  proofstrap apply [--plan PLAN] --accept sha256:DIGEST
+    [--journal FILE] [--receipt FILE]
+
+Options:
+  --plan PLAN       Sealed Plan (default: ./plan.json)
+  --accept DIGEST   Required exact digest printed by Plan review
+  --journal FILE    Exclusively created journal (default: ./apply.journal)
+  --receipt FILE    Optionally persist the final receipt
+
+Safety:
+  The accepted digest must equal the Plan digest. Blocked, malformed, or stale
+  Plans fail before mutation. A mutating Plan requires effective UID 0. Plan,
+  journal, and receipt paths must be distinct. Output parents must be owned by
+  the effective user; outputs are never replaced.
+
+Output:
+  Writes canonical receipt JSON to stdout. Partial or failed execution may leave
+  verified host progress; create a fresh Plan before continuing.
+
+Example:
+  sudo proofstrap apply --accept sha256:REVIEWED_DIGEST \
+    --journal /var/lib/proofstrap/runs/PLAN_ID.journal`
 )
 
 type processEnvironment struct {
@@ -52,10 +121,10 @@ func main() {
 
 func runCommand(ctx context.Context, environment processEnvironment, archives archiveCommands, application applicationCommands, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 1 && arguments[0] == "--help" {
-		return writeHelp(stdout, stderr, rootUsage)
+		return writeHelp(stdout, stderr, rootHelp)
 	}
 	if len(arguments) == 0 {
-		return grammarError(stderr, rootUsage)
+		return grammarError(stderr, rootUsage, "proofstrap")
 	}
 	switch arguments[0] {
 	case "import":
@@ -67,17 +136,17 @@ func runCommand(ctx context.Context, environment processEnvironment, archives ar
 	case "apply":
 		return runApply(ctx, environment.effectiveUID, application, arguments[1:], stdout, stderr)
 	default:
-		return grammarError(stderr, rootUsage)
+		return grammarError(stderr, rootUsage, "proofstrap")
 	}
 }
 
 func runPlan(ctx context.Context, application applicationCommands, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 1 && arguments[0] == "--help" {
-		return writeHelp(stdout, stderr, planUsage)
+		return writeHelp(stdout, stderr, planHelp)
 	}
 	configPath, outputPath, stores, packFiles, ok := parsePlan(arguments)
 	if !ok || application.buildPlan == nil {
-		return grammarError(stderr, planUsage)
+		return grammarError(stderr, planUsage, "proofstrap plan")
 	}
 	data, err := readConfig(configPath)
 	if err != nil {
@@ -115,15 +184,15 @@ func runPlan(ctx context.Context, application applicationCommands, arguments []s
 
 func runApply(ctx context.Context, effectiveUID uint32, application applicationCommands, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 1 && arguments[0] == "--help" {
-		return writeHelp(stdout, stderr, applyUsage)
+		return writeHelp(stdout, stderr, applyHelp)
 	}
 	planPath, accepted, journalPath, receiptPath, ok := parseApply(arguments)
 	if !ok || application.apply == nil {
-		return grammarError(stderr, applyUsage)
+		return grammarError(stderr, applyUsage, "proofstrap apply")
 	}
 	digest, err := pack.ParseDigest(accepted)
 	if err != nil {
-		return grammarError(stderr, applyUsage)
+		return grammarError(stderr, applyUsage, "proofstrap apply")
 	}
 	result, err := application.apply(ctx, app.ApplyRequest{
 		PlanPath: planPath, Accept: digest, JournalPath: journalPath, ReceiptPath: receiptPath,
@@ -311,8 +380,8 @@ func reportError(err error, stderr io.Writer) int {
 	return 1
 }
 
-func writeHelp(stdout, stderr io.Writer, usage string) int {
-	if _, err := fmt.Fprintln(stdout, usage); err != nil {
+func writeHelp(stdout, stderr io.Writer, help string) int {
+	if _, err := fmt.Fprintln(stdout, help); err != nil {
 		return reportError(err, stderr)
 	}
 	return 0

@@ -1,184 +1,175 @@
 # Proofstrap
 
-Proofstrap is a declarative Linux bootstrap tool. It resolves one schema-3
-document and exact profile packs into a reviewed, digest-bound Plan. It mutates
-the host only when that exact digest is accepted, and independently verifies
-every attempted effect.
+Proofstrap is a declarative Linux bootstrap tool. It turns one readable desired
+state document and exact profile packs into a reviewed, digest-bound Plan. The
+host changes only after that exact Plan digest is accepted, and every attempted
+effect is independently verified.
 
-It manages supported packages, services, accounts, groups, homes,
+Proofstrap manages supported packages, services, accounts, groups, homes,
 supplementary memberships, hostname, and timezone. Profiles and bindings are
 non-executable data; manager detection, commands, privilege, reconciliation,
-and verification remain compiled into Proofstrap.
+and verification remain compiled into the runtime.
 
-Apply is ordered and resumable, not a cross-domain rollback transaction. A
-failure can leave verified partial progress recorded in the journal; create a
-fresh Plan before continuing.
+Apply is ordered, durable, and honest about partial progress. It is not a
+cross-domain rollback transaction. After a partial result or failure, observe
+the machine again by creating a fresh Plan.
 
-## Install
+## Install the runtime
 
-Linux `amd64` and `arm64` releases provide the runtime installer:
+Linux `amd64` and `arm64` releases provide an installer:
 
 ```sh
 curl -fLso install.sh https://github.com/nostalume/proofstrap/releases/latest/download/install.sh
 sh install.sh
 ```
 
-The default destination is `$HOME/.local/bin`. Override it with an absolute
-path:
+The default launcher is `$HOME/.local/bin/proofstrap`. Override its directory
+with an absolute path:
 
 ```sh
 PROOFSTRAP_INSTALL_DIR=/opt/proofstrap/bin sh install.sh
 ```
 
-The installer verifies and atomically publishes an immutable runtime
-generation. It does not fetch profiles, write user configuration, Plan, or
-Apply. Profile authors install the separately released `proofstrap-pack` tool.
+The installer verifies and atomically publishes an immutable runtime generation.
+It never fetches profiles, writes configuration, Plans, or Applies.
 
-## Quick start
+## Acquire a workspace
 
-Obtain an exact workspace from the
-[official profile releases](https://github.com/nostalume/proofstrap-core-profiles/releases)
-or another distributor. Verify its published outer checksum, extract it, and
-keep `proofstrap.toml` beside `packs/`:
+The independent
+[official catalogue](https://github.com/nostalume/proofstrap-core-profiles)
+publishes source-complete workspaces. Follow its fixed-tag acquisition procedure
+to create an absent `$HOME/.proofstrap`:
 
 ```text
-workspace/
-├── proofstrap.toml
-└── packs/
-    └── sha256/
-        └── DIGEST.pstrap
+$HOME/.proofstrap/
+├── proofstrap.toml       user-owned machine intent
+├── core.toml             readable portable catalogue source
+├── linux.toml            readable Linux catalogue and bindings
+├── examples/             complete selectable targets
+├── packs/sha256/         exact derived .pstrap objects
+├── README.md
+└── LICENSE
 ```
 
-From that directory:
+The outer release checksum verifies downloaded bytes against the published
+value. It does not independently establish publisher trust. Runtime upgrades
+never touch this workspace, and catalogue acquisition never overwrites one.
+
+## Customize without compiling
+
+Choose an official example as `proofstrap.toml`, then edit that file. Imported
+official aliases retain distributor-generated digests; users do not calculate
+them. Local profiles and bindings use the same schema and linker as packed
+content and are planned directly:
+
+```toml
+schema = 3
+include = [{ profile = "bootstrap" }]
+
+[profiles.bootstrap]
+packages = ["curl"]
+
+[[bind]]
+package = ["apk", "apt", "dnf4", "dnf5", "zypper"]
+same = ["curl"]
+```
+
+No digest or `proofstrap-pack` invocation is needed for a self-contained local
+document. Compilation is only for publishing changed catalogue definitions as
+reusable exact packs. See the [document specification](docs/config.md) and
+[profile specification](docs/profile.md).
+
+## Plan and Apply
+
+Plan explicitly from the workspace or enter it first:
 
 ```sh
-proofstrap plan
+proofstrap plan --config "$HOME/.proofstrap/proofstrap.toml"
 ```
 
-This reads `./proofstrap.toml`, creates `./plan.json` exclusively, and prints a
-review with its digest and applicability. Review it. A mutating Plan requires
-root and explicit acceptance:
+Plan finds `packs/` beside the selected config, creates `./plan.json` without
+replacement, and prints a review with its digest and applicability. Planning
+does not mutate the host or persist supplied packs.
+
+Review the complete output. A mutating Plan requires effective UID zero and
+explicit acceptance. Apply outputs require a directory owned by that effective
+principal, so create the root-owned run directory once and key outputs by the
+reviewed Plan digest:
 
 ```sh
-sudo proofstrap apply --accept sha256:REVIEWED_PLAN_DIGEST \
-  --receipt receipt.json
+digest=sha256:REVIEWED_PLAN_DIGEST
+run=/var/lib/proofstrap/runs
+sudo install -d -m 0700 "$run"
+sudo proofstrap apply --plan "$PWD/plan.json" --accept "$digest" \
+  --journal "$run/${digest#sha256:}.journal" \
+  --receipt "$run/${digest#sha256:}.receipt.json"
 ```
 
-Apply reads `./plan.json`, creates `./apply.journal`, validates the sealed Plan,
-reconstructs built-in authority from fresh evidence, and emits canonical receipt
-JSON. Plan, journal, and receipt paths must be distinct and absent when created.
+Apply creates outputs without replacement and prints canonical receipt JSON.
+Plan, journal, and receipt paths must be distinct. The CLI journal default is
+`./apply.journal` and is suitable only when its parent is owned by the effective
+user. Blocked, stale, malformed, or digest-mismatched Plans fail before mutation.
 
-## Exact source resolution
+## Maintain and update
 
-`sources` aliases are local names for exact archive digests. They are not
-repositories, versions, paths, or fallback selectors. Plan opens only objects
-demanded by the selected closure, in this order:
+`proofstrap.toml` is personal source truth; commit or back it up. Packs, Plans,
+journals, and receipts are exact artifacts, not editing surfaces.
 
-1. exact archives supplied by `--pack-file`;
-2. the `packs/` directory beside the selected config;
-3. content-addressed roots supplied by `--pack-store`.
+To update the official catalogue, acquire the new fixed release into a separate
+absent directory. Review changed source, examples, and exact pins; reapply the
+personal selection and local declarations; then Plan from that staged workspace.
+Keep the old workspace until the new Plan is accepted. There is no implicit
+merge, moving tag, fallback, or runtime-managed update.
 
-A corrupt exact object is an error. No executable-adjacent, system, user,
-current-directory, or remote store is searched implicitly. `--pack-store` and
-`--pack-file` may be repeated or followed by several values:
+## Exact pack resolution
 
-```sh
-proofstrap plan --pack-store ./shared-packs ./extra-packs \
-  --pack-file ./custom.pstrap
-```
+Config `sources` map readable local aliases to exact `sha256:` identities. An
+alias is not a path, version, repository, provider, or global namespace.
+`linux:sway` selects profile `sway` from the exact semantic pack named by local
+alias `linux`; one pack may contain many profiles.
 
-Import is optional persistence. It does not select or activate anything; name
-the resulting store explicitly during Plan.
+Explicit `--pack-file` archives populate the initial inventory. Remaining
+objects are resolved across the deterministic set of `packs/` beside the config
+and explicit `--pack-store` roots. A store root contains `sha256/`. Proofstrap
+opens only demanded `<digest>.pstrap` objects, hashes complete compressed bytes,
+validates every present exact copy, and recursively admits manifest requirements.
+It never scans for names, fetches remotely, or falls back to source TOML.
 
 ## Commands
 
 ```text
-proofstrap import [--digest DIGEST] [--system] ARCHIVE
-```
-
-Validate one archive and publish it to the user store, or the system store with
-`--system`. `--digest` is an optional byte-identity assertion. Success prints
-bounded structural JSON including the computed digest and persisted scope.
-
-```text
-proofstrap inspect ARCHIVE
-proofstrap inspect --digest DIGEST ARCHIVE
-```
-
-Validate one local archive and print structural JSON without persistence,
-semantic expansion, or host inspection.
-
-```text
 proofstrap plan [--config FILE] [--output PLAN]
   [--pack-store DIR [DIR ...]] [--pack-file FILE [FILE ...]]
-```
 
-Decode one config, resolve exact packs, observe the host, and exclusively create
-a sealed Plan. Defaults are `./proofstrap.toml` and `./plan.json`. Relative
-paths resolve once against the working directory. Planning never mutates the
-host or persists supplied packs.
-
-```text
 proofstrap apply [--plan PLAN] --accept sha256:DIGEST
   [--journal FILE] [--receipt FILE]
-```
 
-Apply only the accepted Plan. Defaults are `./plan.json` and
-`./apply.journal`. Blocked, stale, malformed, or digest-mismatched Plans fail
-before mutation.
+proofstrap inspect [--digest sha256:DIGEST] ARCHIVE
 
-```text
+proofstrap import [--digest sha256:DIGEST] [--system] ARCHIVE
+
 proofstrap-pack build --input FILE --output DIR
 ```
 
-Compile one schema-3 source document into an absent deterministic workspace.
-Local declarations become content-addressed packs; imported packs are read only
-from the input's sibling `packs/` store. Success prints the generated config
-path. See the executable [authoring example](examples/proofstrap.toml).
+Run `proofstrap <command> --help` for defaults, effects, output, and an example.
+`inspect`, `import`, explicit stores, and `proofstrap-pack` are advanced archive,
+storage, or distribution operations; the ordinary workspace path needs none of
+them. Import does not select a profile or make a store implicit.
 
-## Authoring model
-
-One schema-3 document can be a ready-to-Plan target, a complete local profile
-source, or both. Official and personal sources use the same language and tool.
-Local profile and binding tables are active by presence; imported packs are
-named in `sources`, and imported binding packs are additionally selected by
-`bindings`. There is no special custom-profile mode.
-
-The [document specification](docs/config.md) defines root composition and
-direct machine truth. The [profile and binding specification](docs/profile.md)
-defines reusable semantics, references, mappings, archive identity, and limits.
-The tracked example is the only complete example document; specification
-snippets are fragments of that grammar.
-
-## Official profiles
-
-The independent
-[proofstrap-core-profiles](https://github.com/nostalume/proofstrap-core-profiles)
-repository distributes non-executable profiles and bindings. Its release must
-state the compatible Proofstrap author/runtime release and publish exact
-checksums. Distribution names do not select behavior: applicability requires a
-runtime adapter for the observed manager and a selected binding for every
-expanded semantic resource.
-
-## Status and recovery
+## Status and platform boundary
 
 | Code | Meaning |
 | ---: | --- |
-| `0` | Converged successfully. |
+| `0` | Success or converged. |
 | `1` | Blocked, stale, failed, or publication failure. |
-| `2` | CLI, document, or Plan grammar error. |
+| `2` | Invalid CLI, document, or Plan. |
 | `3` | Verified partial progress; create a fresh Plan. |
-| `130` | Cancellation before a more specific result. |
+| `130` | Canceled. |
 
-Proofstrap does not promise rollback across native package managers, services,
-identity databases, and filesystems. The journal and receipt report the proven
-prefix. Re-observe and create a fresh Plan after partial progress or failure.
-
-The runtime currently targets Linux. Package adapters cover Apt, Zypper, DNF5,
-DNF4, and APK v3. Service adapters cover systemd and system-scope OpenRC.
-Managers are selected from admitted control-plane evidence, never a hard-coded
-distribution-name mapping. See [architecture.md](docs/architecture.md) for the
-authority and failure boundaries.
+The runtime targets Linux. Package adapters cover Apt, Zypper, DNF5, DNF4, and
+APK v3. Service adapters cover systemd and system-scope OpenRC. Managers are
+selected from admitted control-plane evidence, never a distribution-name map.
+See [architecture.md](docs/architecture.md) for authority and failure boundaries.
 
 ## License
 

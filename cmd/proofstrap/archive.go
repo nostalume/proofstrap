@@ -19,6 +19,44 @@ const (
 	inspectUsage   = "usage: proofstrap inspect ARCHIVE | proofstrap inspect --digest DIGEST ARCHIVE"
 	maxInspectJSON = 8 << 20
 	systemPackRoot = "/var/lib/proofstrap/packs"
+
+	inspectHelp = `Validate and structurally describe one .pstrap archive.
+
+Usage:
+  proofstrap inspect [--digest sha256:DIGEST] ARCHIVE
+
+Options:
+  --digest DIGEST   Optionally require the observed archive digest
+
+Output:
+  Prints bounded JSON containing the computed digest, pack kind, exact
+  requirements, member paths, and an empty scope list.
+
+Inspect does not persist the archive, expand profiles, inspect the host, or
+establish publisher trust.
+
+Example:
+  proofstrap inspect ./custom.pstrap`
+
+	importHelp = `Validate and persist one exact .pstrap archive.
+
+Usage:
+  proofstrap import [--digest sha256:DIGEST] [--system] ARCHIVE
+
+Options:
+  --digest DIGEST   Optionally require the observed archive digest
+  --system          Publish to /var/lib/proofstrap/packs instead of the user store
+
+Output:
+  Prints bounded structural JSON containing the computed digest, requirements,
+  members, and persisted scope. The user store is
+  $XDG_DATA_HOME/proofstrap/packs or $HOME/.local/share/proofstrap/packs.
+
+Import does not select profiles, activate bindings, or change configuration.
+Ordinary source-complete workspaces do not require import.
+
+Example:
+  proofstrap import ./custom.pstrap`
 )
 
 type archiveRecord struct {
@@ -38,15 +76,14 @@ var productionArchives = archiveCommands{
 
 func runImport(ctx context.Context, environment processEnvironment, commands archiveCommands, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 1 && arguments[0] == "--help" {
-		fmt.Fprintln(stdout, importUsage)
-		return 0
+		return writeHelp(stdout, stderr, importHelp)
 	}
 	expected, archive, system, ok := parseImport(arguments)
 	if !ok {
-		return grammarError(stderr, importUsage)
+		return grammarError(stderr, importUsage, "proofstrap import")
 	}
 	if !canonicalCLIPaths(&archive) {
-		return grammarError(stderr, importUsage)
+		return grammarError(stderr, importUsage, "proofstrap import")
 	}
 	var record archiveRecord
 	var err error
@@ -60,15 +97,14 @@ func runImport(ctx context.Context, environment processEnvironment, commands arc
 
 func runInspect(ctx context.Context, commands archiveCommands, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 1 && arguments[0] == "--help" {
-		fmt.Fprintln(stdout, inspectUsage)
-		return 0
+		return writeHelp(stdout, stderr, inspectHelp)
 	}
 	var records []archiveRecord
 	var err error
 	switch {
 	case len(arguments) == 1 && !strings.HasPrefix(arguments[0], "-"):
 		if strings.HasPrefix(arguments[0], "sha256:") || !canonicalCLIPaths(&arguments[0]) {
-			return grammarError(stderr, inspectUsage)
+			return grammarError(stderr, inspectUsage, "proofstrap inspect")
 		}
 		var record archiveRecord
 		record, err = commands.inspectArchive(ctx, arguments[0], nil)
@@ -77,13 +113,13 @@ func runInspect(ctx context.Context, commands archiveCommands, arguments []strin
 		var digest pack.Digest
 		digest, err = pack.ParseDigest(arguments[1])
 		if err != nil {
-			return grammarError(stderr, inspectUsage)
+			return grammarError(stderr, inspectUsage, "proofstrap inspect")
 		}
 		var record archiveRecord
 		record, err = commands.inspectArchive(ctx, arguments[2], &digest)
 		records = []archiveRecord{record}
 	default:
-		return grammarError(stderr, inspectUsage)
+		return grammarError(stderr, inspectUsage, "proofstrap inspect")
 	}
 	return writeRecords(records, err, stdout, stderr)
 }
@@ -236,9 +272,10 @@ func canonicalCLIPaths(paths ...*string) bool {
 	return true
 }
 
-func grammarError(stderr io.Writer, usage string) int {
+func grammarError(stderr io.Writer, usage, command string) int {
 	fmt.Fprintln(stderr, "invalid arguments")
 	fmt.Fprintln(stderr, usage)
+	fmt.Fprintf(stderr, "Try '%s --help'.\n", command)
 	return 2
 }
 

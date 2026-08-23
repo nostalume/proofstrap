@@ -9,7 +9,8 @@ selection, or mutation policy.
 
 The same profile and binding body grammar is embedded in a schema-3 document or
 stored in a pack. Official and personal sources have identical semantics.
-`proofstrap-pack build` is the ordinary author path; generated manifests,
+Plan admits embedded declarations directly. `proofstrap-pack build` is needed
+only to publish changed declarations as reusable packs; generated manifests,
 digests, and content-addressed filenames are outputs, never author input.
 
 The complete executable document is
@@ -194,14 +195,16 @@ Archive identity is SHA-256 over the complete compressed bytes. The same
 semantic TOML in differently encoded archive bytes is a different source. The
 reader computes identity while boundedly admitting the stream; `inspect` may
 optionally compare it with an expected digest, and `import` publishes under
-that computed identity without activation.
+that computed identity without activation. Identity detects changed bytes and
+supports exact dependency/store lookup; it does not establish publisher trust
+or provide Plan/Apply acceptance.
 
-Authors normally do not write this envelope. The compiler promotes one schema-3
-document into zero or one local semantic pack, zero or one local binding pack,
-and a generated target. It reads imported objects only from the input's sibling
-content-addressed store, checks that inputs remain unchanged, compares original
-and generated resolved meaning, then publishes the absent output directory
-atomically.
+Distributors normally do not write this envelope. The compiler promotes one
+schema-3 document into zero or one local semantic pack, zero or one local binding
+pack, and a generated target. It reads imported objects only from the input's
+sibling content-addressed store, checks that inputs remain unchanged, compares
+original and generated resolved meaning, then publishes the absent output
+directory atomically. Personal documents remain readable direct Plan inputs.
 
 ## Limits and diagnostics
 

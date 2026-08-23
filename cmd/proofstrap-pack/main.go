@@ -14,7 +14,41 @@ import (
 	"github.com/nostalume/proofstrap/internal/packbuild"
 )
 
-const usage = "usage: proofstrap-pack build --input FILE --output DIR"
+const (
+	usage = "usage: proofstrap-pack build --input FILE --output DIR"
+
+	rootHelp = `Build deterministic Proofstrap workspaces for distribution.
+
+Usage:
+  proofstrap-pack build --input FILE --output DIR
+
+Commands:
+  build   Compile local declarations into exact profile packs
+
+Ordinary machine customization does not require this tool. Use it only when
+publishing changed catalogue definitions.`
+
+	buildHelp = `Compile one schema-3 author document into an exact workspace.
+
+Usage:
+  proofstrap-pack build --input FILE --output DIR
+
+Options:
+  --input FILE    Readable schema-3 author document
+  --output DIR    Absent destination workspace
+
+Behavior:
+  Reads imported packs only from packs/ beside FILE, promotes local declarations
+  into .pstrap objects, proves equivalent resolved meaning, and atomically
+  publishes DIR without replacement.
+
+Output:
+  Prints the generated proofstrap.toml path to stdout. The author input is never
+  rewritten and no digest is inserted into it.
+
+Example:
+  proofstrap-pack build --input ./linux.toml --output ./dist`
+)
 
 type buildFunc func(context.Context, string, string) (string, error)
 
@@ -26,17 +60,18 @@ func main() {
 
 func run(ctx context.Context, build buildFunc, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 1 && arguments[0] == "--help" {
-		fmt.Fprintln(stdout, usage)
+		fmt.Fprintln(stdout, rootHelp)
 		return 0
 	}
 	if len(arguments) == 2 && arguments[0] == "build" && arguments[1] == "--help" {
-		fmt.Fprintln(stdout, usage)
+		fmt.Fprintln(stdout, buildHelp)
 		return 0
 	}
 	input, output, ok := parseBuild(arguments)
 	if !ok {
 		fmt.Fprintln(stderr, "invalid arguments")
 		fmt.Fprintln(stderr, usage)
+		fmt.Fprintln(stderr, "Try 'proofstrap-pack build --help'.")
 		return 2
 	}
 	config, err := build(ctx, input, output)
