@@ -24,4 +24,8 @@ mkdir "$temporary/extract"
 tar -xzf "$dist/proofstrap_linux_$arch.tar.gz" -C "$temporary/extract"
 tar -xzf "$dist/proofstrap-pack_linux_$arch.tar.gz" -C "$temporary/extract"
 "$temporary/extract/proofstrap_linux_$arch/proofstrap" --help >/dev/null
-"$temporary/extract/proofstrap-pack_linux_$arch/proofstrap-pack" --help >/dev/null
+author="$temporary/extract/proofstrap-pack_linux_$arch/proofstrap-pack"
+"$author" --help >/dev/null
+printf '%s\n' 'schema=3' 'include=[{profile="base"}]' '[profiles.base]' 'packages=["curl"]' \
+  '[package.apt]' 'curl=["curl"]' > "$temporary/proofstrap.toml"
+[ -z "$("$author" check --input "$temporary/proofstrap.toml" --package-backend apt --service-backend systemd)" ]

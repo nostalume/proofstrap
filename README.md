@@ -149,12 +149,21 @@ proofstrap inspect [--digest sha256:DIGEST] ARCHIVE
 proofstrap import [--digest sha256:DIGEST] [--system] ARCHIVE
 
 proofstrap-pack build --input FILE --output DIR
+
+proofstrap-pack check --input FILE --package-backend BACKEND
+  --service-backend BACKEND
 ```
 
 Run `proofstrap <command> --help` for defaults, effects, output, and an example.
 `inspect`, `import`, explicit stores, and `proofstrap-pack` are advanced archive,
 storage, or distribution operations; the ordinary workspace path needs none of
 them. Import does not select a profile or make a store implicit.
+
+Distributors can run `proofstrap-pack check` before publishing. It resolves the
+selected document and exact sibling `packs/`, then proves that every requested
+package and service has a binding for the two named backends. It is silent on
+success, reports the complete canonical blocker set on failure, and neither
+detects nor changes the host.
 
 ## Status and platform boundary
 

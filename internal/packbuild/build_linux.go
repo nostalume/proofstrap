@@ -64,10 +64,8 @@ type snapshot struct {
 func (s *snapshot) close() { _ = s.file.Close() }
 func (s *snapshot) unchanged() bool {
 	var now unix.Stat_t
-	return unix.Fstat(int(s.file.Fd()), &now) == nil && sameStat(s.stat, now)
-}
-func sameStat(a, b unix.Stat_t) bool {
-	return a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.Mtim == b.Mtim && a.Ctim == b.Ctim
+	return unix.Fstat(int(s.file.Fd()), &now) == nil && s.stat.Dev == now.Dev && s.stat.Ino == now.Ino &&
+		s.stat.Size == now.Size && s.stat.Mtim == now.Mtim && s.stat.Ctim == now.Ctim
 }
 
 func readSnapshot(path string, limit int64) ([]byte, *snapshot, error) {
@@ -98,6 +96,66 @@ func readSnapshot(path string, limit int64) ([]byte, *snapshot, error) {
 	}
 	return b, s, nil
 }
+func closeSnapshots(values []*snapshot) {
+	for _, value := range values {
+		value.close()
+	}
+}
+func stable(input *snapshot, sources []*snapshot, action string) error {
+	if !input.unchanged() {
+		return diagnostic(InputChanged, input.path, "input changed during "+action, nil)
+	}
+	for _, source := range sources {
+		if !source.unchanged() {
+			return diagnostic(InputChanged, source.path, "source changed during "+action, nil)
+		}
+	}
+	return nil
+}
+
+// Check proves that one document's resolved semantics close under explicit backends.
+func Check(ctx context.Context, inputPath, packageBackend, serviceBackend string) error {
+	if err := canceled(ctx); err != nil {
+		return err
+	}
+	if !linux.CleanAbsoluteNonRoot(inputPath) {
+		return diagnostic(InvalidInput, inputPath, "input must be a clean absolute non-root path", nil)
+	}
+	data, input, err := readSnapshot(inputPath, maxInput)
+	if err != nil {
+		return diagnostic(InvalidInput, inputPath, "read input document", err)
+	}
+	defer input.close()
+	target, err := document.Decode(inputPath, data)
+	if err != nil {
+		return diagnostic(InvalidInput, inputPath, "decode input document", err)
+	}
+	_, sources, snaps, err := loadClosure(ctx, filepath.Join(filepath.Dir(inputPath), "packs"), target.View().Sources)
+	if err != nil {
+		return err
+	}
+	defer closeSnapshots(snaps)
+	graph, catalogues, err := document.Resolve(ctx, target, sources)
+	if err != nil {
+		return diagnostic(InvalidInput, inputPath, "resolve input workspace", err)
+	}
+	packageID, err := binding.NewPackageBackendID(packageBackend)
+	if err != nil {
+		return diagnostic(InvalidInput, inputPath, "select package backend", err)
+	}
+	serviceID, err := binding.NewServiceBackendID(serviceBackend)
+	if err != nil {
+		return diagnostic(InvalidInput, inputPath, "select service backend", err)
+	}
+	_, projectionErr := binding.Project(ctx, graph, binding.Backends{Package: packageID, Service: serviceID}, catalogues)
+	if err := stable(input, snaps, "check"); err != nil {
+		return err
+	}
+	if projectionErr != nil {
+		return diagnostic(InvalidInput, inputPath, "check backend binding closure", projectionErr)
+	}
+	return nil
+}
 
 // Build compiles one schema-3 document into an absent, self-contained workspace.
 func Build(ctx context.Context, inputPath, outputPath string) (string, error) {
@@ -120,11 +178,7 @@ func Build(ctx context.Context, inputPath, outputPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		for _, s := range snaps {
-			s.close()
-		}
-	}()
+	defer closeSnapshots(snaps)
 	used := map[string]struct{}{}
 	for _, s := range target.View().Sources {
 		used[s.Name] = struct{}{}
@@ -195,20 +249,14 @@ func Build(ctx context.Context, inputPath, outputPath string) (string, error) {
 	if !model.Equivalent(originalGraph, generatedGraph) || !binding.Equivalent(originalBindings, generatedBindings) {
 		return "", diagnostic(InvalidInput, inputPath, "generated workspace changed resolved meaning", nil)
 	}
-	if !input.unchanged() {
-		return "", diagnostic(InputChanged, inputPath, "input changed during build", nil)
-	}
-	for _, s := range snaps {
-		if !s.unchanged() {
-			return "", diagnostic(InputChanged, s.path, "source changed during build", nil)
-		}
+	if err := stable(input, snaps, "build"); err != nil {
+		return "", err
 	}
 	if err := publish(outputPath, config, objects); err != nil {
 		return "", err
 	}
 	return filepath.Join(outputPath, "proofstrap.toml"), nil
 }
-
 func requirements(handles []string, aliases map[string]pack.Digest) (map[string]pack.Digest, error) {
 	r := make(map[string]pack.Digest, len(handles))
 	for _, h := range handles {
@@ -231,7 +279,6 @@ func fresh(base string, used map[string]struct{}) string {
 		}
 	}
 }
-
 func loadClosure(ctx context.Context, store string, roots []document.Source) (map[pack.Digest][]byte, []pack.Source, []*snapshot, error) {
 	objects := map[pack.Digest][]byte{}
 	if len(roots) == 0 {
@@ -271,7 +318,6 @@ func loadClosure(ctx context.Context, store string, roots []document.Source) (ma
 	}
 	return objects, sources, snaps, nil
 }
-
 func makeArchive(ctx context.Context, kind pack.Kind, name string, content []byte, requires map[string]pack.Digest) ([]byte, pack.Source, error) {
 	var manifest strings.Builder
 	fmt.Fprintf(&manifest, "schema = 1\nkind = %q\n", kind.String())
@@ -315,7 +361,6 @@ func makeArchive(ctx context.Context, kind pack.Kind, name string, content []byt
 	source, err := pack.Read(ctx, bytes.NewReader(blob))
 	return blob, source, err
 }
-
 func publish(output string, config []byte, objects map[pack.Digest][]byte) error {
 	parent := filepath.Dir(output)
 	if _, err := os.Lstat(output); err == nil {
@@ -380,7 +425,6 @@ func publish(output string, config []byte, objects map[pack.Digest][]byte) error
 	}
 	return nil
 }
-
 func writeSynced(path string, data []byte) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o444)
 	if err != nil {
@@ -394,13 +438,13 @@ func writeSynced(path string, data []byte) error {
 	}
 	return err
 }
-
 func canceled(ctx context.Context) error {
-	if ctx == nil {
-		return diagnostic(Canceled, "", "build canceled", context.Canceled)
+	if ctx != nil && ctx.Err() == nil {
+		return nil
 	}
-	if err := ctx.Err(); err != nil {
-		return diagnostic(Canceled, "", "build canceled", err)
+	cause := context.Canceled
+	if ctx != nil {
+		cause = ctx.Err()
 	}
-	return nil
+	return diagnostic(Canceled, "", "operation canceled", cause)
 }

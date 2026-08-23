@@ -3,6 +3,7 @@ package packbuild_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +16,70 @@ import (
 	"github.com/nostalume/proofstrap/internal/pack"
 	"github.com/nostalume/proofstrap/internal/packbuild"
 )
+
+func TestCheckProjectsExplicitBackendsWithoutHostEffects(t *testing.T) {
+	root := t.TempDir()
+	input := filepath.Join(root, "proofstrap.toml")
+	data := []byte(`schema = 3
+include = [{ profile = "bootstrap" }]
+
+[profiles.bootstrap]
+packages = ["curl"]
+
+[profiles.bootstrap.services.dbus]
+target = "system"
+running = true
+
+[package.apt]
+curl = ["curl"]
+
+[service.systemd]
+dbus = ["dbus.service"]
+`)
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "")
+	if err := packbuild.Check(context.Background(), input, "apt", "systemd"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("check wrote output: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestCheckReturnsCompleteMissingMappings(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "proofstrap.toml")
+	data := []byte(`schema = 3
+include = [{ profile = "bootstrap" }]
+
+[profiles.bootstrap]
+packages = ["curl"]
+
+[profiles.bootstrap.services.dbus]
+target = "system"
+running = true
+`)
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := packbuild.Check(context.Background(), input, "apt", "systemd")
+	var blocked *binding.Blocked
+	if !errors.As(err, &blocked) {
+		t.Fatalf("Check error = %v; want binding blockers", err)
+	}
+	blockers := blocked.Blockers()
+	if len(blockers) != 2 || blockers[0].Domain != binding.Package || blockers[1].Domain != binding.Service {
+		t.Fatalf("blockers = %#v", blockers)
+	}
+	if err := packbuild.Check(context.Background(), input, "APT", "systemd"); err == nil {
+		t.Fatal("invalid backend accepted")
+	}
+	if err := packbuild.Check(context.Background(), "/", "apt", "systemd"); err == nil {
+		t.Fatal("root input accepted")
+	}
+}
 
 func TestBuildDirectOnlyAndAbsentOnly(t *testing.T) {
 	root := t.TempDir()
@@ -317,5 +382,8 @@ agent = ["agent-native"]
 	id, ok := binding.PackageIDOf(nodes[0])
 	if !ok || id.Backend() != backend || id.Name() != "agent-native" {
 		t.Fatalf("projected package = %#v", nodes[0])
+	}
+	if err := packbuild.Check(context.Background(), config, "zypper", "systemd"); err != nil {
+		t.Fatalf("check generated exact workspace: %v", err)
 	}
 }

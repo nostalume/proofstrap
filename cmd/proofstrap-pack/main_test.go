@@ -20,9 +20,37 @@ func TestRunBuildPrintsOnlyGeneratedConfig(t *testing.T) {
 		return config, nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), build, []string{"build", "--input", "input.toml", "--output", "dist"}, &stdout, &stderr)
+	code := run(context.Background(), build, nil, []string{"build", "--input", "input.toml", "--output", "dist"}, &stdout, &stderr)
 	if code != 0 || !called || stdout.String() != config+"\n" || stderr.Len() != 0 {
 		t.Fatalf("run = %d, called=%v, stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunCheckIsSilentAndUsesExplicitBackends(t *testing.T) {
+	directory := t.TempDir()
+	t.Chdir(directory)
+	called := false
+	check := func(_ context.Context, input, packageBackend, serviceBackend string) error {
+		called = input == filepath.Join(directory, "input.toml") && packageBackend == "apt" && serviceBackend == "systemd"
+		return nil
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), nil, check, []string{"check", "--input", "input.toml", "--package-backend", "apt", "--service-backend", "systemd"}, &stdout, &stderr)
+	if code != 0 || !called || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("run = %d, called=%v, stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunCheckRendersCanonicalBlockers(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "proofstrap.toml")
+	data := []byte("schema=3\ninclude=[{profile='base'}]\n[profiles.base]\npackages=['curl']\n")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), nil, packbuild.Check, []string{"check", "--input", input, "--package-backend", "apt", "--service-backend", "systemd"}, &stdout, &stderr)
+	if code != 1 || stdout.Len() != 0 || !bytes.Contains(stderr.Bytes(), []byte("Unsupported package backend=apt semantic=package:curl")) {
+		t.Fatalf("run = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -37,6 +65,9 @@ func TestRunGrammarAndHelp(t *testing.T) {
 	}{
 		{"help", []string{"--help"}, 0, true},
 		{"build-help", []string{"build", "--help"}, 0, true},
+		{"check-help", []string{"check", "--help"}, 0, true},
+		{"check-missing", []string{"check", "--input", "/input", "--package-backend", "apt"}, 2, false},
+		{"check-duplicate", []string{"check", "--input", "/input", "--package-backend", "apt", "--package-backend", "dnf5"}, 2, false},
 		{"missing", []string{"build", "--input", "/input"}, 2, false},
 		{"duplicate", []string{"build", "--input", "/one", "--input", "/two", "--output", "/output"}, 2, false},
 		{"short help", []string{"-h"}, 2, false}, {"short flag", []string{"build", "-input", "/input", "--output", "/output"}, 2, false},
@@ -47,7 +78,7 @@ func TestRunGrammarAndHelp(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			if code := run(context.Background(), build, test.args, &stdout, &stderr); code != test.code {
+			if code := run(context.Background(), build, nil, test.args, &stdout, &stderr); code != test.code {
 				t.Fatalf("code = %d", code)
 			}
 			if test.stdout != (stdout.Len() > 0) {
@@ -67,7 +98,7 @@ func TestRunBuildRelativeInputAndOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), packbuild.Build, []string{"build", "--input", "input.toml", "--output", "dist"}, &stdout, &stderr); code != 0 {
+	if code := run(context.Background(), packbuild.Build, nil, []string{"build", "--input", "input.toml", "--output", "dist"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("relative build: code=%d stderr=%q", code, stderr.String())
 	}
 	if stdout.String() != filepath.Join(directory, "dist", "proofstrap.toml")+"\n" {
@@ -78,7 +109,16 @@ func TestRunBuildRelativeInputAndOutput(t *testing.T) {
 func TestRunCancellation(t *testing.T) {
 	build := func(context.Context, string, string) (string, error) { return "", context.Canceled }
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), build, []string{"build", "--input", "/input", "--output", "/output"}, &stdout, &stderr)
+	code := run(context.Background(), build, nil, []string{"build", "--input", "/input", "--output", "/output"}, &stdout, &stderr)
+	if code != 130 || stdout.Len() != 0 || stderr.Len() == 0 {
+		t.Fatalf("run = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunCheckCancellation(t *testing.T) {
+	check := func(context.Context, string, string, string) error { return context.Canceled }
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), nil, check, []string{"check", "--input", "/input", "--package-backend", "apt", "--service-backend", "systemd"}, &stdout, &stderr)
 	if code != 130 || stdout.Len() != 0 || stderr.Len() == 0 {
 		t.Fatalf("run = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
