@@ -24,6 +24,12 @@ func linkLibrary(origin string, local map[string]profileDefinition, required map
 		key := profileKey(origin, id)
 		result.localProfiles[id] = key
 		definition := local[id]
+		definition.includes = append([]includeDefinition(nil), definition.includes...)
+		definition.packages = append([]semanticReference(nil), definition.packages...)
+		definition.services = append([]serviceDefinition(nil), definition.services...)
+		for index := range definition.services {
+			definition.services[index].packages = append([]semanticReference(nil), definition.services[index].packages...)
+		}
 		result.profiles[key] = definition
 		for _, reference := range definition.packages {
 			if reference.alias == "" {

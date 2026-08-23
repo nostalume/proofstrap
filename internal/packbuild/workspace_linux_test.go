@@ -131,6 +131,41 @@ include=[{profile={parameter="session"}}]
 
 func TestBuildPromotesBindingAgainstImportedSemanticSource(t *testing.T) {
 	root := t.TempDir()
+	digest, author := importedSemantic(t, root)
+	input := filepath.Join(author, "proofstrap.toml")
+	data := []byte("schema=3\ninclude=[{profile='core:base'}]\n[sources]\ncore='" + digest.String() + "'\n[package.zypper]\n'core:base'=['base-native']\n")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := packbuild.Build(context.Background(), input, filepath.Join(root, "dist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedBytes, _ := os.ReadFile(config)
+	generated, err := document.Decode(config, generatedBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view := generated.View(); len(view.Sources) != 2 || len(view.Bindings) != 1 || view.Profiles.Present() || view.Mappings.Present() {
+		t.Fatalf("generated view = %#v", view)
+	}
+}
+
+func TestBuildPromotesSemanticDependingOnImportedSource(t *testing.T) {
+	root := t.TempDir()
+	digest, author := importedSemantic(t, root)
+	input := filepath.Join(author, "proofstrap.toml")
+	data := []byte("schema=3\ninclude=[{profile='local'}]\n[sources]\ncore='" + digest.String() + "'\n[profiles.local]\ninclude=[{profile='core:base'}]\n")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := packbuild.Build(context.Background(), input, filepath.Join(root, "dist")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func importedSemantic(t *testing.T, root string) (pack.Digest, string) {
+	t.Helper()
 	seed := filepath.Join(root, "seed.toml")
 	if err := os.WriteFile(seed, []byte("schema=3\ninclude=[{profile='base'}]\n[profiles.base]\npackages=['base']\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -155,23 +190,7 @@ func TestBuildPromotesBindingAgainstImportedSemanticSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(store, name), object, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	input := filepath.Join(author, "proofstrap.toml")
-	data := []byte("schema=3\ninclude=[{profile='core:base'}]\n[sources]\ncore='" + digest.String() + "'\n[package.zypper]\n'core:base'=['base-native']\n")
-	if err := os.WriteFile(input, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	config, err := packbuild.Build(context.Background(), input, filepath.Join(root, "dist"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	generatedBytes, _ := os.ReadFile(config)
-	generated, err := document.Decode(config, generatedBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if view := generated.View(); len(view.Sources) != 2 || len(view.Bindings) != 1 || view.Profiles.Present() || view.Mappings.Present() {
-		t.Fatalf("generated view = %#v", view)
-	}
+	return digest, author
 }
 
 func TestBuildMissingImportLeavesNoOutput(t *testing.T) {
